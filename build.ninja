@@ -1,5 +1,8 @@
 include config.ninja
 
+rule test
+    command = $in -z $out || cat $out
+
 # sockbusd
 
 rule cc_sockbusd
@@ -32,11 +35,21 @@ build obj/sockbusp/parse.o:     cc_sockbusp cmd/sockbusp/parse.c
 build obj/sockbusp/sockbusp.o:  cc_sockbusp cmd/sockbusp/sockbusp.c
 build obj/sockbusp/stream.o:    cc_sockbusp cmd/sockbusp/stream.c
 
+build obj/sockbusp.test: test bin/sockbusp
+
 build bin/sockbusp: ld_sockbusp $
         obj/sockbusp/auth.o $
         obj/sockbusp/message.o $
         obj/sockbusp/parse.o $
         obj/sockbusp/sockbusp.o $
         obj/sockbusp/stream.o $
+
+
+# default targets
+
+default bin/sockbusp bin/sockbusd
+build test: phony $
+    obj/sockbusp.test $
+
 
 

@@ -1,5 +1,5 @@
 cc = gcc
 ld = gcc
-cflags = -g -Wall -Werror
-ldflags = -g -Wall -Werror
+cflags = -fdiagnostics-color -g -Wall -Werror -I.
+ldflags = -fdiagnostics-color -g -Wall -Werror
 pkg_config_libs_uuid = -luuid
