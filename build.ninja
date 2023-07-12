@@ -8,7 +8,7 @@ rule test
 rule cc_sockbusd
     depfile = $out.d
     deps = gcc
-    command = $cc -c $in -o $out -MD -MF $out.d $cflags
+    command = $cc -c $in -o $out -MD -MF $out.d $cflags $pkg_config_cflags_uuid
 
 rule ld_sockbusd
     command = $ld $ldflags $pkg_config_libs_uuid -o $out $in

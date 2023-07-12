@@ -3,7 +3,8 @@
 #include "parse.h"
 #include <stdint.h>
 
-#define MAX_MESSAGE_SIZE (128 * 1024)
+// allows for alignment within a 64KB buffer
+#define MAX_MESSAGE_SIZE ((64 * 1024) - 8)
 
 #define MSG_METHOD 1
 #define MSG_REPLY 2

@@ -28,8 +28,9 @@ void realign_buffer(struct stream_buffer *b)
 	debug_fill(b);
 }
 
-static int grow_buffer(struct stream_buffer *b, unsigned need)
+static int compact_buffer(struct stream_buffer *b, unsigned need)
 {
+#if 0
 	// add 7 bytes extra to allow for slop in the alignment
 	unsigned newcap = ALIGN_UINT_UP(need + 7, 64 * 1024);
 	if (newcap != b->cap) {
@@ -48,7 +49,9 @@ static int grow_buffer(struct stream_buffer *b, unsigned need)
 		b->off -= off;
 		b->end -= off;
 		debug_fill(b);
-	} else if (b->off + need > b->cap) {
+	} else
+#endif
+	if (b->off + need > b->cap) {
 		// compact the existing buffer
 		unsigned off = ALIGN_UINT_DOWN(b->off, 8);
 		memmove(b->data, b->data + off, b->end - off);
@@ -61,7 +64,7 @@ static int grow_buffer(struct stream_buffer *b, unsigned need)
 
 static int do_read(int fd, struct stream_buffer *b, unsigned need)
 {
-	if (grow_buffer(b, need)) {
+	if (compact_buffer(b, need)) {
 		return READ_ERROR;
 	}
 

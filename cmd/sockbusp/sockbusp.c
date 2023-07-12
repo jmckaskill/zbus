@@ -129,6 +129,12 @@ int main(int argc, char *argv[])
 
 	// buffer used for read call from stdin
 	struct stream_buffer inbuf = INIT_STREAM_BUFFER;
+	inbuf.data = malloc(MAX_MESSAGE_SIZE + 8);
+	inbuf.cap = MAX_MESSAGE_SIZE + 8;
+	if (!inbuf.data) {
+		perror("malloc failed");
+		return ERR_FAILED;
+	}
 
 	// enable SIGPIPE, and blocking on stdin/out for the auth call
 	signal(SIGPIPE, SIG_DFL);

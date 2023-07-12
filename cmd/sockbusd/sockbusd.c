@@ -1,5 +1,5 @@
 #define _GNU_SOURCE
-#include <uuid/uuid.h>
+#include <uuid.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <sys/socket.h>
