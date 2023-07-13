@@ -28,12 +28,8 @@
 #define ERR_INVALID_ARG 5
 
 static uint32_t next_serial = 1;
-static char *busdir;
 static char *busid;
-static union {
-	struct sockaddr sa;
-	struct sockaddr_un sun;
-} sockaddr;
+static char unique_addr[128];
 
 void log_message(const struct message *m, const char *src)
 {
@@ -49,10 +45,10 @@ static int usage(const char *format, ...)
 	va_start(ap, format);
 	fprintf(stderr, format, ap);
 	va_end(ap);
-	fputs("usage: sockbus-dbus-proxy [args] sockdir busid\n", stderr);
+	fputs("usage: sockbus-dbus-proxy [args] busid\n", stderr);
 	fputs("  -v      Enable verbose\n", stderr);
-	fputs("  -i fd   Input file descriptor (default:0)\n", stderr);
-	fputs("  -o fd   Output file descriptor (default:1)\n", stderr);
+	fputs("  -f fd   Stream file descriptor (default:0)\n", stderr);
+	fputs("  -d dir  Bus directory\n", stderr);
 	return ERR_INVALID_ARG;
 }
 
@@ -86,9 +82,6 @@ static int blocking_write(int fd, const char *p, unsigned len)
 
 static int send_hello_reply(int out, uint32_t reply_serial)
 {
-	// const char *unique_addr = sockaddr.sun.sun_path + strlen(busdir) + 1;
-	const char *unique_addr = ":1.115";
-
 	struct message m;
 	init_message(&m);
 	m.hdr.type = MSG_REPLY;
@@ -127,7 +120,7 @@ static int send_list_names_reply(int out, uint32_t reply_serial)
 	struct array_data ad;
 	start_array(&b, &ad);
 
-	DIR *d = opendir(busdir);
+	DIR *d = opendir(".");
 	if (d == NULL) {
 		perror("failed to open bus dir");
 		return -1;
@@ -251,7 +244,7 @@ int main(int argc, char *argv[])
 {
 	int fd = 0;
 	for (;;) {
-		int i = getopt(argc, argv, "hz:vf:");
+		int i = getopt(argc, argv, "hz:vf:d:");
 		if (i < 0) {
 			break;
 		}
@@ -261,6 +254,12 @@ int main(int argc, char *argv[])
 			break;
 		case 'f':
 			fd = atoi(optarg);
+			break;
+		case 'd':
+			if (chdir(optarg)) {
+				perror("chdir busdir");
+				return ERR_INVALID_ARG;
+			}
 			break;
 		case 'z':
 #ifndef NDEBUG
@@ -277,12 +276,11 @@ int main(int argc, char *argv[])
 	argc -= optind;
 	argv += optind;
 
-	if (argc != 2) {
+	if (argc != 1) {
 		return usage("missing arguments\n");
 	}
 
-	busdir = argv[0];
-	busid = argv[1];
+	busid = argv[0];
 
 	// buffer used for read call from stdin
 	struct stream stream;
@@ -317,36 +315,32 @@ int main(int argc, char *argv[])
 	fcntl(fd, F_SETFD, FD_CLOEXEC);
 	fcntl(bus, F_SETFD, FD_CLOEXEC);
 
+	// bind first to a temporary name
+	// and then rename to our actual unique address
+	// this removes the race between unlink and bind
+	union {
+		struct sockaddr sa;
+		struct sockaddr_un sun;
+	} sockaddr;
+
 	struct sockaddr_un *a = &sockaddr.sun;
 	a->sun_family = AF_UNIX;
-
-	uint8_t rand_bytes[8];
-	char rand_str[sizeof(rand_bytes) + 1];
-	static const char b64_enc[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-				      "abcdefghijklmnopqrstuvwxyz"
-				      "0123456789-_";
-	if (getentropy(rand_bytes, sizeof(rand_bytes))) {
-		perror("getentroy");
+	strcpy(a->sun_path, "sock-XXXXXX");
+	if (mktemp(a->sun_path) == NULL) {
+		perror("mktemp");
 		return ERR_FAILED;
 	}
-	static_assert(STRLEN(b64_enc) == 64, "should only have 64 bytes");
-	for (int i = 0; i < sizeof(rand_bytes); i++) {
-		rand_str[i] = b64_enc[rand_bytes[i] & 63];
-	}
-	rand_str[sizeof(rand_str) - 1] = 0;
 
-	int n = snprintf(a->sun_path, sizeof(a->sun_path) - 1, "%s/:%d.%s",
-			 busdir, getpid(), rand_str);
-	if (n < 0 || n >= sizeof(a->sun_path) - 1) {
-		fprintf(stderr, "bus directory pathname %s is too long\n",
-			busdir);
-		return ERR_FAILED;
-	}
-	unlink(a->sun_path);
-	socklen_t sunlen = offsetof(struct sockaddr_un, sun_path) + n + 1;
+	socklen_t sunlen = offsetof(struct sockaddr_un, sun_path) +
+			   strlen(a->sun_path) + 1;
 	if (bind(bus, &sockaddr.sa, sunlen)) {
-		fprintf(stderr, "failed to bind unique address %s: %s\n",
-			a->sun_path, strerror(errno));
+		perror("bind");
+		return ERR_FAILED;
+	}
+
+	sprintf(unique_addr, ":1.%d", getpid());
+	if (rename(a->sun_path, unique_addr)) {
+		perror("rename");
 		return ERR_FAILED;
 	}
 

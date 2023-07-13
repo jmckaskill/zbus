@@ -10,19 +10,26 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <assert.h>
+#include <stdlib.h>
 #include <fcntl.h>
+#include <poll.h>
 
 #define ERR_FAILED 1
 #define ERR_INVALID_ARG 5
+#define MAX_CHILDREN 64
 
+static char busid[33];
+static char *busdir;
+static const char *sockbusp = "sockbusp";
 static int verbose = 0;
+static int childpipe[2];
+static int termpipe[2];
+static int childn;
+static pid_t childv[MAX_CHILDREN];
+static int opened;
 
-static int usage(const char *format, ...)
+static int usage()
 {
-	va_list ap;
-	va_start(ap, format);
-	fprintf(stderr, format, ap);
-	va_end(ap);
 	fputs("usage: sockbusd [args] [--] dbus-socket sockdir\n", stderr);
 	fputs("  -p path    sockbusp binary (default:sockbusp)\n", stderr);
 	fputs("  -v         Enable verbose (default:disabled)\n", stderr);
@@ -31,19 +38,34 @@ static int usage(const char *format, ...)
 
 static void sigchild(int)
 {
-	int sts;
-	while (waitpid(-1, &sts, WNOHANG) < 0) {
+	char buf[1] = { 0 };
+	write(childpipe[1], buf, 1);
+}
+
+static void sigterm(int)
+{
+	char buf[1] = { 0 };
+	write(termpipe[1], buf, 1);
+}
+
+static void make_pipe(int *p)
+{
+	if (pipe(p) || fcntl(p[0], F_SETFD, FD_CLOEXEC) ||
+	    fcntl(p[1], F_SETFD, FD_CLOEXEC) ||
+	    fcntl(p[0], F_SETFL, O_NONBLOCK) ||
+	    fcntl(p[1], F_SETFL, O_NONBLOCK)) {
+		perror("childpipe");
+		exit(ERR_FAILED);
 	}
 }
 
-static int child_process(int sock, const char *sockbusp, char *busdir,
-			 char *busid)
+static void child_process(int sock)
 {
 	struct ucred cred;
 	socklen_t credlen = sizeof(cred);
 	if (getsockopt(sock, SOL_SOCKET, SO_PEERCRED, &cred, &credlen)) {
 		perror("failed to get peer credentials");
-		return ERR_FAILED;
+		exit(ERR_FAILED);
 	}
 
 	// set our uid, gid, pgid to match the peer
@@ -62,24 +84,121 @@ static int child_process(int sock, const char *sockbusp, char *busdir,
 			cred.uid, cred.gid, strerror(errno));
 	}
 
-	// Set up the unix client socket as stdin and stdout
-	// As these are duplicates they do not have cloexec.
-	dup2(sock, 0);
-	close(sock);
+	char fdstr[32];
+	sprintf(fdstr, "%d", sock);
 
-	char *argv[] = {
-		"sockbusp", verbose ? "-v" : "--", busdir, busid, NULL,
-	};
+	int argn = 0;
+	char *argv[8];
+
+	argv[argn++] = "sockbusp";
+	if (verbose) {
+		argv[argn++] = "-v";
+	}
+	argv[argn++] = "-f";
+	argv[argn++] = fdstr;
+	argv[argn++] = "-d";
+	argv[argn++] = busdir;
+	argv[argn++] = busid;
+	argv[argn] = NULL;
 
 	execvp(sockbusp, argv);
 	fprintf(stderr, "failed to execute %s: %s\n", sockbusp,
 		strerror(errno));
-	return -1;
+	exit(ERR_FAILED);
+}
+
+static void spawn_children(int sock)
+{
+	while (childn < MAX_CHILDREN) {
+		int client = accept(sock, NULL, NULL);
+		if (client < 0 && errno == EINTR) {
+			continue;
+		} else if (client < 0 &&
+			   (errno == EAGAIN || errno == EWOULDBLOCK)) {
+			break;
+		}
+
+		int pid = fork();
+		if (pid < 0) {
+			perror("fork failed");
+			exit(ERR_FAILED);
+		} else if (!pid) {
+			child_process(client);
+		}
+
+		childv[childn++] = pid;
+		close(client);
+	}
+}
+
+static void consume_selfpipe(int fd)
+{
+	for (;;) {
+		// consume whatever is in the buffer
+		char buf[128];
+		int r = read(fd, buf, sizeof(buf));
+		if (r < 0 && errno == EINTR) {
+			continue;
+		} else if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+			break;
+		} else if (r <= 0) {
+			perror("childpipe read");
+			exit(ERR_FAILED);
+		}
+	}
+}
+
+static void kill_children()
+{
+	for (int i = 0; i < childn; i++) {
+		if (verbose) {
+			fprintf(stderr, "terminating child %d\n", childv[i]);
+		}
+		kill(childv[i], SIGTERM);
+	}
+}
+
+static void reap_children()
+{
+	for (;;) {
+		int sts;
+		pid_t pid = waitpid(-1, &sts, WNOHANG);
+		if (pid < 0) {
+			break;
+		}
+		if (WIFSIGNALED(sts)) {
+			if (verbose || opened) {
+				fprintf(stderr, "child %d terminated with %d\n",
+					pid, WTERMSIG(sts));
+			}
+		} else if (WIFEXITED(sts)) {
+			if (verbose || WEXITSTATUS(sts)) {
+				fprintf(stderr, "child %d exited with %d\n",
+					pid, WEXITSTATUS(sts));
+			}
+		}
+
+		// remove the child from our list
+		int o = 0;
+		for (int i = 0; i < childn; i++) {
+			if (childv[i] != pid) {
+				childv[o++] = childv[i];
+			}
+		}
+		childn = o;
+
+		// clean up any sockets our children may have
+		// left around
+		char *pn;
+		if (asprintf(&pn, "%s/:1.%d", busdir, pid) > 0) {
+			unlink(pn);
+			free(pn);
+		}
+	}
 }
 
 int main(int argc, char *argv[])
 {
-	const char *sockbusp = "/bin/sockbusp";
 	for (;;) {
 		int i = getopt(argc, argv, "hzvp:");
 		if (i < 0) {
@@ -94,7 +213,7 @@ int main(int argc, char *argv[])
 			break;
 		case 'h':
 		case '?':
-			return usage("");
+			return usage();
 		}
 	}
 
@@ -102,25 +221,35 @@ int main(int argc, char *argv[])
 	argv += optind;
 
 	if (argc != 2) {
-		return usage("missing arguments\n");
+		fprintf(stderr, "missing arguments\n");
+		return usage();
 	}
 
+	close(STDIN_FILENO);
+	close(STDOUT_FILENO);
+
+	make_pipe(childpipe);
+	make_pipe(termpipe);
+
 	signal(SIGCHLD, &sigchild);
+	signal(SIGINT, &sigterm);
+	signal(SIGTERM, &sigterm);
+	signal(SIGALRM, &sigterm);
+
+	alarm(10);
 
 	char *sockpath = argv[0];
-	char *busdir = argv[1];
+	busdir = argv[1];
 
 	static const char hex_enc[] = "0123456789abcdef";
-	static_assert(sizeof(hex_enc) - 1 == 16, "should only have 16 bytes");
-	uint8_t busid_bytes[16];
-	char busid[32 + 1];
-	if (getentropy(busid_bytes, sizeof(busid_bytes))) {
+	uint8_t rand[16];
+	if (getentropy(rand, sizeof(rand))) {
 		perror("getentropy");
 		return ERR_FAILED;
 	}
-	for (int i = 0; i < sizeof(busid_bytes); i++) {
-		busid[2 * i] = hex_enc[busid_bytes[i] >> 4];
-		busid[2 * i + 1] = hex_enc[busid_bytes[i] & 15];
+	for (int i = 0; i < sizeof(rand); i++) {
+		busid[2 * i] = hex_enc[rand[i] >> 4];
+		busid[2 * i + 1] = hex_enc[rand[i] & 15];
 	}
 	busid[sizeof(busid) - 1] = 0;
 
@@ -131,57 +260,81 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "creating dbus-1 socket at %s\n", sockpath);
 	}
 
-	union {
-		struct sockaddr_un sun;
-		struct sockaddr sa;
-	} addr;
-	addr.sun.sun_family = AF_UNIX;
-	size_t pathlen = strlen(sockpath);
-	if (pathlen + 1 > sizeof(addr.sun.sun_path)) {
-		return usage("socket pathname %s is too long\n", sockpath);
-	}
-	memcpy(addr.sun.sun_path, sockpath, pathlen);
-	memset(addr.sun.sun_path + pathlen, 0,
-	       sizeof(addr.sun.sun_path) - pathlen);
-
 	int sock = socket(AF_UNIX, SOCK_STREAM, PF_UNIX);
-	if (!sock || fcntl(sock, F_SETFD, (int)FD_CLOEXEC)) {
+	if (!sock || fcntl(sock, F_SETFD, FD_CLOEXEC) ||
+	    fcntl(sock, F_SETFL, O_NONBLOCK)) {
 		perror("failed to create unix socket");
 		return ERR_FAILED;
 	}
 
 	unlink(sockpath);
 
-	if (bind(sock, &addr.sa,
-		 offsetof(struct sockaddr_un, sun_path) + pathlen + 1) ||
-	    listen(sock, SOMAXCONN)) {
+	union {
+		struct sockaddr_un sun;
+		struct sockaddr sa;
+	} a;
+	size_t pathlen = strlen(sockpath);
+	if (pathlen + 1 > sizeof(a.sun.sun_path)) {
+		fprintf(stderr, "socket pathname %s is too long\n", sockpath);
+		return usage();
+	}
+	a.sun.sun_family = AF_UNIX;
+	memcpy(a.sun.sun_path, sockpath, pathlen + 1);
+
+	socklen_t salen = offsetof(struct sockaddr_un, sun_path) + pathlen + 1;
+	if (bind(sock, &a.sa, salen) || listen(sock, SOMAXCONN)) {
 		fprintf(stderr, "failed to bind socket %s: %s\n", sockpath,
 			strerror(errno));
 		return ERR_FAILED;
 	}
 
-	for (;;) {
-		// Set cloexec as we open it. We then reenable after forking
-		// so that we don't leak sockets across children.
-#ifdef SOCK_CLOEXEC
-		int client = accept4(sock, NULL, NULL, SOCK_CLOEXEC);
-#else
-		int client = accept(sock, NULL, NULL);
-		fcntl(sock, F_SETFD, (int)FD_CLOEXEC);
-#endif
+	struct pollfd pfd[3];
+	pfd[0].fd = childpipe[0];
+	pfd[0].events = POLLIN;
+	pfd[0].revents = 0;
+	pfd[1].fd = termpipe[0];
+	pfd[1].events = POLLIN;
+	pfd[1].revents = 0;
+	pfd[2].fd = sock;
+	pfd[2].events = POLLIN;
+	pfd[2].revents = POLLIN;
 
-		int pid = fork();
-		switch (pid) {
-		case -1:
-			perror("fork failed");
-			return ERR_FAILED;
-		case 0:
-			return child_process(client, sockbusp, busdir, busid);
-		default:
-			// in parent
-			close(client);
+	opened = 1;
+
+	for (;;) {
+		if (pfd[0].revents) {
+			consume_selfpipe(childpipe[0]);
+			reap_children();
+		}
+		if (opened && pfd[1].revents) {
+			consume_selfpipe(termpipe[0]);
+			kill_children();
+			close(sock);
+			opened = 0;
+		}
+		if (opened && pfd[2].revents) {
+			spawn_children(sock);
+		}
+		pfd[2].events = childn < MAX_CHILDREN ? POLLIN : 0;
+
+		if (!childn && !opened) {
 			break;
 		}
+
+		int r = poll(pfd, opened ? 3 : 1, -1);
+		if (r < 0 && errno != EINTR) {
+			perror("poll");
+			return ERR_FAILED;
+		}
 	}
+
+	if (verbose) {
+		fprintf(stderr, "exiting\n");
+	}
+
+	close(termpipe[0]);
+	close(termpipe[1]);
+	close(childpipe[0]);
+	close(childpipe[1]);
 	return 0;
 }

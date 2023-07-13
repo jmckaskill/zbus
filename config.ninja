@@ -1,4 +1,4 @@
 cc = musl-gcc
 ld = musl-gcc
-cflags = -static -fdiagnostics-color -g -Wall -Werror -I.
-ldflags = -static -fdiagnostics-color -g -Wall -Werror
+cflags = -fdiagnostics-color -g -Wall -Werror -I.
+ldflags = -fdiagnostics-color -g -Wall -Werror
