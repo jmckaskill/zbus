@@ -3,6 +3,36 @@ include config.ninja
 rule test
     command = $in -z $out || cat $out
 
+# lib
+
+rule cc_lib
+    depfile = $out.d
+    deps = gcc
+    command = $cc -c $in -o $out -MD -MF $out.d $cflags
+
+rule ar_lib
+    command = rm -f $out && $ar $out $in
+
+build obj/lib/auth.o:      cc_lib lib/auth.c
+build obj/lib/log.o:       cc_lib lib/log.c
+build obj/lib/marshal.o:   cc_lib lib/marshal.c
+build obj/lib/message.o:   cc_lib lib/message.c
+build obj/lib/parse.o:     cc_lib lib/parse.c
+build obj/lib/stream.o:    cc_lib lib/stream.c
+build obj/lib/types.o:     cc_lib lib/types.c
+build obj/lib/unix.o:      cc_lib lib/unix.c
+
+build obj/lib.a: ar_lib $
+        obj/lib/auth.o $
+        obj/lib/log.o $
+        obj/lib/marshal.o $
+        obj/lib/message.o $
+        obj/lib/parse.o $
+        obj/lib/stream.o $
+        obj/lib/types.o $
+        obj/lib/unix.o $
+
+
 # sockbusd
 
 rule cc_sockbusd
@@ -29,28 +59,13 @@ rule cc_sockbusp
 rule ld_sockbusp
     command = $ld $ldflags -o $out $in
 
-build obj/sockbusp/auth.o:      cc_sockbusp cmd/sockbusp/auth.c
-build obj/sockbusp/log.o:       cc_sockbusp cmd/sockbusp/log.c
-build obj/sockbusp/marshal.o:   cc_sockbusp cmd/sockbusp/marshal.c
-build obj/sockbusp/message.o:   cc_sockbusp cmd/sockbusp/message.c
-build obj/sockbusp/parse.o:     cc_sockbusp cmd/sockbusp/parse.c
 build obj/sockbusp/proxy.o:     cc_sockbusp cmd/sockbusp/proxy.c
-build obj/sockbusp/stream.o:    cc_sockbusp cmd/sockbusp/stream.c
-build obj/sockbusp/types.o:     cc_sockbusp cmd/sockbusp/types.c
-build obj/sockbusp/unix.o:      cc_sockbusp cmd/sockbusp/unix.c
 
 build obj/sockbusp.test: test bin/sockbusp
 
 build bin/sockbusp: ld_sockbusp $
-        obj/sockbusp/auth.o $
-        obj/sockbusp/log.o $
-        obj/sockbusp/marshal.o $
-        obj/sockbusp/message.o $
-        obj/sockbusp/parse.o $
         obj/sockbusp/proxy.o $
-        obj/sockbusp/stream.o $
-        obj/sockbusp/types.o $
-        obj/sockbusp/unix.o $
+        obj/lib.a $
 
 
 # default targets

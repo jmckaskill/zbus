@@ -1,4 +1,5 @@
 cc = musl-gcc
 ld = musl-gcc
+ar = ar rcs
 cflags = -fdiagnostics-color -g -Wall -Werror -I.
 ldflags = -fdiagnostics-color -g -Wall -Werror
