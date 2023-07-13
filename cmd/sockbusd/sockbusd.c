@@ -1,17 +1,21 @@
 #define _GNU_SOURCE
-#include <uuid.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <sys/un.h>
 #include <string.h>
 #include <errno.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stddef.h>
+#include <assert.h>
 #include <fcntl.h>
 
 #define ERR_FAILED 1
 #define ERR_INVALID_ARG 5
+
+static int verbose = 0;
 
 static int usage(const char *format, ...)
 {
@@ -19,11 +23,17 @@ static int usage(const char *format, ...)
 	va_start(ap, format);
 	fprintf(stderr, format, ap);
 	va_end(ap);
-	fputs("usage: sockbusd [args] [--] dbus-socket sockdir busid\n",
-	      stderr);
+	fputs("usage: sockbusd [args] [--] dbus-socket sockdir\n", stderr);
 	fputs("  -p path    sockbusp binary (default:sockbusp)\n", stderr);
 	fputs("  -v         Enable verbose (default:disabled)\n", stderr);
 	return ERR_INVALID_ARG;
+}
+
+static void sigchild(int)
+{
+	int sts;
+	while (waitpid(-1, &sts, WNOHANG) < 0) {
+	}
 }
 
 static int child_process(int sock, const char *sockbusp, char *busdir,
@@ -54,12 +64,11 @@ static int child_process(int sock, const char *sockbusp, char *busdir,
 
 	// Set up the unix client socket as stdin and stdout
 	// As these are duplicates they do not have cloexec.
-	dup2(sock, 1);
 	dup2(sock, 0);
 	close(sock);
 
 	char *argv[] = {
-		"sockbusp", "-v", busdir, busid, NULL,
+		"sockbusp", verbose ? "-v" : "--", busdir, busid, NULL,
 	};
 
 	execvp(sockbusp, argv);
@@ -68,14 +77,11 @@ static int child_process(int sock, const char *sockbusp, char *busdir,
 	return -1;
 }
 
-static const char hex_bytes[] = "0123456789abcdef";
-
 int main(int argc, char *argv[])
 {
-	long verbose = 0;
 	const char *sockbusp = "/bin/sockbusp";
 	for (;;) {
-		int i = getopt(argc, argv, "zvp:");
+		int i = getopt(argc, argv, "hzvp:");
 		if (i < 0) {
 			break;
 		}
@@ -86,6 +92,7 @@ int main(int argc, char *argv[])
 		case 'p':
 			sockbusp = optarg;
 			break;
+		case 'h':
 		case '?':
 			return usage("");
 		}
@@ -94,21 +101,28 @@ int main(int argc, char *argv[])
 	argc -= optind;
 	argv += optind;
 
-	if (argc != 3) {
+	if (argc != 2) {
 		return usage("missing arguments\n");
 	}
 
-	uuid_t uuid;
-	char busid[sizeof(uuid) * 2 + 1];
-	uuid_generate(uuid);
-	for (int i = 0; i < sizeof(uuid); i++) {
-		busid[2 * i] = hex_bytes[uuid[i] >> 4];
-		busid[2 * i + 1] = hex_bytes[uuid[i] & 15];
-	}
-	busid[sizeof(busid) - 1] = 0;
+	signal(SIGCHLD, &sigchild);
 
 	char *sockpath = argv[0];
 	char *busdir = argv[1];
+
+	static const char hex_enc[] = "0123456789abcdef";
+	static_assert(sizeof(hex_enc) - 1 == 16, "should only have 16 bytes");
+	uint8_t busid_bytes[16];
+	char busid[32 + 1];
+	if (getentropy(busid_bytes, sizeof(busid_bytes))) {
+		perror("getentropy");
+		return ERR_FAILED;
+	}
+	for (int i = 0; i < sizeof(busid_bytes); i++) {
+		busid[2 * i] = hex_enc[busid_bytes[i] >> 4];
+		busid[2 * i + 1] = hex_enc[busid_bytes[i] & 15];
+	}
+	busid[sizeof(busid) - 1] = 0;
 
 	if (verbose) {
 		fprintf(stderr,
@@ -165,6 +179,7 @@ int main(int argc, char *argv[])
 			return child_process(client, sockbusp, busdir, busid);
 		default:
 			// in parent
+			close(client);
 			break;
 		}
 	}

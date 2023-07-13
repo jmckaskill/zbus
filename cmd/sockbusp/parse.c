@@ -5,24 +5,9 @@
 
 #define MAX_DEPTH 32
 
-int compare_string_x(const char *ap, unsigned alen, const char *bp,
-		     unsigned blen)
-{
-	unsigned clen = alen < blen ? alen : blen;
-	int c = memcmp(ap, bp, clen);
-	return c ? c : ((int)alen - (int)blen);
-}
-
-int compare_string_p(const void *ca, const void *cb)
-{
-	const struct string *a = ca;
-	const struct string *b = cb;
-	return compare_string_x(a->p, a->len, b->p, b->len);
-}
-
 static inline const char *align2(const char *n, const char *error)
 {
-	const char *a = (const char *)(((uintptr_t)n + 1) & (~(uintptr_t)1));
+	const char *a = ALIGN_PTR_UP(const char *, n, 2);
 #ifndef NDEBUG
 	if (n < a) {
 		if (*(n++)) {
@@ -37,7 +22,7 @@ static inline const char *align2(const char *n, const char *error)
 
 static inline const char *align4(const char *n, const char *error)
 {
-	const char *a = (const char *)(((uintptr_t)n + 3) & (~(uintptr_t)3));
+	const char *a = ALIGN_PTR_UP(const char *, n, 4);
 #ifndef NDEBUG
 	while (n < a) {
 		if (*(n++)) {
@@ -52,7 +37,7 @@ static inline const char *align4(const char *n, const char *error)
 
 static inline const char *align8(const char *n, const char *error)
 {
-	const char *a = (const char *)(((uintptr_t)n + 7) & (~(uintptr_t)7));
+	const char *a = ALIGN_PTR_UP(const char *, n, 8);
 #ifndef NDEBUG
 	while (n < a) {
 		if (*(n++)) {
@@ -65,35 +50,45 @@ static inline const char *align8(const char *n, const char *error)
 	return a;
 }
 
+void align_iterator_8(struct iterator *p)
+{
+	const char *n = align8(p->n, p->e);
+	if (n > p->e) {
+		p->error = 1;
+	} else {
+		p->n = n;
+	}
+}
+
 static const char *alignx(char type, const char *n, const char *error)
 {
 	switch (type) {
-	case TYPE_BYTE:
-	case TYPE_SIGNATURE:
-	case TYPE_VARIANT:
+	case TYPE_BYTE_BYTE:
+	case TYPE_SIGNATURE_BYTE:
+	case TYPE_VARIANT_BYTE:
 		return n;
-	case TYPE_INT16:
-	case TYPE_UINT16:
+	case TYPE_INT16_BYTE:
+	case TYPE_UINT16_BYTE:
 		return align2(n, error);
-	case TYPE_BOOL:
-	case TYPE_INT32:
-	case TYPE_UINT32:
-	case TYPE_STRING:
-	case TYPE_PATH:
-	case TYPE_ARRAY:
+	case TYPE_BOOL_BYTE:
+	case TYPE_INT32_BYTE:
+	case TYPE_UINT32_BYTE:
+	case TYPE_STRING_BYTE:
+	case TYPE_PATH_BYTE:
+	case TYPE_ARRAY_BYTE:
 		return align4(n, error);
-	case TYPE_INT64:
-	case TYPE_UINT64:
-	case TYPE_DOUBLE:
-	case TYPE_DICT_BEGIN:
-	case TYPE_STRUCT_BEGIN:
+	case TYPE_INT64_BYTE:
+	case TYPE_UINT64_BYTE:
+	case TYPE_DOUBLE_BYTE:
+	case TYPE_DICT_BYTE:
+	case TYPE_STRUCT_BYTE:
 		return align8(n, error);
 	default:
 		return error;
 	}
 }
 
-static uint8_t parse1(struct parser *p, char type)
+static uint8_t parse1(struct iterator *p, char type)
 {
 	const char *n = p->n;
 	if (n >= p->e || *p->sig != type) {
@@ -105,7 +100,7 @@ static uint8_t parse1(struct parser *p, char type)
 	return *(uint8_t *)n;
 }
 
-static uint16_t parse2(struct parser *p, char type)
+static uint16_t parse2(struct iterator *p, char type)
 {
 	const char *n = align2(p->n, p->e);
 	if (n + 2 > p->e || *p->sig != type) {
@@ -117,7 +112,7 @@ static uint16_t parse2(struct parser *p, char type)
 	return *(uint16_t *)n;
 }
 
-static uint32_t parse4(struct parser *p, char type)
+static uint32_t parse4(struct iterator *p, char type)
 {
 	const char *n = align4(p->n, p->e);
 	if (n + 4 > p->e || *p->sig != type) {
@@ -129,7 +124,7 @@ static uint32_t parse4(struct parser *p, char type)
 	return *(uint32_t *)n;
 }
 
-static uint64_t parse8(struct parser *p, char type)
+static uint64_t parse8(struct iterator *p, char type)
 {
 	const char *n = align8(p->n, p->e);
 	if (n + 4 > p->e || *p->sig != type) {
@@ -141,76 +136,76 @@ static uint64_t parse8(struct parser *p, char type)
 	return *(uint64_t *)n;
 }
 
-uint8_t parse_byte(struct parser *p)
+uint8_t parse_byte(struct iterator *p)
 {
-	return parse1(p, TYPE_BYTE);
+	return parse1(p, TYPE_BYTE_BYTE);
 }
 
-int16_t parse_int16(struct parser *p)
+int16_t parse_int16(struct iterator *p)
 {
 	union {
 		uint16_t u;
 		int16_t i;
 	} u;
-	u.u = parse2(p, TYPE_INT16);
+	u.u = parse2(p, TYPE_INT16_BYTE);
 	return u.i;
 }
 
-uint16_t parse_uint16(struct parser *p)
+uint16_t parse_uint16(struct iterator *p)
 {
-	return parse2(p, TYPE_UINT16);
+	return parse2(p, TYPE_UINT16_BYTE);
 }
 
-int32_t parse_int32(struct parser *p)
+int32_t parse_int32(struct iterator *p)
 {
 	union {
 		int32_t i;
 		uint32_t u;
 	} u;
-	u.u = parse4(p, TYPE_INT32);
+	u.u = parse4(p, TYPE_INT32_BYTE);
 	return u.i;
 }
 
-uint32_t parse_uint32(struct parser *p)
+uint32_t parse_uint32(struct iterator *p)
 {
-	return parse4(p, TYPE_UINT32);
+	return parse4(p, TYPE_UINT32_BYTE);
 }
 
-bool parse_bool(struct parser *p)
+bool parse_bool(struct iterator *p)
 {
-	uint32_t u = parse4(p, TYPE_UINT32);
+	uint32_t u = parse4(p, TYPE_UINT32_BYTE);
 	if (u > 1) {
 		p->error = 1;
 	}
 	return u != 0;
 }
 
-int64_t parse_int64(struct parser *p)
+int64_t parse_int64(struct iterator *p)
 {
 	union {
 		int64_t i;
 		uint64_t u;
 	} u;
-	u.u = parse4(p, TYPE_INT64);
+	u.u = parse4(p, TYPE_INT64_BYTE);
 	return u.i;
 }
 
-uint64_t parse_uint64(struct parser *p)
+uint64_t parse_uint64(struct iterator *p)
 {
-	return parse4(p, TYPE_UINT64);
+	return parse4(p, TYPE_UINT64_BYTE);
 }
 
-int parse_double(struct parser *p, double *pv)
+int parse_double(struct iterator *p, double *pv)
 {
 	union {
 		double d;
 		uint64_t u;
 	} u;
-	u.u = parse4(p, TYPE_DOUBLE);
+	u.u = parse4(p, TYPE_DOUBLE_BYTE);
 	return u.d;
 }
 
-static struct string parse_string_bytes(struct parser *p, unsigned len)
+static struct string parse_string_bytes(struct iterator *p, unsigned len)
 {
 	struct string ret = INIT_STRING;
 	const char *n = p->n;
@@ -226,22 +221,22 @@ static struct string parse_string_bytes(struct parser *p, unsigned len)
 	return ret;
 }
 
-const char *parse_signature(struct parser *p)
+const char *parse_signature(struct iterator *p)
 {
-	uint8_t len = parse1(p, TYPE_SIGNATURE);
+	uint8_t len = parse1(p, TYPE_SIGNATURE_BYTE);
 	struct string str = parse_string_bytes(p, len);
 	return str.p;
 }
 
-struct string parse_string(struct parser *p)
+struct string parse_string(struct iterator *p)
 {
-	uint32_t len = parse4(p, TYPE_STRING);
+	uint32_t len = parse4(p, TYPE_STRING_BYTE);
 	return parse_string_bytes(p, len);
 }
 
-struct string parse_path(struct parser *p)
+struct string parse_path(struct iterator *p)
 {
-	uint32_t len = parse4(p, TYPE_PATH);
+	uint32_t len = parse4(p, TYPE_PATH_BYTE);
 	struct string str = parse_string_bytes(p, len);
 	const char *s = str.p;
 	if (*(s++) != '/') {
@@ -273,68 +268,68 @@ struct string parse_path(struct parser *p)
 	}
 }
 
-static char parse_variant_data(struct parser *p, union variant_union *pu)
+static void parse_variant_data(struct iterator *p, union variant_union *pu)
 {
 	char type = *p->sig;
 	switch (type) {
-	case TYPE_BYTE:
+	case TYPE_BYTE_BYTE:
 		pu->u8 = parse_byte(p);
-		return TYPE_BYTE;
-	case TYPE_INT16:
-	case TYPE_UINT16:
+		break;
+	case TYPE_INT16_BYTE:
+	case TYPE_UINT16_BYTE:
 		pu->u16 = parse2(p, type);
-		return type;
-	case TYPE_BOOL:
+		break;
+	case TYPE_BOOL_BYTE:
 		pu->b = parse_bool(p);
-		return TYPE_BOOL;
-	case TYPE_INT32:
-	case TYPE_UINT32:
+		break;
+	case TYPE_INT32_BYTE:
+	case TYPE_UINT32_BYTE:
 		pu->u32 = parse4(p, type);
-		return type;
-	case TYPE_INT64:
-	case TYPE_UINT64:
-	case TYPE_DOUBLE:
+		break;
+	case TYPE_INT64_BYTE:
+	case TYPE_UINT64_BYTE:
+	case TYPE_DOUBLE_BYTE:
 		pu->u64 = parse8(p, type);
-		return type;
-	case TYPE_STRING:
+		break;
+	case TYPE_STRING_BYTE:
 		pu->str = parse_string(p);
-		return TYPE_STRING;
-	case TYPE_PATH:
+		break;
+	case TYPE_PATH_BYTE:
 		pu->path = parse_path(p);
-		return TYPE_PATH;
-	case TYPE_SIGNATURE:
+		break;
+	case TYPE_SIGNATURE_BYTE:
 		pu->sig = parse_signature(p);
-		return TYPE_SIGNATURE;
-	case TYPE_VARIANT: {
+		break;
+	case TYPE_VARIANT_BYTE: {
 		struct variant v = parse_variant(p);
 		pu->data = v.data;
-		return TYPE_VARIANT;
+		break;
 	}
-	case TYPE_ARRAY:
+	case TYPE_ARRAY_BYTE:
 		pu->data = skip_array(p);
-		return TYPE_ARRAY;
-	case TYPE_STRUCT_BEGIN:
+		break;
+	case TYPE_STRUCT_BYTE:
 		pu->data = skip_struct(p);
-		return TYPE_RECORD;
-	case TYPE_DICT_BEGIN:
+		break;
+	case TYPE_DICT_BYTE:
 		// Can only occur as an array element. So there is never a need
 		// to skip just a dict entry.
 	default:
 		p->error = 1;
-		return TYPE_INVALID;
+		break;
 	}
 }
 
-int skip_value(struct parser *p)
+int skip_value(struct iterator *p)
 {
 	union variant_union u;
 	parse_variant_data(p, &u);
 	return p->error;
 }
 
-struct variant parse_variant(struct parser *p)
+struct variant parse_variant(struct iterator *p)
 {
-	uint8_t len = parse1(p, TYPE_VARIANT);
+	uint8_t len = parse1(p, TYPE_VARIANT_BYTE);
 	struct string sig = parse_string_bytes(p, len);
 
 	struct variant ret;
@@ -343,17 +338,17 @@ struct variant parse_variant(struct parser *p)
 	ret.data.sig = "";
 	ret.data.depth = ++p->depth;
 	ret.data.error = 1;
-	ret.type = TYPE_INVALID;
+	ret.sig = TYPE_INVALID;
 
 	const char *nextsig = p->sig;
 	p->sig = sig.p;
 
 	if (p->depth < MAX_DEPTH) {
-		char type = parse_variant_data(p, &ret.u);
+		parse_variant_data(p, &ret.u);
 		if (*p->sig || p->error) {
 			p->error = 1;
 		} else {
-			ret.type = type;
+			ret.sig = sig.p;
 			ret.data.sig = sig.p;
 			ret.data.error = 0;
 			ret.data.e = p->n;
@@ -366,12 +361,12 @@ struct variant parse_variant(struct parser *p)
 	return ret;
 }
 
-struct parser skip_array(struct parser *p)
+struct iterator skip_array(struct iterator *p)
 {
-	uint32_t len = parse4(p, TYPE_ARRAY);
+	uint32_t len = parse4(p, TYPE_ARRAY_BYTE);
 	const char *n = alignx(*p->sig, p->n, p->e + 1);
 
-	struct parser ret;
+	struct iterator ret;
 	ret.n = n;
 	ret.e = n;
 	ret.depth = p->depth;
@@ -388,10 +383,10 @@ struct parser skip_array(struct parser *p)
 	return ret;
 }
 
-static void _parse_struct(struct parser *p, char type)
+static void _parse_struct(struct iterator *p, char type)
 {
-	const char *n = ALIGN_PTR_UP(const char *, p->n, 8);
-	if (!p->error && p->depth < MAX_DEPTH && n <= p->e) {
+	const char *n = align8(p->n, p->e);
+	if (!p->error && p->depth < MAX_DEPTH && n <= p->e && *p->sig == type) {
 		p->sig++;
 		p->depth++;
 		p->n = n;
@@ -400,19 +395,19 @@ static void _parse_struct(struct parser *p, char type)
 	}
 }
 
-void parse_struct_begin(struct parser *p)
+void parse_struct_begin(struct iterator *p)
 {
-	_parse_struct(p, TYPE_STRUCT_BEGIN);
+	_parse_struct(p, TYPE_STRUCT_BYTE);
 }
 
-void parse_dict_begin(struct parser *p)
+void parse_dict_begin(struct iterator *p)
 {
-	_parse_struct(p, TYPE_STRUCT_END);
+	_parse_struct(p, TYPE_DICT_BYTE);
 }
 
-void parse_dict_end(struct parser *p)
+void parse_dict_end(struct iterator *p)
 {
-	if (!p->error && *p->sig == TYPE_DICT_END) {
+	if (!p->error && *p->sig == TYPE_DICT_END_BYTE) {
 		p->sig++;
 		p->depth--;
 	} else {
@@ -420,18 +415,18 @@ void parse_dict_end(struct parser *p)
 	}
 }
 
-void parse_struct_end(struct parser *p)
+void parse_struct_end(struct iterator *p)
 {
 	do {
 		skip_value(p);
-	} while (*p->sig != TYPE_STRUCT_END && !p->error);
+	} while (*p->sig != TYPE_STRUCT_END_BYTE && !p->error);
 	p->sig++;
 	p->depth--;
 }
 
-struct parser skip_struct(struct parser *p)
+struct iterator skip_struct(struct iterator *p)
 {
-	struct parser ret;
+	struct iterator ret;
 	parse_struct_begin(p);
 	ret.n = p->n;
 	ret.e = p->n;
@@ -445,7 +440,7 @@ struct parser skip_struct(struct parser *p)
 	return ret;
 }
 
-bool parse_array_next(struct parser *p, const char **psig)
+bool parse_array_next(struct iterator *p, const char **psig)
 {
 	if (p->n >= p->e) {
 		return false; // end of array data
@@ -461,31 +456,31 @@ bool parse_array_next(struct parser *p, const char **psig)
 int skip_signature(const char **psig)
 {
 	switch (*((*psig)++)) {
-	case TYPE_BYTE:
-	case TYPE_BOOL:
-	case TYPE_INT16:
-	case TYPE_UINT16:
-	case TYPE_INT32:
-	case TYPE_UINT32:
-	case TYPE_INT64:
-	case TYPE_UINT64:
-	case TYPE_DOUBLE:
-	case TYPE_STRING:
-	case TYPE_PATH:
-	case TYPE_SIGNATURE:
-	case TYPE_VARIANT:
+	case TYPE_BYTE_BYTE:
+	case TYPE_BOOL_BYTE:
+	case TYPE_INT16_BYTE:
+	case TYPE_UINT16_BYTE:
+	case TYPE_INT32_BYTE:
+	case TYPE_UINT32_BYTE:
+	case TYPE_INT64_BYTE:
+	case TYPE_UINT64_BYTE:
+	case TYPE_DOUBLE_BYTE:
+	case TYPE_STRING_BYTE:
+	case TYPE_PATH_BYTE:
+	case TYPE_SIGNATURE_BYTE:
+	case TYPE_VARIANT_BYTE:
 		return 0;
-	case TYPE_ARRAY:
+	case TYPE_ARRAY_BYTE:
 		return skip_signature(psig);
-	case TYPE_DICT_BEGIN:
+	case TYPE_DICT_BYTE:
 		return skip_signature(psig) || skip_signature(psig) ||
-		       *((*psig)++) != TYPE_DICT_END;
-	case TYPE_STRUCT_BEGIN:
+		       *((*psig)++) != TYPE_DICT_END_BYTE;
+	case TYPE_STRUCT_BYTE:
 		do {
 			if (skip_signature(psig)) {
 				return -1;
 			}
-		} while (**psig != TYPE_STRUCT_END);
+		} while (**psig != TYPE_STRUCT_END_BYTE);
 		(*psig)++;
 		return 0;
 	default:
@@ -497,13 +492,13 @@ int skip_signature(const char **psig)
 void TEST_parse()
 {
 	fprintf(stderr, "TEST_parse\n");
-	struct parser p;
+	struct iterator p;
 	static const uint8_t test1[] __attribute__((aligned(8))) = {
 		1, // byte
 		0, 2, 0, // u16
 		3, 0, 0, 0, // u32
 	};
-	init_parser(&p, "yqu", test1, sizeof(test1));
+	init_iterator(&p, "yqu", test1, sizeof(test1));
 	assert(parse_byte(&p) == 1 && !p.error);
 	assert(parse_uint16(&p) == 2 && !p.error);
 	assert(parse_uint32(&p) == 3 && !p.error);

@@ -1,5 +1,8 @@
+#define _GNU_SOURCE
 #include "stream.h"
 #include "message.h"
+#include "unix.h"
+#include "log.h"
 #include <stdlib.h>
 #include <stdint.h>
 #include <errno.h>
@@ -7,147 +10,172 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <stdio.h>
 
-static struct msg_header *message_header(struct stream_buffer *b)
+void init_stream(struct stream *s, int fd, char *p, unsigned cap)
 {
-	return (struct msg_header *)(b->data + ALIGN_UINT_UP(b->off, 8));
+	s->base = p;
+	s->cap = cap;
+	s->off = 0;
+	s->end = 0;
+	s->fd = fd;
+	init_unix_oob(&s->oob);
 }
 
-static void debug_fill(struct stream_buffer *b)
+void close_stream(struct stream *s)
+{
+	close_fds(&s->oob, s->oob.fdn);
+}
+
+static void debug_fill_stream(struct stream *s)
 {
 #ifndef NDEBUG
-	memset(b->data + b->end, 0xDE, b->cap - b->end);
+	memset(s->base + s->end, 0xDE, s->cap - s->end);
 #endif
 }
 
-void realign_buffer(struct stream_buffer *b)
+void reset_stream_alignment(struct stream *s)
 {
-	memmove(b->data, b->data + b->off, b->end - b->off);
-	b->end -= b->off;
-	b->off = 0;
-	debug_fill(b);
+	memmove(s->base, s->base + s->off, s->end - s->off);
+	s->end -= s->off;
+	s->off = 0;
+	debug_fill_stream(s);
 }
 
-static int compact_buffer(struct stream_buffer *b, unsigned need)
+static int compact_stream(struct stream *s, unsigned need)
 {
-#if 0
-	// add 7 bytes extra to allow for slop in the alignment
-	unsigned newcap = ALIGN_UINT_UP(need + 7, 64 * 1024);
-	if (newcap != b->cap) {
-		// grow/shrink the buffer
-		char *newdata = malloc(newcap);
-		if (newdata == NULL) {
-			return -1;
-		}
-		// make sure we maintain 8 byte alignment
-		assert((((uintptr_t)newdata) & 7) == 0);
-		unsigned off = ALIGN_UINT_DOWN(b->off, 8);
-		memcpy(newdata, b->data + off, b->end - off);
-		free(b->data);
-		b->data = newdata;
-		b->cap = newcap;
-		b->off -= off;
-		b->end -= off;
-		debug_fill(b);
-	} else
-#endif
-	if (b->off + need > b->cap) {
-		// compact the existing buffer
-		unsigned off = ALIGN_UINT_DOWN(b->off, 8);
-		memmove(b->data, b->data + off, b->end - off);
-		b->off -= off;
-		b->end -= off;
-		debug_fill(b);
+	if (s->off + need > s->cap) {
+		// compact the existing buffer maintaining 8 byte alignment
+		unsigned off = ALIGN_UINT_DOWN(s->off, 8);
+		memmove(s->base, s->base + off, s->end - off);
+		s->off -= off;
+		s->end -= off;
+		debug_fill_stream(s);
 	}
 	return 0;
 }
 
-static int do_read(int fd, struct stream_buffer *b, unsigned need)
+static int do_read(struct stream *s, unsigned need)
 {
-	if (compact_buffer(b, need)) {
+	if (compact_stream(s, need)) {
 		return READ_ERROR;
 	}
 
-	unsigned newend = b->off + need;
-	while (b->end < newend) {
-		int n = read(fd, b->data + b->end, b->cap - b->off);
+	unsigned newend = s->off + need;
+	while (s->end < newend) {
+		union {
+			char buf[CONTROL_BUFFER_SIZE];
+			struct cmsghdr align;
+		} control;
+
+		struct iovec iov;
+		iov.iov_base = s->base + s->end;
+		iov.iov_len = s->cap - s->off;
+
+		struct msghdr msg;
+		msg.msg_name = NULL;
+		msg.msg_namelen = 0;
+		msg.msg_iov = &iov;
+		msg.msg_iovlen = 1;
+		msg.msg_control = control.buf;
+		msg.msg_controllen = sizeof(control);
+		msg.msg_flags = 0;
+
+		int n = recvmsg(s->fd, &msg, 0);
 		if (n < 0 && errno == EINTR) {
 			continue;
-		} else if (n < 0 && errno == EAGAIN) {
+		} else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
 			return READ_MORE;
 		} else if (n <= 0) {
 			return READ_ERROR;
 		}
-		b->end += n;
+
+		log_data("read stream", s->base + s->end, n);
+
+		if (parse_cmsg(&s->oob, &msg)) {
+			fprintf(stderr, "too many file descriptors\n");
+			return READ_ERROR;
+		}
+
+		s->end += n;
 	}
 	return READ_OK;
 }
 
-int read_message(int fd, struct stream_buffer *b, struct msg_header **phdr)
+int read_message(struct stream *s, struct message *msg, struct iterator *body)
 {
-	int sts = do_read(fd, b,
-			  ALIGN_UINT_UP(b->off, 8) - b->off +
-				  sizeof(struct msg_header));
+	// NOTE - do_read may compact the buffer after every call
+	// We may still have a few bytes need to be read to align the message
+
+	unsigned pad = ALIGN_UINT_UP(s->off, 8) - s->off;
+	unsigned need = pad + MIN_MESSAGE_SIZE;
+	int sts = do_read(s, need);
 	if (sts != READ_OK) {
 		return sts;
 	}
 
-	struct msg_header *h = message_header(b);
-	int len = raw_message_length(h);
+	int len = raw_message_len(s->base + s->off + pad);
 	if (len < 0) {
 		return READ_ERROR;
 	}
-	sts = do_read(fd, b, len);
+
+	// now that we've read the padding, we can remove it
+	s->off += pad;
+
+	sts = do_read(s, len);
 	if (sts != READ_OK) {
 		return sts;
 	}
-	// do_read may resize the buffer so grab the header again
-	*phdr = message_header(b);
+	if (parse_message(s->base + s->off, msg, body)) {
+		return READ_ERROR;
+	}
+	if (msg->fdnum > s->oob.fdn) {
+		fprintf(stderr, "message asks for more fds than sent\n");
+		return READ_ERROR;
+	}
 	return READ_OK;
 }
 
-void drop_message(struct stream_buffer *b)
+void drop_message(struct stream *s, const struct message *msg)
 {
-	struct msg_header *h = message_header(b);
-	char *data = message_data(h);
-	char *end = data + h->body_len;
-	b->off = (unsigned)(end - b->data);
+	int len = raw_message_len(s->base + s->off);
+	s->off += len;
+	close_fds(&s->oob, msg->fdnum);
 }
 
-static int peek_char(int fd, struct stream_buffer *b, unsigned idx)
+static int peek_char(struct stream *s, unsigned idx)
 {
-	if (b->off + idx == b->end && do_read(fd, b, idx + 1) != READ_OK) {
+	if (s->off + idx == s->end && do_read(s, idx + 1) != READ_OK) {
 		return -1;
 	}
-	return ((unsigned char *)b->data)[b->off + idx];
+	return ((unsigned char *)s->base)[s->off + idx];
 }
 
-int read_char(int fd, struct stream_buffer *b)
+int read_char(struct stream *s)
 {
-	int ch = peek_char(fd, b, 0);
+	int ch = peek_char(s, 0);
 	if (ch < 0) {
 		return -1;
 	}
-	b->off++;
+	s->off++;
 	return ch;
 }
 
-char *read_crlf_line(int fd, struct stream_buffer *b)
+char *read_crlf_line(struct stream *s)
 {
-	assert((fcntl(fd, F_GETFL) & O_NONBLOCK) == 0);
 	unsigned n = 0;
 
 	for (;;) {
-		int ch = peek_char(fd, b, n);
+		int ch = peek_char(s, n);
 		// look for a terminating \r\n
 		if (ch == '\r') {
-			if (peek_char(fd, b, n + 1) != '\n') {
+			if (peek_char(s, n + 1) != '\n') {
 				return NULL;
 			}
 			// return the line, removing the \r\n
-			char *line = b->data + b->off;
+			char *line = s->base + s->off;
 			line[n] = 0;
-			b->off += n + 2;
+			s->off += n + 2;
 			return line;
 		}
 		// only ASCII non control characters are allowed

@@ -1,4 +1,4 @@
 #pragma once
 #include "stream.h"
 
-int perform_auth(int in, int out, struct stream_buffer *b, const char *busid);
+int perform_auth(struct stream *in, int out, const char *busid);

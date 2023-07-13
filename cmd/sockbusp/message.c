@@ -1,5 +1,4 @@
 #include "message.h"
-#include "parse.h"
 #include <assert.h>
 #include <stdlib.h>
 
@@ -15,25 +14,7 @@ uint8_t native_endian()
 	return g_native_endian.b[0];
 }
 
-static_assert(sizeof(struct msg_header) == 16, "invalid packing");
-
-char *message_data(struct msg_header *h)
-{
-	return ((char *)(h + 1)) + ALIGN_UINT_UP(h->header_len, 8);
-}
-
-int raw_message_length(const struct msg_header *h)
-{
-	if (h->endian != native_endian()) {
-		return -1;
-	}
-	unsigned len = sizeof(struct msg_header) +
-		       ALIGN_UINT_UP(h->header_len, 8) + h->body_len;
-	if (len > MAX_MESSAGE_SIZE) {
-		return -1;
-	}
-	return (int)len;
-}
+static_assert(sizeof(struct msg_header) == 12, "invalid packing");
 
 int check_member(const char *p)
 {
@@ -95,92 +76,294 @@ int check_interface(const char *p)
 	return check_name(p, 255);
 }
 
-int parse_header_fields(struct msg_fields *f, const struct msg_header *h)
-{
-	struct string null = INIT_STRING;
-	f->reply_serial = -1;
-	f->fdnum = 0;
-	f->path = null;
-	f->interface = null;
-	f->member = null;
-	f->error = null;
-	f->destination = null;
-	f->sender = null;
-	f->signature = null;
+///////////////////////////////////////////////////
+// message reading
 
-	const char *array = NULL;
-	struct parser p;
-	init_parser(&p, "{yv}", (char *)(h + 1), h->header_len);
-	while (parse_array_next(&p, &array)) {
-		parse_dict_begin(&p);
-		uint8_t type = parse_byte(&p);
-		struct variant value = parse_variant(&p);
-		parse_dict_end(&p);
-		if (p.error) {
-			return -1;
+static const uint32_t *parse_aligned_4(struct iterator *p)
+{
+	static const uint32_t errret = 0;
+	const char *n = p->n;
+	// pointer should already be aligned call
+	assert(ALIGN_PTR_UP(const char *, n, 4) == n);
+	if (n + 4 > p->e) {
+		p->error = 1;
+		return &errret;
+	}
+	// skip over the field byte and variant
+	p->n += 4;
+	return (uint32_t *)n;
+}
+
+static inline uint32_t read_little_4(const uint32_t *n)
+{
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	return *n;
+#else
+	const uint8_t *u = (const uint8_t *)n;
+	return ((uint32_t)u[0]) | (((uint32_t)u[1]) << 8) |
+	       (((uint32_t)u[2]) << 16) | (((uint32_t)u[3]) << 24);
+#endif
+}
+
+void init_message(struct message *m)
+{
+	m->hdr.endian = native_endian();
+	m->hdr.type = MSG_INVALID;
+	m->hdr.flags = 0;
+	m->hdr.version = DBUS_VERSION;
+	m->hdr.body_len = 0;
+	m->hdr.serial = 0;
+	m->reply_serial = -1;
+	m->path = to_string("");
+	m->interface = to_string("");
+	m->member = to_string("");
+	m->error = to_string("");
+	m->destination = to_string("");
+	m->sender = to_string("");
+	m->signature = "";
+	m->fdnum = 0;
+}
+
+int parse_message(const char *p, struct message *msg, struct iterator *body)
+{
+	assert(ALIGN_PTR_UP(const char *, p, 8) == p);
+
+	const struct msg_header *hdr = (const struct msg_header *)p;
+	init_message(msg);
+	msg->hdr = *hdr;
+
+	unsigned field_len_off = sizeof(struct msg_header);
+	unsigned field_len = *(uint32_t *)(p + field_len_off);
+	unsigned field_off = field_len_off + 4;
+	unsigned field_end = field_off + field_len;
+	unsigned body_off = ALIGN_UINT_UP(field_end, 8);
+
+	struct iterator ii;
+	init_iterator(&ii, "{yv}", p + field_off, field_len);
+
+	while (ii.n < ii.e) {
+		align_iterator_8(&ii);
+
+		uint32_t tag = read_little_4(parse_aligned_4(&ii));
+
+		switch (tag) {
+		case FTAG_PATH:
+			ii.sig = TYPE_PATH;
+			msg->path = parse_path(&ii);
+			break;
+		case FTAG_INTERFACE:
+			ii.sig = TYPE_STRING;
+			msg->interface = parse_string(&ii);
+			if (check_interface(msg->interface.p)) {
+				return -1;
+			}
+			break;
+		case FTAG_MEMBER:
+			ii.sig = TYPE_STRING;
+			msg->member = parse_string(&ii);
+			if (check_member(msg->member.p)) {
+				return -1;
+			}
+			break;
+		case FTAG_ERROR_NAME:
+			ii.sig = TYPE_STRING;
+			msg->error = parse_string(&ii);
+			if (check_error_name(msg->error.p)) {
+				return -1;
+			}
+			break;
+		case FTAG_DESTINATION:
+			ii.sig = TYPE_STRING;
+			msg->destination = parse_string(&ii);
+			if (check_address(msg->destination.p)) {
+				return -1;
+			}
+			break;
+		case FTAG_SENDER:
+			ii.sig = TYPE_STRING;
+			msg->sender = parse_string(&ii);
+			if (check_unique_address(msg->sender.p)) {
+				return -1;
+			}
+			break;
+		case FTAG_SIGNATURE:
+			ii.sig = TYPE_SIGNATURE;
+			msg->signature = parse_signature(&ii);
+			break;
+		case FTAG_REPLY_SERIAL: {
+			const uint32_t *n = parse_aligned_4(&ii);
+			msg->reply_serial = *n;
+			break;
 		}
-		switch (type) {
-		case HEADER_PATH:
-			if (value.type != TYPE_PATH) {
+		case FTAG_UNIX_FDS: {
+			const uint32_t *n = parse_aligned_4(&ii);
+			msg->fdnum = *n;
+			break;
+		}
+		default: {
+			// unknown header, need to back out and use the generic
+			// version
+			ii.n -= 4;
+			ii.sig = "yv";
+			uint8_t type = parse_byte(&ii);
+			parse_variant(&ii);
+			if (type <= FIELD_LAST) {
+				// the field tag should have captured these
+				// this means someone sent a type we understand
+				// but with the wrong signature
 				return -1;
 			}
-			f->path = value.u.path;
 			break;
-		case HEADER_INTERFACE:
-			if (value.type != TYPE_STRING ||
-			    check_interface(value.u.str.p)) {
-				return -1;
-			}
-			f->interface = value.u.str;
-			break;
-		case HEADER_MEMBER:
-			if (value.type != TYPE_STRING ||
-			    check_member(value.u.str.p)) {
-				return -1;
-			}
-			f->member = value.u.str;
-			break;
-		case HEADER_ERROR_NAME:
-			if (value.type != TYPE_STRING ||
-			    check_error_name(value.u.str.p)) {
-				return -1;
-			}
-			f->error = value.u.str;
-			break;
-		case HEADER_DESTINATION:
-			if (value.type != TYPE_STRING ||
-			    check_address(value.u.str.p)) {
-				return -1;
-			}
-			f->destination = value.u.str;
-			break;
-		case HEADER_SENDER:
-			if (value.type != TYPE_STRING ||
-			    check_unique_address(value.u.str.p)) {
-				return -1;
-			}
-			f->sender = value.u.str;
-			break;
-		case HEADER_SIGNATURE:
-			if (value.type != TYPE_SIGNATURE) {
-				return -1;
-			}
-			f->signature = value.u.str;
-			break;
-		case HEADER_REPLY_SERIAL:
-			if (value.type != TYPE_UINT32) {
-				return -1;
-			}
-			f->reply_serial = value.u.u32;
-			break;
-		case HEADER_UNIX_FDS:
-			if (value.type != TYPE_UINT32) {
-				return -1;
-			}
-			f->fdnum = value.u.u32;
-			break;
+		}
 		}
 	}
 
+	if (ii.error) {
+		return -1;
+	}
+
+	init_iterator(body, msg->signature, p + body_off, hdr->body_len);
 	return 0;
+}
+
+int raw_message_len(const char *p)
+{
+	const struct msg_header *h = (const struct msg_header *)p;
+	if (h->endian != native_endian()) {
+		return -1;
+	}
+	unsigned field_off = sizeof(struct msg_header) + 4;
+	unsigned field_len = *(uint32_t *)(h + 1);
+	unsigned field_end = field_off + field_len;
+	unsigned len = ALIGN_UINT_UP(field_end, 8) + h->body_len;
+	if (len > MAX_MESSAGE_SIZE) {
+		return -1;
+	}
+	return (int)len;
+}
+
+////////////////////////////////////////////////////////
+// message writing
+
+static inline void write_aligned_L4(char *p, uint32_t v)
+{
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	*(uint32_t *)(p) = v;
+#else
+	*(uint8_t *)(p) = (uint8_t)(v);
+	*(uint8_t *)(p + 1) = (uint8_t)(v >> 8);
+	*(uint8_t *)(p + 2) = (uint8_t)(v >> 16);
+	*(uint8_t *)(p + 3) = (uint8_t)(v >> 24);
+#endif
+}
+
+static void append_uint32_field(struct buffer *b, uint32_t tag, uint32_t v)
+{
+	// should be called first so that we are still aligned
+	assert(ALIGN_UINT_UP(b->off, 4) == b->off);
+	unsigned off = b->off + 8;
+	if (off > b->cap) {
+		b->error = 1;
+	} else {
+		write_aligned_L4(b->base + b->off, tag);
+		*(uint32_t *)(b->base + b->off + 4) = v;
+		b->off = off;
+	}
+}
+
+static void append_string_field(struct buffer *b, uint32_t tag,
+				struct string str)
+{
+	align_buffer_8(b);
+	unsigned tag_off = b->off;
+	unsigned len_off = tag_off + 4;
+	unsigned str_off = len_off + 4;
+	unsigned end = str_off + str.len + 1;
+	if (end > b->cap) {
+		b->error = 1;
+	} else {
+		write_aligned_L4(b->base + tag_off, tag);
+		*(uint32_t *)(b->base + len_off) = str.len;
+		memcpy(b->base + str_off, str.p, str.len);
+		b->base[end - 1] = 0;
+		b->off = end;
+	}
+}
+
+static void append_signature_field(struct buffer *b, uint32_t tag,
+				   const char *sig)
+{
+	align_buffer_8(b);
+	if (b->off + 4 > b->cap) {
+		b->error = 1;
+	} else {
+		write_aligned_L4(b->base + b->off, tag);
+		b->off += 4;
+		b->sig = TYPE_SIGNATURE;
+		append_signature(b, sig);
+	}
+}
+
+void start_message(struct buffer *b, const struct message *m,
+		   struct message_data *data)
+{
+	align_buffer_8(b);
+	data->start = b->off;
+
+	b->sig = "yyyyuua{yv}";
+	append_raw(b, "yyyyuu", &m->hdr, sizeof(m->hdr));
+
+	// unwrap the standard marshalling functions to add the field type and
+	// variant signature in one go
+
+	struct array_data array;
+	start_dict(b, &array);
+	// fixed length fields go first so we can maintain 8 byte alignment
+	if (m->reply_serial) {
+		append_uint32_field(b, FTAG_REPLY_SERIAL, m->reply_serial);
+	}
+	if (m->fdnum) {
+		append_uint32_field(b, FTAG_UNIX_FDS, m->fdnum);
+	}
+	if (*m->signature) {
+		append_signature_field(b, FTAG_SIGNATURE, m->signature);
+	}
+	if (m->path.len) {
+		append_string_field(b, FTAG_PATH, m->path);
+	}
+	if (m->interface.len) {
+		append_string_field(b, FTAG_INTERFACE, m->interface);
+	}
+	if (m->member.len) {
+		append_string_field(b, FTAG_MEMBER, m->member);
+	}
+	if (m->error.len) {
+		append_string_field(b, FTAG_ERROR_NAME, m->error);
+	}
+	if (m->destination.len) {
+		append_string_field(b, FTAG_DESTINATION, m->destination);
+	}
+	if (m->sender.len) {
+		append_string_field(b, FTAG_SENDER, m->sender);
+	}
+	b->sig = array.sig + 2; // point to } in a{yv}
+	end_dict(b, &array);
+
+	// align the end of the fields
+	align_buffer_8(b);
+	data->body = b->off;
+	b->sig = m->signature;
+}
+
+void end_message(struct buffer *b, struct message_data *data)
+{
+	if (b->error) {
+		return;
+	}
+	struct msg_header *h = (struct msg_header *)(b->base + data->start);
+	h->body_len = b->off - data->body;
+	if (*b->sig) {
+		// did you forget to add some arguments?
+		b->error = 1;
+	}
 }

@@ -3,6 +3,9 @@
 #include "message.h"
 #include "stream.h"
 #include "auth.h"
+#include "marshal.h"
+#include "unix.h"
+#include "log.h"
 #include <unistd.h>
 #include <stdarg.h>
 #include <string.h>
@@ -18,14 +21,13 @@
 #include <stdint.h>
 #include <assert.h>
 #include <errno.h>
+#include <dirent.h>
 #include <time.h>
 
 #define ERR_FAILED 1
 #define ERR_INVALID_ARG 5
-#define MAX_CONTROL_SIZE 256
-#define MAX_DGRAM_MESSAGES 8
 
-static int verbose;
+static uint32_t next_serial = 1;
 static char *busdir;
 static char *busid;
 static union {
@@ -33,13 +35,12 @@ static union {
 	struct sockaddr_un sun;
 } sockaddr;
 
-void log_message(const struct msg_header *h, const struct msg_fields *f,
-		 const char *src)
+void log_message(const struct message *m, const char *src)
 {
 	fprintf(stderr,
 		"have message source %s from %s to %s obj %s iface %s member %s sig %s\n",
-		src, f->sender.p, f->destination.p, f->path.p, f->interface.p,
-		f->member.p, f->signature.p);
+		src, m->sender.p, m->destination.p, m->path.p, m->interface.p,
+		m->member.p, m->signature);
 }
 
 static int usage(const char *format, ...)
@@ -55,18 +56,128 @@ static int usage(const char *format, ...)
 	return ERR_INVALID_ARG;
 }
 
-static int process_stream_message(struct msg_header *h, struct msg_fields *f)
+static int blocking_write(int fd, const char *p, unsigned len)
+{
+	log_data("write stream", p, len);
+	while (len) {
+		int r = write(fd, p, len);
+		if (r < 0 && errno == EINTR) {
+			continue;
+		} else if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+			struct pollfd pfd;
+			pfd.fd = fd;
+			pfd.events = POLLOUT;
+			r = poll(&pfd, 1, -1);
+			if (r > 0 || (r < 0 && errno == EINTR)) {
+				continue;
+			} else {
+				perror("poll");
+				return -1;
+			}
+		} else if (r <= 0 || r > len) {
+			perror("write");
+			return -1;
+		}
+		p += r;
+		len -= r;
+	}
+	return 0;
+}
+
+static int send_hello_reply(int out, uint32_t reply_serial)
+{
+	// const char *unique_addr = sockaddr.sun.sun_path + strlen(busdir) + 1;
+	const char *unique_addr = ":1.115";
+
+	struct message m;
+	init_message(&m);
+	m.hdr.type = MSG_REPLY;
+	m.hdr.serial = next_serial++;
+	m.reply_serial = reply_serial;
+	m.signature = "s";
+
+	char vbuf[256];
+	struct buffer b;
+	init_buffer(&b, vbuf, sizeof(vbuf));
+
+	struct message_data md;
+	start_message(&b, &m, &md);
+	append_string(&b, to_string(unique_addr));
+	end_message(&b, &md);
+
+	return b.error || blocking_write(out, vbuf, b.off);
+}
+
+static int send_list_names_reply(int out, uint32_t reply_serial)
+{
+	fprintf(stderr, "send_list_names_reply\n");
+	char vbuf[4096];
+	struct buffer b;
+	init_buffer(&b, vbuf, sizeof(vbuf));
+
+	struct message m;
+	init_message(&m);
+	m.hdr.type = MSG_REPLY;
+	m.hdr.serial = next_serial++;
+	m.reply_serial = reply_serial;
+	m.signature = "as";
+
+	struct message_data md;
+	start_message(&b, &m, &md);
+	struct array_data ad;
+	start_array(&b, &ad);
+
+	DIR *d = opendir(busdir);
+	if (d == NULL) {
+		perror("failed to open bus dir");
+		return -1;
+	}
+	struct dirent *e;
+	while ((e = readdir(d)) != NULL) {
+		if (e->d_type != DT_SOCK) {
+			// folder, file or something else incl. . and ..
+			continue;
+		}
+		if (strchr(e->d_name, '.') == NULL) {
+			// other socket e.g. session_bus_socket
+			continue;
+		}
+		next_in_array(&b, &ad);
+		append_string(&b, to_string(e->d_name));
+	}
+	closedir(d);
+
+	end_array(&b, &ad);
+	end_message(&b, &md);
+
+	return b.error || blocking_write(out, vbuf, b.off);
+}
+
+#define PATH_BUS "/org/freedesktop/DBus"
+#define DESTINATION_BUS "org.freedesktop.DBus"
+#define INTERFACE_BUS "org.freedesktop.DBus"
+#define METHOD_HELLO "Hello"
+#define METHOD_LIST_NAMES "ListNames"
+
+static int process_stream(int out, const struct message *m,
+			  struct iterator *body)
 {
 	if (verbose) {
-		log_message(h, f, "stdin");
+		log_message(m, "stdin");
 	}
-	if (is_string(f->destination, "org.freedesktop.DBus") &&
-	    is_string(f->interface, "org.freedesktop.DBus") &&
-	    is_string(f->path, "/org/freedesktop/DBus")) {
-		switch (f->member.len) {
-		case sizeof("Hello") - 1:
-			if (is_string(f->member, "Hello")) {
-				fprintf(stderr, "have hello\n");
+	if (is_string(m->destination, DESTINATION_BUS) &&
+	    is_string(m->interface, INTERFACE_BUS) &&
+	    is_string(m->path, PATH_BUS)) {
+		switch (m->member.len) {
+		case STRLEN(METHOD_HELLO):
+			if (is_string(m->member, METHOD_HELLO)) {
+				return send_hello_reply(out, m->hdr.serial);
+			}
+			break;
+		case STRLEN(METHOD_LIST_NAMES):
+			if (is_string(m->member, METHOD_LIST_NAMES)) {
+				return send_list_names_reply(out,
+							     m->hdr.serial);
 			}
 			break;
 		}
@@ -74,20 +185,73 @@ static int process_stream_message(struct msg_header *h, struct msg_fields *f)
 	return 0;
 }
 
-static int process_busdir_message(struct msg_header *h, struct msg_fields *f)
+static int process_dgram(int fd, void *buf, size_t have, struct unix_oob *u)
 {
+	if (have < MIN_MESSAGE_SIZE) {
+		return -1;
+	}
+	int len = raw_message_len(buf);
+	if (len < 0 || (size_t)len != have) {
+		return -1;
+	}
+
+	struct message msg;
+	struct iterator body;
+	if (parse_message(buf, &msg, &body)) {
+		return -1;
+	}
+
 	if (verbose) {
-		log_message(h, f, "busdir");
+		log_message(&msg, "busdir");
 	}
 	return 0;
 }
 
+static int recv_dgram(int fd)
+{
+	for (;;) {
+		static char sdata[MAX_MESSAGE_SIZE];
+		static union {
+			char buf[CONTROL_BUFFER_SIZE];
+			struct cmsghdr align;
+		} scontrol;
+
+		struct iovec iov;
+		iov.iov_base = sdata;
+		iov.iov_len = sizeof(sdata);
+
+		struct msghdr msg;
+		msg.msg_name = NULL;
+		msg.msg_namelen = 0;
+		msg.msg_iov = &iov;
+		msg.msg_iovlen = 1;
+		msg.msg_control = scontrol.buf;
+		msg.msg_controllen = sizeof(scontrol);
+		msg.msg_flags = 0;
+
+		ssize_t n = recvmsg(fd, &msg, 0);
+		if (n < 0 && errno == EINTR) {
+			continue;
+		} else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+			return 0;
+		} else if (n < 0) {
+			// how does a unix datagram socket fail?
+			perror("recvmmsg");
+			return -1;
+		}
+
+		struct unix_oob oob;
+		parse_cmsg(&oob, &msg);
+		process_dgram(fd, sdata, n, &oob);
+		close_fds(&oob, oob.fdn);
+	}
+}
+
 int main(int argc, char *argv[])
 {
-	int infd = STDIN_FILENO;
-	int outfd = STDOUT_FILENO;
+	int fd = 0;
 	for (;;) {
-		int i = getopt(argc, argv, "z:vi:o:");
+		int i = getopt(argc, argv, "hz:vf:");
 		if (i < 0) {
 			break;
 		}
@@ -95,11 +259,8 @@ int main(int argc, char *argv[])
 		case 'v':
 			verbose = 1;
 			break;
-		case 'i':
-			infd = atoi(optarg);
-			break;
-		case 'o':
-			outfd = atoi(optarg);
+		case 'f':
+			fd = atoi(optarg);
 			break;
 		case 'z':
 #ifndef NDEBUG
@@ -107,6 +268,7 @@ int main(int argc, char *argv[])
 			TEST_parse();
 			return 0;
 #endif
+		case 'h':
 		case '?':
 			return usage("");
 		}
@@ -119,101 +281,77 @@ int main(int argc, char *argv[])
 		return usage("missing arguments\n");
 	}
 
-	// make sure they are different so we can have different blocking
-	if (infd == outfd) {
-		outfd = dup(outfd);
-	}
-
 	busdir = argv[0];
 	busid = argv[1];
 
 	// buffer used for read call from stdin
-	struct stream_buffer inbuf = INIT_STREAM_BUFFER;
-	inbuf.data = malloc(MAX_MESSAGE_SIZE + 8);
-	inbuf.cap = MAX_MESSAGE_SIZE + 8;
-	if (!inbuf.data) {
-		perror("malloc failed");
-		return ERR_FAILED;
-	}
+	struct stream stream;
+	static char sbuf[MAX_MESSAGE_SIZE];
+	init_stream(&stream, fd, sbuf, sizeof(sbuf));
 
 	// enable SIGPIPE, and blocking on stdin/out for the auth call
 	signal(SIGPIPE, SIG_DFL);
-	fcntl(infd, F_SETFL, 0);
-	fcntl(outfd, F_SETFL, 0);
+	fcntl(fd, F_SETFL, 0);
 
-	if (perform_auth(infd, outfd, &inbuf, busid)) {
+	if (perform_auth(&stream, fd, busid)) {
 		return ERR_FAILED;
 	}
 
-	realign_buffer(&inbuf);
+	reset_stream_alignment(&stream);
 
 	// set stdin to non block and ignore SIGPIPE
 	// we'll deal with these synchronously in the write calls
 	signal(SIGPIPE, SIG_IGN);
-	fcntl(infd, F_SETFL, (int)O_NONBLOCK);
-	fcntl(outfd, F_SETFL, 0);
-
-	// we may have to auto-launch daemons. Don't want our stdin/out to leak
-	fcntl(infd, F_SETFD, FD_CLOEXEC);
-	fcntl(outfd, F_SETFD, FD_CLOEXEC);
+	fcntl(fd, F_SETFL, O_NONBLOCK);
 
 	// lets setup and bind our unique address
 	int bus = socket(AF_UNIX, SOCK_DGRAM, PF_UNIX);
-	fcntl(bus, F_SETFL, (int)O_NONBLOCK);
-	fcntl(bus, F_SETFD, (int)FD_CLOEXEC);
+	fcntl(bus, F_SETFL, O_NONBLOCK);
+	int enable = 1;
+	if (setsockopt(bus, SOL_SOCKET, SO_PASSCRED, &enable, sizeof(int))) {
+		perror("SO_PASSCRED");
+		return ERR_FAILED;
+	}
 
-	srand(time(NULL));
+	// we may have to auto-launch daemons. Don't want our fd to leak
+	fcntl(fd, F_SETFD, FD_CLOEXEC);
+	fcntl(bus, F_SETFD, FD_CLOEXEC);
 
 	struct sockaddr_un *a = &sockaddr.sun;
 	a->sun_family = AF_UNIX;
 
-	// try a few times until we get an address
-	for (int tries = 0;; tries++) {
-		int n = snprintf(a->sun_path, sizeof(a->sun_path) - 1,
-				 "%s/:%d.%d", busdir, getpid(), rand());
-		if (n < 0 || n >= sizeof(a->sun_path) - 1) {
-			fprintf(stderr,
-				"bus directory pathname %s is too long\n",
-				busdir);
-			return ERR_FAILED;
-		}
-		unlink(a->sun_path);
-		if (!bind(bus, &sockaddr.sa,
-			  offsetof(struct sockaddr_un, sun_path) + n + 1)) {
-			break;
-		}
-		if (tries >= 10) {
-			fprintf(stderr,
-				"failed to bind unique address %s: %s\n",
-				a->sun_path, strerror(errno));
-			return ERR_FAILED;
-		}
+	uint8_t rand_bytes[8];
+	char rand_str[sizeof(rand_bytes) + 1];
+	static const char b64_enc[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+				      "abcdefghijklmnopqrstuvwxyz"
+				      "0123456789-_";
+	if (getentropy(rand_bytes, sizeof(rand_bytes))) {
+		perror("getentroy");
+		return ERR_FAILED;
 	}
+	static_assert(STRLEN(b64_enc) == 64, "should only have 64 bytes");
+	for (int i = 0; i < sizeof(rand_bytes); i++) {
+		rand_str[i] = b64_enc[rand_bytes[i] & 63];
+	}
+	rand_str[sizeof(rand_str) - 1] = 0;
 
-	// buffers used for recvmmsg call from busdir
-	struct iovec datav[MAX_DGRAM_MESSAGES];
-	struct mmsghdr msgv[MAX_DGRAM_MESSAGES];
-	char *controlv[MAX_DGRAM_MESSAGES];
-	for (int i = 0; i < MAX_DGRAM_MESSAGES; i++) {
-		datav[i].iov_len = MAX_MESSAGE_SIZE;
-		datav[i].iov_base = malloc(MAX_MESSAGE_SIZE);
-		controlv[i] = malloc(MAX_CONTROL_SIZE);
-		if (!datav[i].iov_base || !controlv[i]) {
-			perror("malloc failed");
-			return ERR_FAILED;
-		}
-		struct msghdr *h = &msgv[i].msg_hdr;
-		h->msg_iov = &datav[i];
-		h->msg_iovlen = 1;
-		h->msg_control = controlv[i];
-		h->msg_controllen = MAX_CONTROL_SIZE;
-		h->msg_flags = MSG_CMSG_CLOEXEC;
-		h->msg_name = NULL;
-		h->msg_namelen = 0;
+	int n = snprintf(a->sun_path, sizeof(a->sun_path) - 1, "%s/:%d.%s",
+			 busdir, getpid(), rand_str);
+	if (n < 0 || n >= sizeof(a->sun_path) - 1) {
+		fprintf(stderr, "bus directory pathname %s is too long\n",
+			busdir);
+		return ERR_FAILED;
+	}
+	unlink(a->sun_path);
+	socklen_t sunlen = offsetof(struct sockaddr_un, sun_path) + n + 1;
+	if (bind(bus, &sockaddr.sa, sunlen)) {
+		fprintf(stderr, "failed to bind unique address %s: %s\n",
+			a->sun_path, strerror(errno));
+		return ERR_FAILED;
 	}
 
 	struct pollfd pfd[2];
-	pfd[0].fd = infd;
+	pfd[0].fd = fd;
 	pfd[0].events = POLLIN;
 	pfd[0].revents = POLLIN;
 	pfd[1].fd = bus;
@@ -223,54 +361,25 @@ int main(int argc, char *argv[])
 	for (;;) {
 		if (pfd[0].revents) {
 			for (;;) {
-				struct msg_header *h;
-				int sts = read_message(infd, &inbuf, &h);
-				if (sts == READ_ERROR) {
+				struct message msg;
+				struct iterator body;
+				int r = read_message(&stream, &msg, &body);
+				if (r == READ_ERROR) {
 					return ERR_FAILED;
-				} else if (sts == READ_MORE) {
+				} else if (r == READ_MORE) {
 					break;
 				}
-				struct msg_fields f;
-				if (parse_header_fields(&f, h)) {
+
+				if (process_stream(fd, &msg, &body)) {
 					return ERR_FAILED;
 				}
 
-				if (process_stream_message(h, &f)) {
-					return ERR_FAILED;
-				}
-
-				drop_message(&inbuf);
+				drop_message(&stream, &msg);
 			}
 		}
 		if (pfd[1].revents) {
-			for (;;) {
-				int msgnum = recvmmsg(
-					bus, msgv, MAX_DGRAM_MESSAGES, 0, NULL);
-				if (msgnum < 0 &&
-				    (errno == EINTR || errno == EAGAIN)) {
-					break;
-				} else if (msgnum < 0) {
-					// how does a unix datagram socket fail?
-					perror("recvmmsg");
-					return ERR_FAILED;
-				}
-				for (int i = 0; i < msgnum; i++) {
-					struct msg_header *h =
-						datav[i].iov_base;
-					int len = raw_message_length(h);
-					if (len < 0 || len > msgv[i].msg_len) {
-						// drop malformed messages
-						// TODO deal with unix fds
-						continue;
-					}
-					struct msg_fields f;
-					if (parse_header_fields(&f, h)) {
-						continue;
-					}
-					if (process_busdir_message(h, &f)) {
-						continue;
-					}
-				}
+			if (recv_dgram(fd)) {
+				return ERR_FAILED;
 			}
 		}
 

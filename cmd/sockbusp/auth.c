@@ -1,4 +1,5 @@
 #include "auth.h"
+#include "log.h"
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdarg.h>
@@ -25,19 +26,21 @@ static void writev(int fd, const char *format, ...)
 	int n = vsnprintf(buf, sizeof(buf), format, ap);
 	va_end(ap);
 	if (0 < n && n < sizeof(buf)) {
+		log_data("write auth", buf, n);
 		write(fd, buf, n);
 	}
 }
 
 static void writes(int fd, const char *str)
 {
+	log_data("write auth", str, strlen(str));
 	write(fd, str, strlen(str));
 }
 
-int perform_auth(int in, int out, struct stream_buffer *b, const char *busid)
+int perform_auth(struct stream *in, int out, const char *busid)
 {
 	// first read the credentials nul
-	if (read_char(in, b) != 0) {
+	if (read_char(in) != 0) {
 		return -1;
 	}
 
@@ -45,7 +48,7 @@ int perform_auth(int in, int out, struct stream_buffer *b, const char *busid)
 	// we look for AUTH EXTERNAL xxxx that we like
 	// ends with us sending OK <busid>
 	for (;;) {
-		char *arg0 = read_crlf_line(in, b);
+		char *arg0 = read_crlf_line(in);
 		if (!arg0) {
 			return -1;
 		}
@@ -68,9 +71,11 @@ int perform_auth(int in, int out, struct stream_buffer *b, const char *busid)
 	// now the post auth portion
 	// finishes with the client sending BEGIN
 	for (;;) {
-		char *line = read_crlf_line(in, b);
+		char *line = read_crlf_line(in);
 		if (!strcmp(line, "BEGIN")) {
 			return 0;
+		} else if (!strcmp(line, "NEGOTIATE_UNIX_FD")) {
+			writes(out, "AGREE_UNIX_FD\r\n");
 		} else {
 			writes(out, "ERROR\r\n");
 		}

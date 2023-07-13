@@ -1,26 +1,26 @@
 #pragma once
 
-struct msg_header;
+#include "types.h"
+#include "unix.h"
 
-struct stream_buffer {
-	char *data;
+struct stream {
+	char *base;
 	unsigned cap; // size of memory allocation
 	unsigned off; // end of consumed data within buffer
 	unsigned end; // end of read data within buffer
+	int fd;
+	struct unix_oob oob;
 };
 
-#define INIT_STREAM_BUFFER    \
-	{                     \
-		NULL, 0, 0, 0 \
-	}
-
-int read_char(int fd, struct stream_buffer *b);
-char *read_crlf_line(int fd, struct stream_buffer *b);
-void realign_buffer(struct stream_buffer *b);
+void init_stream(struct stream *s, int fd, char *p, unsigned cap);
+void close_stream(struct stream *s);
+int read_char(struct stream *s);
+char *read_crlf_line(struct stream *s);
+void reset_stream_alignment(struct stream *s);
 
 #define READ_ERROR -1
 #define READ_MORE 1
 #define READ_OK 0
 
-int read_message(int fd, struct stream_buffer *b, struct msg_header **phdr);
-void drop_message(struct stream_buffer *b);
+int read_message(struct stream *s, struct message *msg, struct iterator *body);
+void drop_message(struct stream *s, const struct message *msg);

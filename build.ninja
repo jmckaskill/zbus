@@ -8,10 +8,10 @@ rule test
 rule cc_sockbusd
     depfile = $out.d
     deps = gcc
-    command = $cc -c $in -o $out -MD -MF $out.d $cflags $pkg_config_cflags_uuid
+    command = $cc -c $in -o $out -MD -MF $out.d $cflags
 
 rule ld_sockbusd
-    command = $ld $ldflags $pkg_config_libs_uuid -o $out $in
+    command = $ld $ldflags -o $out $in
 
 build obj/sockbusd/sockbusd.o: cc_sockbusd cmd/sockbusd/sockbusd.c
 
@@ -30,19 +30,27 @@ rule ld_sockbusp
     command = $ld $ldflags -o $out $in
 
 build obj/sockbusp/auth.o:      cc_sockbusp cmd/sockbusp/auth.c
+build obj/sockbusp/log.o:       cc_sockbusp cmd/sockbusp/log.c
+build obj/sockbusp/marshal.o:   cc_sockbusp cmd/sockbusp/marshal.c
 build obj/sockbusp/message.o:   cc_sockbusp cmd/sockbusp/message.c
 build obj/sockbusp/parse.o:     cc_sockbusp cmd/sockbusp/parse.c
 build obj/sockbusp/sockbusp.o:  cc_sockbusp cmd/sockbusp/sockbusp.c
 build obj/sockbusp/stream.o:    cc_sockbusp cmd/sockbusp/stream.c
+build obj/sockbusp/types.o:     cc_sockbusp cmd/sockbusp/types.c
+build obj/sockbusp/unix.o:      cc_sockbusp cmd/sockbusp/unix.c
 
 build obj/sockbusp.test: test bin/sockbusp
 
 build bin/sockbusp: ld_sockbusp $
         obj/sockbusp/auth.o $
+        obj/sockbusp/log.o $
+        obj/sockbusp/marshal.o $
         obj/sockbusp/message.o $
         obj/sockbusp/parse.o $
         obj/sockbusp/sockbusp.o $
         obj/sockbusp/stream.o $
+        obj/sockbusp/types.o $
+        obj/sockbusp/unix.o $
 
 
 # default targets
