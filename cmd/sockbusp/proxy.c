@@ -13,6 +13,7 @@
 #include <getopt.h>
 #include <sys/un.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -178,6 +179,19 @@ static int process_stream(int out, const struct message *m,
 	return 0;
 }
 
+static int verify_sender(const struct message *m, const struct unix_oob *u)
+{
+	if (!m->sender.len || m->sender.p[0] != ':') {
+		return -1;
+	}
+	if (u->pid < 0) {
+		return -1;
+	}
+	char *p;
+	unsigned long m_pid = strtoul(m->sender.p + 1, &p, 10);
+	return m_pid != u->pid || *p != '.';
+}
+
 static int process_dgram(int fd, void *buf, size_t have, struct unix_oob *u)
 {
 	if (have < MIN_MESSAGE_SIZE) {
@@ -192,6 +206,12 @@ static int process_dgram(int fd, void *buf, size_t have, struct unix_oob *u)
 	struct iterator body;
 	if (parse_message(buf, &msg, &body)) {
 		return -1;
+	}
+
+	if (verify_sender(&msg, u)) {
+		// we don't have an authenticated reply destination
+		msg.sender.len = 0;
+		msg.hdr.flags |= FLAG_NO_REPLY_EXPECTED;
 	}
 
 	if (verbose) {
@@ -325,11 +345,12 @@ int main(int argc, char *argv[])
 
 	struct sockaddr_un *a = &sockaddr.sun;
 	a->sun_family = AF_UNIX;
-	strcpy(a->sun_path, "sock-XXXXXX");
-	if (mktemp(a->sun_path) == NULL) {
+	strcpy(a->sun_path, "./sock-XXXXXX");
+	if (mkdtemp(a->sun_path) == NULL) {
 		perror("mktemp");
 		return ERR_FAILED;
 	}
+	strcat(a->sun_path, "/sock");
 
 	socklen_t sunlen = offsetof(struct sockaddr_un, sun_path) +
 			   strlen(a->sun_path) + 1;
@@ -338,11 +359,18 @@ int main(int argc, char *argv[])
 		return ERR_FAILED;
 	}
 
-	sprintf(unique_addr, ":1.%d", getpid());
+	if (chmod(a->sun_path, 0700)) {
+		perror("chmod");
+		return ERR_FAILED;
+	}
+
+	sprintf(unique_addr, ":%d.1", getpid());
 	if (rename(a->sun_path, unique_addr)) {
 		perror("rename");
 		return ERR_FAILED;
 	}
+	a->sun_path[strlen(a->sun_path) - strlen("/sock")] = 0;
+	rmdir(a->sun_path);
 
 	struct pollfd pfd[2];
 	pfd[0].fd = fd;

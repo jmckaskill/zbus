@@ -13,10 +13,10 @@ rule cc_sockbusd
 rule ld_sockbusd
     command = $ld $ldflags -o $out $in
 
-build obj/sockbusd/sockbusd.o: cc_sockbusd cmd/sockbusd/sockbusd.c
+build obj/sockbusd/daemon.o: cc_sockbusd cmd/sockbusd/daemon.c
 
 build bin/sockbusd: ld_sockbusd $
-        obj/sockbusd/sockbusd.o $
+        obj/sockbusd/daemon.o $
 
 
 #sockbusp
@@ -34,7 +34,7 @@ build obj/sockbusp/log.o:       cc_sockbusp cmd/sockbusp/log.c
 build obj/sockbusp/marshal.o:   cc_sockbusp cmd/sockbusp/marshal.c
 build obj/sockbusp/message.o:   cc_sockbusp cmd/sockbusp/message.c
 build obj/sockbusp/parse.o:     cc_sockbusp cmd/sockbusp/parse.c
-build obj/sockbusp/sockbusp.o:  cc_sockbusp cmd/sockbusp/sockbusp.c
+build obj/sockbusp/proxy.o:     cc_sockbusp cmd/sockbusp/proxy.c
 build obj/sockbusp/stream.o:    cc_sockbusp cmd/sockbusp/stream.c
 build obj/sockbusp/types.o:     cc_sockbusp cmd/sockbusp/types.c
 build obj/sockbusp/unix.o:      cc_sockbusp cmd/sockbusp/unix.c
@@ -47,7 +47,7 @@ build bin/sockbusp: ld_sockbusp $
         obj/sockbusp/marshal.o $
         obj/sockbusp/message.o $
         obj/sockbusp/parse.o $
-        obj/sockbusp/sockbusp.o $
+        obj/sockbusp/proxy.o $
         obj/sockbusp/stream.o $
         obj/sockbusp/types.o $
         obj/sockbusp/unix.o $

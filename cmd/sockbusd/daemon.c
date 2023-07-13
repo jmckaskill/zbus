@@ -163,7 +163,7 @@ static void reap_children()
 	for (;;) {
 		int sts;
 		pid_t pid = waitpid(-1, &sts, WNOHANG);
-		if (pid < 0) {
+		if (pid <= 0) {
 			break;
 		}
 		if (WIFSIGNALED(sts)) {
