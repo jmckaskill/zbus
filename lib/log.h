@@ -3,4 +3,6 @@
 
 extern int verbose;
 
-void log_data(const char *msg, const void *p, size_t len);
+void elog(const char *fmt, ...);
+void dlog(const char *fmt, ...);
+void log_data(const void *p, unsigned len, const char *fmt, ...);

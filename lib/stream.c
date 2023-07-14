@@ -87,10 +87,11 @@ static int do_read(struct stream *s, unsigned need)
 		} else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
 			return READ_MORE;
 		} else if (n <= 0) {
+			perror("recvmsg");
 			return READ_ERROR;
 		}
 
-		log_data("read stream", s->base + s->end, n);
+		log_data(s->base + s->end, n, "read");
 
 		if (parse_cmsg(&s->oob, &msg)) {
 			fprintf(stderr, "too many file descriptors\n");

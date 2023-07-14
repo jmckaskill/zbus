@@ -4,8 +4,6 @@
 #include "marshal.h"
 #include <stdint.h>
 
-struct buffer;
-
 #define MAX_MESSAGE_SIZE (64 * 1024)
 #define MIN_MESSAGE_SIZE 16
 #define MAX_UNIX_FDS 16
@@ -55,25 +53,18 @@ struct msg_header {
 struct message {
 	struct msg_header hdr;
 	int64_t reply_serial;
-	struct string path;
-	struct string interface;
-	struct string member;
-	struct string error;
-	struct string destination;
-	struct string sender;
+	slice_t path;
+	slice_t interface;
+	slice_t member;
+	slice_t error;
+	slice_t destination;
+	slice_t sender;
 	const char *signature;
 	unsigned fdnum;
 };
 
 void init_message(struct message *m);
 
-#define INIT_MESSAGE                                                   \
-	{                                                              \
-		0, INIT_STRING, INIT_STRING, INIT_STRING, INIT_STRING, \
-			INIT_STRING, INIT_STRING, "",                  \
-	}
-
-uint8_t native_endian();
 int check_member(const char *p);
 int check_interface(const char *p);
 int check_address(const char *p);
@@ -88,6 +79,7 @@ int raw_message_len(const char *p);
 // buffer points to at least raw_message_len long
 // returns non-zero on parse error
 int parse_message(const char *p, struct message *msg, struct iterator *body);
+bool is_reply(const struct message *request, const struct message *reply);
 
 struct message_data {
 	unsigned start;
@@ -99,6 +91,7 @@ struct message_data {
 void start_message(struct buffer *b, const struct message *m,
 		   struct message_data *data);
 void end_message(struct buffer *b, struct message_data *data);
+void append_empty_message(struct buffer *b, const struct message *m);
 
 ////////////////////////////////////////
 // inline implementations

@@ -27,8 +27,8 @@ static void append_int16(struct buffer *b, int16_t v);
 static void append_uint64(struct buffer *b, uint64_t v);
 static void append_int64(struct buffer *b, int64_t v);
 static void append_double(struct buffer *b, double v);
-static void append_string(struct buffer *b, struct string v);
-static void append_path(struct buffer *b, struct string v);
+static void append_string(struct buffer *b, slice_t v);
+static void append_path(struct buffer *b, slice_t v);
 static void append_signature(struct buffer *b, const char *sig);
 
 // provided signature is the signature of the inner type and
@@ -135,14 +135,14 @@ static inline void append_double(struct buffer *b, double v)
 	_append8(b, u.u, TYPE_DOUBLE_BYTE);
 }
 
-extern void _append_string(struct buffer *b, struct string str, char type);
+extern void _append_string(struct buffer *b, slice_t str, char type);
 
-static inline void append_path(struct buffer *b, struct string str)
+static inline void append_path(struct buffer *b, slice_t str)
 {
 	_append_string(b, str, TYPE_PATH_BYTE);
 }
 
-static inline void append_string(struct buffer *b, struct string str)
+static inline void append_string(struct buffer *b, slice_t str)
 {
 	_append_string(b, str, TYPE_STRING_BYTE);
 }

@@ -205,9 +205,9 @@ int parse_double(struct iterator *p, double *pv)
 	return u.d;
 }
 
-static struct string parse_string_bytes(struct iterator *p, unsigned len)
+static slice_t parse_string_bytes(struct iterator *p, unsigned len)
 {
-	struct string ret = INIT_STRING;
+	slice_t ret = MAKE_SLICE("");
 	const char *n = p->n;
 	const char *e = n + len + 1;
 	// need no nul bytes in the string and nul termination
@@ -224,20 +224,20 @@ static struct string parse_string_bytes(struct iterator *p, unsigned len)
 const char *parse_signature(struct iterator *p)
 {
 	uint8_t len = parse1(p, TYPE_SIGNATURE_BYTE);
-	struct string str = parse_string_bytes(p, len);
+	slice_t str = parse_string_bytes(p, len);
 	return str.p;
 }
 
-struct string parse_string(struct iterator *p)
+slice_t parse_string(struct iterator *p)
 {
 	uint32_t len = parse4(p, TYPE_STRING_BYTE);
 	return parse_string_bytes(p, len);
 }
 
-struct string parse_path(struct iterator *p)
+slice_t parse_path(struct iterator *p)
 {
 	uint32_t len = parse4(p, TYPE_PATH_BYTE);
-	struct string str = parse_string_bytes(p, len);
+	slice_t str = parse_string_bytes(p, len);
 	const char *s = str.p;
 	if (*(s++) != '/') {
 		// path must begin with / and can not be the empty string
@@ -330,7 +330,7 @@ int skip_value(struct iterator *p)
 struct variant parse_variant(struct iterator *p)
 {
 	uint8_t len = parse1(p, TYPE_VARIANT_BYTE);
-	struct string sig = parse_string_bytes(p, len);
+	slice_t sig = parse_string_bytes(p, len);
 
 	struct variant ret;
 	ret.data.n = p->n;

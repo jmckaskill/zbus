@@ -153,7 +153,7 @@ void _append8(struct buffer *b, uint64_t u, char type)
 	}
 }
 
-void _append_string(struct buffer *b, struct string str, char type)
+void _append_string(struct buffer *b, slice_t str, char type)
 {
 	unsigned len_off = align4(b->base, b->off);
 	unsigned data_off = len_off + 4;

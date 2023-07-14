@@ -3,74 +3,80 @@ include config.ninja
 rule test
     command = $in -z $out || cat $out
 
-# lib
+# common simple rules
+# create custom rules if you need different flags for a target
 
-rule cc_lib
+rule cc
     depfile = $out.d
     deps = gcc
     command = $cc -c $in -o $out -MD -MF $out.d $cflags
+    description = CC $out
 
-rule ar_lib
+rule ld
+    command = $ld $ldflags -o $out $in
+    description = LD $out
+
+rule ar
     command = rm -f $out && $ar $out $in
+    description = AR $out
 
-build obj/lib/auth.o:      cc_lib lib/auth.c
-build obj/lib/log.o:       cc_lib lib/log.c
-build obj/lib/marshal.o:   cc_lib lib/marshal.c
-build obj/lib/message.o:   cc_lib lib/message.c
-build obj/lib/parse.o:     cc_lib lib/parse.c
-build obj/lib/stream.o:    cc_lib lib/stream.c
-build obj/lib/types.o:     cc_lib lib/types.c
-build obj/lib/unix.o:      cc_lib lib/unix.c
 
-build obj/lib.a: ar_lib $
+# lib
+
+build obj/lib/auth.o:       cc lib/auth.c
+build obj/lib/bus.o:        cc lib/bus.c
+build obj/lib/log.o:        cc lib/log.c
+build obj/lib/marshal.o:    cc lib/marshal.c
+build obj/lib/message.o:    cc lib/message.c
+build obj/lib/parse.o:      cc lib/parse.c
+build obj/lib/stream.o:     cc lib/stream.c
+build obj/lib/str.o:        cc lib/str.c
+build obj/lib/unix.o:       cc lib/unix.c
+
+build obj/lib.a: ar $
         obj/lib/auth.o $
+        obj/lib/bus.o $
         obj/lib/log.o $
         obj/lib/marshal.o $
         obj/lib/message.o $
         obj/lib/parse.o $
         obj/lib/stream.o $
-        obj/lib/types.o $
+        obj/lib/str.o $
         obj/lib/unix.o $
 
 
 # sockbusd
 
-rule cc_sockbusd
-    depfile = $out.d
-    deps = gcc
-    command = $cc -c $in -o $out -MD -MF $out.d $cflags
 
-rule ld_sockbusd
-    command = $ld $ldflags -o $out $in
+build obj/sockbusd/daemon.o: cc cmd/sockbusd/daemon.c
 
-build obj/sockbusd/daemon.o: cc_sockbusd cmd/sockbusd/daemon.c
-
-build bin/sockbusd: ld_sockbusd $
+build bin/sockbusd: ld $
         obj/sockbusd/daemon.o $
+        obj/lib.a $
 
 
 #sockbusp
 
-rule cc_sockbusp
-    depfile = $out.d
-    deps = gcc
-    command = $cc -c $in -o $out -MD -MF $out.d $cflags
-
-rule ld_sockbusp
-    command = $ld $ldflags -o $out $in
-
-build obj/sockbusp/proxy.o:     cc_sockbusp cmd/sockbusp/proxy.c
+build obj/sockbusp/proxy.o: cc cmd/sockbusp/proxy.c
 
 build obj/sockbusp.test: test bin/sockbusp
 
-build bin/sockbusp: ld_sockbusp $
+build bin/sockbusp: ld $
         obj/sockbusp/proxy.o $
+        obj/lib.a $
+
+#sockbusp
+
+build obj/sockbus/client.o: cc cmd/sockbus/client.c
+
+build bin/sockbus: ld $
+        obj/sockbus/client.o $
         obj/lib.a $
 
 
 # default targets
 
-default bin/sockbusp bin/sockbusd
+default bin/sockbusp bin/sockbusd bin/sockbus
 build test: phony $
     obj/sockbusp.test $
 

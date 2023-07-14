@@ -28,7 +28,8 @@ int parse_cmsg(struct unix_oob *u, struct msghdr *msg)
 {
 	static_assert(CMSG_LEN(sizeof(int)) - CMSG_LEN(0) == sizeof(int),
 		      "checking CMSG_LEN macro");
-	int error = 0;
+	int too_many_fds = 0;
+	int have_credentials = 0;
 
 	for (struct cmsghdr *c = CMSG_FIRSTHDR(msg); c != NULL;
 	     c = CMSG_NXTHDR(msg, c)) {
@@ -39,6 +40,7 @@ int parse_cmsg(struct unix_oob *u, struct msghdr *msg)
 			u->pid = uc->pid;
 			u->uid = uc->uid;
 			u->gid = uc->gid;
+			have_credentials = 1;
 
 		} else if (c->cmsg_level == SOL_SOCKET &&
 			   c->cmsg_type == SCM_RIGHTS &&
@@ -48,7 +50,7 @@ int parse_cmsg(struct unix_oob *u, struct msghdr *msg)
 			for (int i = 0; i < fdn; i++) {
 				if (u->fdn >= MAX_UNIX_FDS) {
 					close(pfd[i]);
-					error = 1;
+					too_many_fds = 1;
 				} else {
 					u->fdv[u->fdn++] = pfd[i];
 					fcntl(pfd[i], F_SETFD, FD_CLOEXEC);
@@ -57,17 +59,20 @@ int parse_cmsg(struct unix_oob *u, struct msghdr *msg)
 		}
 	}
 
-	return error;
+	return too_many_fds || !have_credentials;
 }
 
-int write_cmsg(const struct unix_oob *u, struct msghdr *msg)
+int write_cmsg(struct msghdr *msg, control_buf_t *buf, const struct unix_oob *u)
 {
-	if (!u->fdn) {
+	if (u == NULL || u->fdn == 0) {
+		msg->msg_control = NULL;
+		msg->msg_controllen = 0;
 		return 0;
 	}
-	if (CMSG_SPACE(sizeof(int) * u->fdn) > msg->msg_controllen) {
+	if (CMSG_SPACE(sizeof(int) * u->fdn) > sizeof(*buf)) {
 		return -1;
 	}
+	msg->msg_control = buf;
 	struct cmsghdr *cmsg = CMSG_FIRSTHDR(msg);
 	cmsg->cmsg_level = SOL_SOCKET;
 	cmsg->cmsg_type = SCM_RIGHTS;
@@ -75,5 +80,6 @@ int write_cmsg(const struct unix_oob *u, struct msghdr *msg)
 
 	int *pfd = (int *)CMSG_DATA(cmsg);
 	memcpy(pfd, u->fdv, u->fdn * sizeof(int));
+	msg->msg_controllen = CMSG_SPACE(sizeof(int) * u->fdn);
 	return 0;
 }

@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include "lib/str.h"
 #include <unistd.h>
 #include <stdio.h>
 #include <sys/socket.h>
@@ -187,12 +188,11 @@ static void reap_children()
 		}
 		childn = o;
 
-		// clean up any sockets our children may have
-		// left around
-		char *pn;
-		if (asprintf(&pn, "%s/:1.%d", busdir, pid) > 0) {
-			unlink(pn);
-			free(pn);
+		// clean up the socket our children left behind
+		char buf[256];
+		str_t s = MAKE_STR(buf);
+		if (!str_catf(&s, "%s/:%d.0", busdir, pid)) {
+			unlink(s.p);
 		}
 	}
 }
@@ -234,9 +234,6 @@ int main(int argc, char *argv[])
 	signal(SIGCHLD, &sigchild);
 	signal(SIGINT, &sigterm);
 	signal(SIGTERM, &sigterm);
-	signal(SIGALRM, &sigterm);
-
-	alarm(10);
 
 	char *sockpath = argv[0];
 	busdir = argv[1];

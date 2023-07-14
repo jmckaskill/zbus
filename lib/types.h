@@ -1,5 +1,6 @@
 #pragma once
-
+#define _GNU_SOURCE
+#include "str.h"
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -8,6 +9,7 @@ struct iterator;
 struct buffer;
 struct stream;
 struct message;
+struct unix_oob;
 
 #define ALIGN_UINT_DOWN(VAL, BOUNDARY) ((VAL) & (~(BOUNDARY##U - 1)))
 
@@ -67,45 +69,6 @@ static inline bool is_signature(const char *sig, const char *test)
 	return !strncmp(sig, test, strlen(test));
 }
 
-struct string {
-	const char *p;
-	unsigned len;
-};
-
-#define INIT_STRING   \
-	{             \
-		"", 0 \
-	}
-
-#define STRLEN(x) (sizeof(x) - 1)
-
-static inline struct string to_string(const char *str)
-{
-	struct string ret;
-	ret.p = str;
-	ret.len = strlen(str);
-	return ret;
-}
-
-static inline struct string to_string2(const char *str, unsigned sz)
-{
-	struct string ret = { str, sz };
-	return ret;
-}
-
-static inline bool is_string(struct string a, const char *test)
-{
-	return a.len == strlen(test) && !memcmp(a.p, test, a.len);
-}
-
-int compare_string_x(const char *a, unsigned an, const char *b, unsigned bn);
-int compare_string_p(const void *a, const void *b);
-
-static inline int compare_string(struct string a, struct string b)
-{
-	return compare_string_x(a.p, a.len, b.p, b.len);
-}
-
 struct iterator {
 	const char *n;
 	const char *e;
@@ -124,8 +87,8 @@ union variant_union {
 	int64_t i64;
 	uint64_t u64;
 	double d;
-	struct string str;
-	struct string path;
+	slice_t str;
+	slice_t path;
 	const char *sig;
 	struct iterator data; // used for struct, array and variant
 };

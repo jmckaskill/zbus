@@ -7,9 +7,9 @@ union endian_test {
 	uint8_t b[2];
 };
 
-static union endian_test g_native_endian = { 0x426C }; // "Bl"
+static const union endian_test g_native_endian = { 0x426C }; // "Bl"
 
-uint8_t native_endian()
+static inline uint8_t native_endian()
 {
 	return g_native_endian.b[0];
 }
@@ -35,7 +35,7 @@ int check_member(const char *p)
 	return p - begin > 255;
 }
 
-static int check_name(const char *p, size_t maxsz)
+int check_interface(const char *p)
 {
 	int have_dot = 0;
 	const char *begin = p;
@@ -53,7 +53,7 @@ static int check_name(const char *p, size_t maxsz)
 			segment = ++p;
 			have_dot = 1;
 		} else if (p > segment && have_dot && *p == '\0' &&
-			   p - begin <= maxsz) {
+			   p - begin <= 255) {
 			return 0;
 		} else {
 			return -1;
@@ -63,17 +63,35 @@ static int check_name(const char *p, size_t maxsz)
 
 int check_unique_address(const char *p)
 {
-	return *p != ':' || check_name(p + 1, 254);
+	const char *begin = p;
+	if (*(p++) != ':') {
+		return -1;
+	}
+	int have_dot = 0;
+	const char *segment = p;
+	for (;;) {
+		// must start with a :
+		// must be composed of at least two segments separated by a dot
+		// segments must be composed of [A-Z][a-z][0-9]_
+		// segments can not be zero length
+		if (('A' <= *p && *p <= 'Z') || ('a' <= *p && *p <= 'z') ||
+		    *p == '_' || ('0' <= *p && *p <= '9')) {
+			p++;
+		} else if (p > segment && *p == '.') {
+			segment = ++p;
+			have_dot = 1;
+		} else if (p > segment && have_dot && *p == '\0' &&
+			   p - begin <= 255) {
+			return 0;
+		} else {
+			return -1;
+		}
+	}
 }
 
 int check_address(const char *p)
 {
 	return check_unique_address(p) && check_known_address(p);
-}
-
-int check_interface(const char *p)
-{
-	return check_name(p, 255);
 }
 
 ///////////////////////////////////////////////////
@@ -114,12 +132,12 @@ void init_message(struct message *m)
 	m->hdr.body_len = 0;
 	m->hdr.serial = 0;
 	m->reply_serial = -1;
-	m->path = to_string("");
-	m->interface = to_string("");
-	m->member = to_string("");
-	m->error = to_string("");
-	m->destination = to_string("");
-	m->sender = to_string("");
+	m->path = make_slice("");
+	m->interface = make_slice("");
+	m->member = make_slice("");
+	m->error = make_slice("");
+	m->destination = make_slice("");
+	m->sender = make_slice("");
 	m->signature = "";
 	m->fdnum = 0;
 }
@@ -242,6 +260,12 @@ int raw_message_len(const char *p)
 	return (int)len;
 }
 
+bool is_reply(const struct message *request, const struct message *reply)
+{
+	return reply->reply_serial == request->hdr.serial &&
+	       slice_eqs(reply->sender, request->destination);
+}
+
 ////////////////////////////////////////////////////////
 // message writing
 
@@ -271,8 +295,7 @@ static void append_uint32_field(struct buffer *b, uint32_t tag, uint32_t v)
 	}
 }
 
-static void append_string_field(struct buffer *b, uint32_t tag,
-				struct string str)
+static void append_string_field(struct buffer *b, uint32_t tag, slice_t str)
 {
 	align_buffer_8(b);
 	unsigned tag_off = b->off;
@@ -319,7 +342,7 @@ void start_message(struct buffer *b, const struct message *m,
 	struct array_data array;
 	start_dict(b, &array);
 	// fixed length fields go first so we can maintain 8 byte alignment
-	if (m->reply_serial) {
+	if (m->reply_serial >= 0) {
 		append_uint32_field(b, FTAG_REPLY_SERIAL, m->reply_serial);
 	}
 	if (m->fdnum) {
@@ -366,4 +389,11 @@ void end_message(struct buffer *b, struct message_data *data)
 		// did you forget to add some arguments?
 		b->error = 1;
 	}
+}
+
+void append_empty_message(struct buffer *b, const struct message *m)
+{
+	struct message_data md;
+	start_message(b, m, &md);
+	end_message(b, &md);
 }

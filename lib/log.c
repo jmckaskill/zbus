@@ -1,21 +1,48 @@
 #include "log.h"
 #include <stdio.h>
 #include <stdint.h>
+#include <stdarg.h>
 
 int verbose = 0;
+
+void elog(const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	vfprintf(stderr, fmt, ap);
+	va_end(ap);
+	fputc('\n', stderr);
+}
+
+void dlog(const char *fmt, ...)
+{
+	if (verbose) {
+		va_list ap;
+		va_start(ap, fmt);
+		vfprintf(stderr, fmt, ap);
+		va_end(ap);
+		fputc('\n', stderr);
+	}
+}
 
 static char ascii(unsigned char ch)
 {
 	return (' ' <= ch && ch <= '~') ? ch : '.';
 }
 
-void log_data(const char *msg, const void *p, size_t len)
+void log_data(const void *p, unsigned len, const char *fmt, ...)
 {
 	if (!verbose) {
 		return;
 	}
 	const unsigned char *u = p;
-	fprintf(stderr, "%s:\n", msg);
+	if (*fmt) {
+		va_list ap;
+		va_start(ap, fmt);
+		vfprintf(stderr, fmt, ap);
+		va_end(ap);
+		fputc('\n', stderr);
+	}
 	while (len >= 8) {
 		fprintf(stderr,
 			"    %02x%02x%02x%02x %02x%02x%02x%02x"

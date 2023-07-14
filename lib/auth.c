@@ -25,16 +25,19 @@ static void writev(int fd, const char *format, ...)
 	va_start(ap, format);
 	int n = vsnprintf(buf, sizeof(buf), format, ap);
 	va_end(ap);
-	if (0 < n && n < sizeof(buf)) {
-		log_data("write auth", buf, n);
+	if (2 < n && n < sizeof(buf)) {
+		dlog("write auth: '%.*s'", n - 2, buf);
 		write(fd, buf, n);
 	}
 }
 
 static void writes(int fd, const char *str)
 {
-	log_data("write auth", str, strlen(str));
-	write(fd, str, strlen(str));
+	size_t sz = strlen(str);
+	if (sz > 2) {
+		dlog("write auth: '%.*s'", (int)(sz - 2), str);
+		write(fd, str, sz);
+	}
 }
 
 int perform_auth(struct stream *in, int out, const char *busid)
