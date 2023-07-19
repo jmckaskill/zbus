@@ -29,7 +29,6 @@ int parse_cmsg(struct unix_oob *u, struct msghdr *msg)
 	static_assert(CMSG_LEN(sizeof(int)) - CMSG_LEN(0) == sizeof(int),
 		      "checking CMSG_LEN macro");
 	int too_many_fds = 0;
-	int have_credentials = 0;
 
 	for (struct cmsghdr *c = CMSG_FIRSTHDR(msg); c != NULL;
 	     c = CMSG_NXTHDR(msg, c)) {
@@ -40,7 +39,6 @@ int parse_cmsg(struct unix_oob *u, struct msghdr *msg)
 			u->pid = uc->pid;
 			u->uid = uc->uid;
 			u->gid = uc->gid;
-			have_credentials = 1;
 
 		} else if (c->cmsg_level == SOL_SOCKET &&
 			   c->cmsg_type == SCM_RIGHTS &&
@@ -59,7 +57,7 @@ int parse_cmsg(struct unix_oob *u, struct msghdr *msg)
 		}
 	}
 
-	return too_many_fds || !have_credentials;
+	return too_many_fds;
 }
 
 int write_cmsg(struct msghdr *msg, control_buf_t *buf, const struct unix_oob *u)

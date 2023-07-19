@@ -189,11 +189,11 @@ static void reap_children()
 		childn = o;
 
 		// clean up the socket our children left behind
-		char buf[256];
-		str_t s = MAKE_STR(buf);
-		if (!str_catf(&s, "%s/:%d.0", busdir, pid)) {
-			unlink(s.p);
-		}
+		// char buf[256];
+		// str_t s = MAKE_STR(buf);
+		// if (!str_addf(&s, "%s/:%d.0", busdir, pid)) {
+		// 	unlink(s.p);
+		// }
 	}
 }
 

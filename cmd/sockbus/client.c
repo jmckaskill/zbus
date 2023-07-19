@@ -60,21 +60,16 @@ int main(int argc, char *argv[])
 	}
 
 	struct message req;
-	init_message(&req);
-	req.hdr.type = MSG_METHOD;
-	req.hdr.serial = ++last_serial;
+	init_message(&req, MSG_METHOD, ++last_serial);
 	req.sender = make_slice(addr);
 	req.interface = make_slice("org.freedesktop.DBus.Peer");
 	req.path = make_slice("/");
 	req.member = make_slice("Ping");
 
 	char buf[1024];
-	struct buffer b;
-	init_buffer(&b, buf, sizeof(buf));
-	append_empty_message(&b, &req);
+	int sz = end_message(start_message(&req, buf, sizeof(buf)));
 
-	if (b.error ||
-	    blocking_send(fd, busdir, destination, buf, b.off, NULL)) {
+	if (sz < 0 || blocking_send(fd, busdir, destination, buf, sz, NULL)) {
 		return 5;
 	}
 
@@ -86,14 +81,14 @@ int main(int argc, char *argv[])
 		}
 	} while (!is_reply(&req, &reply));
 
-	dlog("have response %d %s", req.hdr.serial, req.error.p);
+	dlog("have response %d %s", req.serial, req.error.p);
 
 	close(fd);
 
 	str_t s = MAKE_STR(buf);
-	str_cat(&s, busdir);
-	str_cat(&s, "/");
-	if (!str_cat(&s, addr)) {
+	str_add(&s, busdir);
+	str_add(&s, "/");
+	if (!str_add(&s, addr)) {
 		unlink(s.p);
 	}
 

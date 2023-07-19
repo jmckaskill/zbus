@@ -21,13 +21,21 @@ void parse_struct_end(struct iterator *p);
 void parse_dict_begin(struct iterator *p);
 void parse_dict_end(struct iterator *p);
 
+static inline int iter_error(struct iterator *p)
+{
+	return p->next > p->end;
+}
+
 // psig must point to NULL before first call
 bool parse_array_next(struct iterator *p, const char **psig);
 
-extern struct iterator skip_array(struct iterator *p);
-extern struct iterator skip_struct(struct iterator *p);
-int skip_value(struct iterator *p);
-int skip_signature(const char **psig);
+// skip functions skip over data possibly returning an iterator to the data.
+// They do not fully validate the information. Nevertheless they may generate an
+// error by setting p->error and returning non-zero return code or setting
+// returned iterator->error.
+struct iterator skip_array(struct iterator *p);
+struct iterator skip_value(struct iterator *p);
+int skip_signature(const char **psig, bool in_array);
 
 void align_iterator_8(struct iterator *p);
 

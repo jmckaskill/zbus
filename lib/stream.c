@@ -115,7 +115,7 @@ int read_message(struct stream *s, struct message *msg, struct iterator *body)
 		return sts;
 	}
 
-	int len = raw_message_len(s->base + s->off + pad);
+	int len = parse_header(msg, s->base + s->off + pad);
 	if (len < 0) {
 		return READ_ERROR;
 	}
@@ -127,9 +127,14 @@ int read_message(struct stream *s, struct message *msg, struct iterator *body)
 	if (sts != READ_OK) {
 		return sts;
 	}
-	if (parse_message(s->base + s->off, msg, body)) {
+	str_t p;
+	p.p = s->base + s->off;
+	p.len = len;
+	p.cap = len;
+	if (parse_message(msg, &p)) {
 		return READ_ERROR;
 	}
+	init_iterator(body, msg->signature, p.p, 0, p.len);
 	if (msg->fdnum > s->oob.fdn) {
 		fprintf(stderr, "message asks for more fds than sent\n");
 		return READ_ERROR;
@@ -139,7 +144,8 @@ int read_message(struct stream *s, struct message *msg, struct iterator *body)
 
 void drop_message(struct stream *s, const struct message *msg)
 {
-	int len = raw_message_len(s->base + s->off);
+	int len = ALIGN_UINT_UP(MIN_MESSAGE_SIZE + msg->field_len, 8) +
+		  msg->body_len;
 	s->off += len;
 	close_fds(&s->oob, msg->fdnum);
 }

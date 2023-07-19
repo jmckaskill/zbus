@@ -43,7 +43,7 @@ void log_message(const struct message *m, const char *src)
 	     m->member.p, m->signature);
 }
 
-static int blocking_write(int fd, const char *p, unsigned len,
+static int blocking_write(int fd, const char *p, int len,
 			  const struct unix_oob *oob)
 {
 	log_data(p, len, "writing");
@@ -95,74 +95,55 @@ static int blocking_write(int fd, const char *p, unsigned len,
 #define METHOD_BECOME_MONITOR "BecomeMonitor"
 #define METHOD_PING "Ping"
 
-static int create_empty_reply(struct buffer *b, uint32_t reply_serial)
+static int create_empty_reply(uint32_t reply_serial, void *buf, size_t bufsz)
 {
 	struct message m;
-	init_message(&m);
-	m.hdr.type = MSG_REPLY;
-	m.hdr.serial = ++last_serial;
+	init_message(&m, MSG_REPLY, ++last_serial);
 	m.reply_serial = reply_serial;
-	append_empty_message(b, &m);
-	return b->error;
+	return end_message(start_message(&m, buf, bufsz));
 }
 
 static int send_empty_ok(slice_t destination, uint32_t reply_serial)
 {
 	char buf[256];
-	struct buffer b;
-	init_buffer(&b, buf, sizeof(buf));
-	return create_empty_reply(&b, reply_serial) ||
-	       blocking_send(busfd, busdir, destination, buf, b.off, NULL);
+	int sz = create_empty_reply(reply_serial, buf, sizeof(buf));
+	return sz < 0 ||
+	       blocking_send(busfd, busdir, destination, buf, sz, NULL);
 }
 
 static int write_empty_ok(uint32_t reply_serial)
 {
 	char buf[256];
-	struct buffer b;
-	init_buffer(&b, buf, sizeof(buf));
-	return create_empty_reply(&b, reply_serial) ||
-	       blocking_write(streamfd, buf, b.off, NULL);
+	int sz = create_empty_reply(reply_serial, buf, sizeof(buf));
+	return sz < 0 || blocking_write(streamfd, buf, sz, NULL);
 }
 
 static int write_hello_reply(uint32_t reply_serial)
 {
 	struct message m;
-	init_message(&m);
-	m.hdr.type = MSG_REPLY;
-	m.hdr.serial = ++last_serial;
+	init_message(&m, MSG_REPLY, ++last_serial);
 	m.reply_serial = reply_serial;
 	m.signature = "s";
 
 	char vbuf[256];
-	struct buffer b;
-	init_buffer(&b, vbuf, sizeof(vbuf));
-
-	struct message_data md;
-	start_message(&b, &m, &md);
+	struct buffer b = start_message(&m, vbuf, sizeof(vbuf));
 	append_string(&b, make_slice(unique_addr));
-	end_message(&b, &md);
-
-	return b.error || blocking_write(streamfd, vbuf, b.off, NULL);
+	int sz = end_message(b);
+	return sz < 0 || blocking_write(streamfd, vbuf, sz, NULL);
 }
 
 static int write_list_names_reply(uint32_t reply_serial)
 {
 	fprintf(stderr, "write_list_names_reply\n");
 	char vbuf[4096];
-	struct buffer b;
-	init_buffer(&b, vbuf, sizeof(vbuf));
 
 	struct message m;
-	init_message(&m);
-	m.hdr.type = MSG_REPLY;
-	m.hdr.serial = ++last_serial;
+	init_message(&m, MSG_REPLY, ++last_serial);
 	m.reply_serial = reply_serial;
 	m.signature = "as";
 
-	struct message_data md;
-	start_message(&b, &m, &md);
-	struct array_data ad;
-	start_array(&b, &ad);
+	struct buffer b = start_message(&m, vbuf, sizeof(vbuf));
+	struct array_data ad = start_array(&b);
 
 	DIR *d = opendir(".");
 	if (d == NULL) {
@@ -184,10 +165,9 @@ static int write_list_names_reply(uint32_t reply_serial)
 	}
 	closedir(d);
 
-	end_array(&b, &ad);
-	end_message(&b, &md);
-
-	return b.error || blocking_write(streamfd, vbuf, b.off, NULL);
+	end_array(&b, ad);
+	int sz = end_message(b);
+	return sz < 0 || blocking_write(streamfd, vbuf, sz, NULL);
 }
 
 static int process_stream(const struct message *m, struct iterator *body)
@@ -199,19 +179,19 @@ static int process_stream(const struct message *m, struct iterator *body)
 		switch (m->member.len) {
 		case STRLEN(METHOD_HELLO):
 			if (slice_eq(m->member, METHOD_HELLO)) {
-				return write_hello_reply(m->hdr.serial);
+				return write_hello_reply(m->serial);
 			}
 			break;
 		case STRLEN(METHOD_LIST_NAMES):
 			if (slice_eq(m->member, METHOD_LIST_NAMES)) {
-				return write_list_names_reply(m->hdr.serial);
+				return write_list_names_reply(m->serial);
 			}
 			break;
 		}
 	}
 	if (slice_eq(m->interface, MONITORING_INTERFACE) &&
 	    slice_eq(m->member, METHOD_BECOME_MONITOR)) {
-		return write_empty_ok(m->hdr.serial);
+		return write_empty_ok(m->serial);
 	}
 	return 0;
 }
@@ -223,7 +203,7 @@ static int process_dgram(const struct message *m, struct iterator *body,
 
 	if (slice_eq(m->interface, PEER_INTERFACE) &&
 	    slice_eq(m->member, METHOD_PING)) {
-		return send_empty_ok(m->sender, m->hdr.serial);
+		return send_empty_ok(m->sender, m->serial);
 	}
 	return 0;
 }
@@ -280,17 +260,18 @@ int main(int argc, char *argv[])
 	// buffer used for read call from stdin
 	struct stream stream;
 	static char sbuf[MAX_MESSAGE_SIZE];
-	init_stream(&stream, streamfd, sbuf, sizeof(sbuf));
 
 	// enable SIGPIPE, and blocking on stdin/out for the auth call
 	signal(SIGPIPE, SIG_DFL);
 	fcntl(streamfd, F_SETFL, 0);
 
-	if (perform_auth(&stream, streamfd, busid)) {
+	str_t strbuf = MAKE_STR(sbuf);
+	if (perform_auth(streamfd, busid, &strbuf)) {
 		return ERR_FAILED;
 	}
 
-	reset_stream_alignment(&stream);
+	init_stream(&stream, streamfd, sbuf, sizeof(sbuf));
+	stream.end = strbuf.len;
 
 	// set stdin to non block and ignore SIGPIPE
 	// we'll deal with these synchronously in the write calls

@@ -20,45 +20,26 @@ struct unix_oob;
 	((TYPE)((((uintptr_t)(PTR)) + ((uintptr_t)(BOUNDARY)) - 1) & \
 		(~((((uintptr_t)(BOUNDARY)) - 1)))))
 
-#define TYPE_INVALID ""
-#define TYPE_BYTE "y"
-#define TYPE_BOOL "b"
-#define TYPE_INT16 "n"
-#define TYPE_UINT16 "q"
-#define TYPE_INT32 "i"
-#define TYPE_UINT32 "u"
-#define TYPE_INT64 "x"
-#define TYPE_UINT64 "t"
-#define TYPE_DOUBLE "d"
-#define TYPE_STRING "s"
-#define TYPE_PATH "o"
-#define TYPE_SIGNATURE "g"
-#define TYPE_VARIANT "v"
-#define TYPE_ARRAY "a"
-#define TYPE_STRUCT "("
-#define TYPE_STRUCT_END ")"
-#define TYPE_DICT "{"
-#define TYPE_DICT_END "}"
-
-#define TYPE_INVALID_BYTE '\0'
-#define TYPE_BYTE_BYTE 'y'
-#define TYPE_BOOL_BYTE 'b'
-#define TYPE_INT16_BYTE 'n'
-#define TYPE_UINT16_BYTE 'q'
-#define TYPE_INT32_BYTE 'i'
-#define TYPE_UINT32_BYTE 'u'
-#define TYPE_INT64_BYTE 'x'
-#define TYPE_UINT64_BYTE 't'
-#define TYPE_DOUBLE_BYTE 'd'
-#define TYPE_STRING_BYTE 's'
-#define TYPE_PATH_BYTE 'o'
-#define TYPE_SIGNATURE_BYTE 'g'
-#define TYPE_VARIANT_BYTE 'v'
-#define TYPE_ARRAY_BYTE 'a'
-#define TYPE_STRUCT_BYTE '('
-#define TYPE_STRUCT_END_BYTE ')'
-#define TYPE_DICT_BYTE '{'
-#define TYPE_DICT_END_BYTE '}'
+#define TYPE_BYTE 'y'
+#define TYPE_BOOL 'b'
+#define TYPE_INT16 'n'
+#define TYPE_UINT16 'q'
+#define TYPE_INT32 'i'
+#define TYPE_UINT32 'u'
+#define TYPE_INT64 'x'
+#define TYPE_UINT64 't'
+#define TYPE_DOUBLE 'd'
+#define TYPE_STRING 's'
+#define TYPE_PATH 'o'
+#define TYPE_SIGNATURE 'g'
+#define TYPE_VARIANT 'v'
+#define TYPE_ARRAY 'a'
+#define TYPE_STRUCT 'r'
+#define TYPE_STRUCT_BEGIN '('
+#define TYPE_STRUCT_END ')'
+#define TYPE_DICT 'e'
+#define TYPE_DICT_BEGIN '{'
+#define TYPE_DICT_END '}'
 
 static inline bool is_signature(const char *sig, const char *test)
 {
@@ -70,11 +51,10 @@ static inline bool is_signature(const char *sig, const char *test)
 }
 
 struct iterator {
-	const char *n;
-	const char *e;
+	const char *base;
 	const char *sig;
-	unsigned depth;
-	unsigned error;
+	uint32_t next;
+	uint32_t end;
 };
 
 union variant_union {
@@ -95,16 +75,75 @@ union variant_union {
 
 struct variant {
 	const char *sig;
-	struct iterator data;
 	union variant_union u;
 };
 
 static inline void init_iterator(struct iterator *p, const char *sig,
-				 const void *data, unsigned len)
+				 const void *base, unsigned off, unsigned end)
 {
-	p->n = (const char *)data;
-	p->e = p->n + len;
+	p->base = (const char *)base;
+	p->next = off;
+	p->end = end;
 	p->sig = sig;
-	p->depth = 0;
-	p->error = 0;
+}
+
+static inline void write_native_2(char *p, uint16_t v)
+{
+	memcpy(p, &v, 2);
+}
+
+static inline void write_native_4(char *p, uint32_t v)
+{
+	memcpy(p, &v, 4);
+}
+
+static inline void write_native_8(char *p, uint64_t v)
+{
+	memcpy(p, &v, 8);
+}
+
+static inline void write_little_4(char *p, uint32_t v)
+{
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	memcpy(p, &v, 4);
+#else
+	*(uint8_t *)(p) = (uint8_t)(v);
+	*(uint8_t *)(p + 1) = (uint8_t)(v >> 8);
+	*(uint8_t *)(p + 2) = (uint8_t)(v >> 16);
+	*(uint8_t *)(p + 3) = (uint8_t)(v >> 24);
+#endif
+}
+
+static inline uint16_t read_native_2(const char *n)
+{
+	uint16_t u;
+	memcpy(&u, n, 2);
+	return u;
+}
+
+static inline uint32_t read_native_4(const char *n)
+{
+	uint32_t u;
+	memcpy(&u, n, 4);
+	return u;
+}
+
+static inline uint64_t read_native_8(const char *n)
+{
+	uint64_t u;
+	memcpy(&u, n, 8);
+	return u;
+}
+
+static inline uint32_t read_little_4(const char *n)
+{
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	uint32_t u;
+	memcpy(&u, n, 4);
+	return u;
+#else
+	const uint8_t *u = n;
+	return ((uint32_t)u[0]) | (((uint32_t)u[1]) << 8) |
+	       (((uint32_t)u[2]) << 16) | (((uint32_t)u[3]) << 24);
+#endif
 }

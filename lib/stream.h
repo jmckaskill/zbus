@@ -14,8 +14,6 @@ struct stream {
 
 void init_stream(struct stream *s, int fd, char *p, unsigned cap);
 void close_stream(struct stream *s);
-int read_char(struct stream *s);
-char *read_crlf_line(struct stream *s);
 void reset_stream_alignment(struct stream *s);
 
 #define READ_ERROR -1

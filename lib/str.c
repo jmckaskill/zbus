@@ -4,7 +4,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-int str_cat2(str_t *s, const char *src, unsigned sn)
+int str_add2(str_t *s, const char *src, int sn)
 {
 	if (s->len + sn + 1 > s->cap) {
 		sn = s->cap - 1 - s->len;
@@ -15,7 +15,7 @@ int str_cat2(str_t *s, const char *src, unsigned sn)
 	return s->len + 1 == s->cap;
 }
 
-int str_catf(str_t *s, const char *fmt, ...)
+int str_addf(str_t *s, const char *fmt, ...)
 {
 	va_list ap;
 	va_start(ap, fmt);
@@ -31,4 +31,10 @@ int str_catf(str_t *s, const char *fmt, ...)
 		s->len += n;
 		return 0;
 	}
+}
+
+int str_copy(char *buf, int bufsz, const char *src)
+{
+	str_t s = make_str(buf, bufsz);
+	return str_add(&s, src);
 }

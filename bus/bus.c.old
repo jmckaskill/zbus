@@ -1,0 +1,103 @@
+#define _GNU_SOURCE
+#include "msgq.h"
+#include <stdio.h>
+#include <stddef.h>
+#include <threads.h>
+#include <poll.h>
+#include <errno.h>
+#include <unistd.h>
+#include <signal.h>
+
+#define MSGQ_SIGNUM (SIGRTMIN + 1)
+
+struct thread_data {
+	struct msgq queue;
+};
+
+static void signal_wakeup(int signum)
+{
+}
+
+int consumer(void *p)
+{
+	struct thread_data *td = (struct thread_data *)p;
+	unsigned next = 0;
+
+	for (;;) {
+		struct msgq_entry *e = MSGQ_ENTRY(&td->queue, next);
+
+		if (msgq_acquire(&td->queue, e)) {
+			sigset_t set;
+			sigfillset(&set);
+			sigdelset(&set, MSGQ_SIGNUM);
+			int r = ppoll(NULL, 0, NULL, &set);
+			if (r < 0 && (errno == EINTR || errno == EAGAIN)) {
+				continue;
+			} else if (r < 0) {
+				perror("poll");
+				return -1;
+			}
+		}
+
+		switch (e->type) {
+		case MSGQ_CLOSE:
+			fprintf(stderr, "closing\n");
+			return 0;
+		case MSGQ_SHORT_DATA:
+			fprintf(stderr, "msg: %.*s\n",
+				(int)sizeof(e->u.short_data), e->u.short_data);
+			break;
+		}
+
+		msgq_free_entry(e);
+		next++;
+	}
+}
+
+int main(int argc, char *argv[])
+{
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = &signal_wakeup;
+	sigemptyset(&sa.sa_mask);
+	sigaddset(&sa.sa_mask, MSGQ_SIGNUM);
+	if (sigaction(MSGQ_SIGNUM, &sa, NULL) ||
+	    pthread_sigmask(SIG_BLOCK, &sa.sa_mask, NULL)) {
+		perror("sigaction");
+	}
+
+	struct thread_data td;
+	msgq_init(&td.queue, MSGQ_SIGNUM);
+
+	thrd_t thrd;
+	if (thrd_create(&thrd, &consumer, &td)) {
+		perror("thread create");
+		return 2;
+	}
+
+	usleep(10 * 1000);
+	struct msgq_entry *e;
+	unsigned idx;
+
+	fprintf(stderr, "sending first msg\n");
+	msgq_allocate(&td.queue, 1, &idx);
+	e = MSGQ_ENTRY(&td.queue, idx);
+	e->type = MSGQ_SHORT_DATA;
+	snprintf(e->u.short_data, sizeof(e->u.short_data), "hello");
+	msgq_release(&td.queue, idx, 1);
+
+	usleep(10 * 1000);
+
+	fprintf(stderr, "sending second msg\n");
+	msgq_allocate(&td.queue, 1, &idx);
+	e = MSGQ_ENTRY(&td.queue, idx);
+	e->type = MSGQ_CLOSE;
+	msgq_release(&td.queue, idx, 1);
+
+	int res;
+	if (thrd_join(thrd, &res)) {
+		return 3;
+	}
+	fprintf(stderr, "thread exited with %d\n", res);
+	return 0;
+}

@@ -29,7 +29,7 @@ int bind_unique_address(const char *dir, int owner, int group, int mode,
 	a.u.sun_family = AF_UNIX;
 	str_t temp_pn = MAKE_STR(a.u.sun_path);
 
-	if (str_cat(&temp_pn, dir) || str_cat(&temp_pn, "/sock-XXXXXX")) {
+	if (str_add(&temp_pn, dir) || str_add(&temp_pn, "/sock-XXXXXX")) {
 		fprintf(stderr, "path %s too long\n", temp_pn.p);
 		return -1;
 	}
@@ -43,7 +43,7 @@ int bind_unique_address(const char *dir, int owner, int group, int mode,
 	unsigned dirlen = temp_pn.len;
 	int fd = -1;
 
-	if (str_cat(&temp_pn, "/sock")) {
+	if (str_add(&temp_pn, "/sock")) {
 		fprintf(stderr, "path %s too long\n;", temp_pn.p);
 		goto do_rmdir;
 	}
@@ -82,10 +82,10 @@ int bind_unique_address(const char *dir, int owner, int group, int mode,
 
 	char full_buf[256];
 	str_t full_pn = MAKE_STR(full_buf);
-	str_cat(&full_pn, dir);
+	str_add(&full_pn, dir);
 	unsigned buslen = full_pn.len;
 
-	if (str_catf(&full_pn, "/:%d.%d", getpid(), fd)) {
+	if (str_addf(&full_pn, "/:%d.%d", getpid(), fd)) {
 		fprintf(stderr, "printf failed\n");
 		goto do_unlink;
 	}
@@ -93,7 +93,7 @@ int bind_unique_address(const char *dir, int owner, int group, int mode,
 	if (uniqbuf) {
 		// take a copy of the filename from full_pn
 		str_t uniq = make_str(uniqbuf, bufsz);
-		if (str_cat(&uniq, full_pn.p + buslen + 1)) {
+		if (str_add(&uniq, full_pn.p + buslen + 1)) {
 			fprintf(stderr, "buf too small\n");
 			goto do_unlink;
 		}
@@ -148,9 +148,9 @@ int blocking_send(int fd, const char *bus, slice_t to, const void *p,
 	a.sun_family = AF_UNIX;
 
 	str_t s = MAKE_STR(a.sun_path);
-	str_cat(&s, bus);
-	str_cat(&s, "/");
-	if (str_cats(&s, to)) {
+	str_add(&s, bus);
+	str_add(&s, "/");
+	if (str_adds(&s, to)) {
 		fprintf(stderr, "destination name %s too long\n", s.p);
 		return -1;
 	}
@@ -254,16 +254,22 @@ int recv_message(int fd, char *buf, unsigned bufsz, struct message *m,
 			elog("message too large/small");
 			goto invalid_message;
 		}
-		int len = raw_message_len(buf);
+		int len = parse_header(m, buf);
 		if (len < 0 || len != n) {
 			elog("unexpected size");
 			goto invalid_message;
 		}
 
-		if (parse_message(buf, m, body)) {
+		str_t s;
+		s.p = buf;
+		s.len = len;
+		s.cap = len;
+		if (parse_message(m, &s)) {
 			elog("parse error");
 			goto invalid_message;
 		}
+
+		init_iterator(body, m->signature, s.p, 0, s.len);
 
 		if (verify_sender(m, u.pid)) {
 			elog("could not validate sender");

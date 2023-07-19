@@ -2,87 +2,89 @@
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
+#include <stdalign.h>
 
 #define MAX_DEPTH 32
 
-static inline const char *align2(const char *n, const char *error)
+static inline int align2(const char *base, uint32_t off, uint32_t error)
 {
-	const char *a = ALIGN_PTR_UP(const char *, n, 2);
+	uint32_t aligned = ALIGN_UINT_UP(off, 2);
 #ifndef NDEBUG
-	if (n < a) {
-		if (*(n++)) {
+	if (off < aligned) {
+		if (base[off++]) {
 			return error;
 		}
 	}
 #else
 	(void)error;
 #endif
-	return a;
+	return aligned;
 }
 
-static inline const char *align4(const char *n, const char *error)
+static inline int align4(const char *base, uint32_t off, uint32_t error)
 {
-	const char *a = ALIGN_PTR_UP(const char *, n, 4);
+	uint32_t aligned = ALIGN_UINT_UP(off, 4);
 #ifndef NDEBUG
-	while (n < a) {
-		if (*(n++)) {
+	while (off < aligned) {
+		if (base[off++]) {
 			return error;
 		}
 	}
 #else
 	(void)error;
 #endif
-	return a;
+	return aligned;
 }
 
-static inline const char *align8(const char *n, const char *error)
+static inline int align8(const char *base, uint32_t off, uint32_t error)
 {
-	const char *a = ALIGN_PTR_UP(const char *, n, 8);
+	uint32_t aligned = ALIGN_UINT_UP(off, 8);
 #ifndef NDEBUG
-	while (n < a) {
-		if (*(n++)) {
+	while (off < aligned) {
+		if (base[off++]) {
 			return error;
 		}
 	}
 #else
 	(void)error;
 #endif
-	return a;
+	return aligned;
 }
 
 void align_iterator_8(struct iterator *p)
 {
-	const char *n = align8(p->n, p->e);
-	if (n > p->e) {
-		p->error = 1;
+	uint32_t n = align8(p->base, p->next, p->end);
+	if (n > p->end) {
+		p->next = p->end + 1;
 	} else {
-		p->n = n;
+		p->next = n;
 	}
 }
 
-static const char *alignx(char type, const char *n, const char *error)
+static uint32_t alignx(char type, const char *base, uint32_t off,
+		       uint32_t error)
 {
 	switch (type) {
-	case TYPE_BYTE_BYTE:
-	case TYPE_SIGNATURE_BYTE:
-	case TYPE_VARIANT_BYTE:
-		return n;
-	case TYPE_INT16_BYTE:
-	case TYPE_UINT16_BYTE:
-		return align2(n, error);
-	case TYPE_BOOL_BYTE:
-	case TYPE_INT32_BYTE:
-	case TYPE_UINT32_BYTE:
-	case TYPE_STRING_BYTE:
-	case TYPE_PATH_BYTE:
-	case TYPE_ARRAY_BYTE:
-		return align4(n, error);
-	case TYPE_INT64_BYTE:
-	case TYPE_UINT64_BYTE:
-	case TYPE_DOUBLE_BYTE:
-	case TYPE_DICT_BYTE:
-	case TYPE_STRUCT_BYTE:
-		return align8(n, error);
+	case TYPE_BYTE:
+	case TYPE_SIGNATURE:
+	case TYPE_VARIANT:
+		return off;
+	case TYPE_INT16:
+	case TYPE_UINT16:
+		return align2(base, off, error);
+	case TYPE_BOOL:
+	case TYPE_INT32:
+	case TYPE_UINT32:
+	case TYPE_STRING:
+	case TYPE_PATH:
+	case TYPE_ARRAY:
+		return align4(base, off, error);
+	case TYPE_INT64:
+	case TYPE_UINT64:
+	case TYPE_DOUBLE:
+	case TYPE_DICT:
+	case TYPE_STRUCT:
+		return align8(base, off, error);
 	default:
 		return error;
 	}
@@ -90,109 +92,94 @@ static const char *alignx(char type, const char *n, const char *error)
 
 static uint8_t parse1(struct iterator *p, char type)
 {
-	const char *n = p->n;
-	if (n >= p->e || *p->sig != type) {
-		p->error = 1;
+	uint32_t n = p->next;
+	if (n >= p->end || *p->sig != type) {
+		p->next = p->end + 1;
 		return 0;
 	}
-	p->n = n + 1;
+	p->next++;
 	p->sig++;
-	return *(uint8_t *)n;
+	return *(uint8_t *)(p->base + n);
 }
 
 static uint16_t parse2(struct iterator *p, char type)
 {
-	const char *n = align2(p->n, p->e);
-	if (n + 2 > p->e || *p->sig != type) {
-		p->error = 1;
+	uint32_t n = align2(p->base, p->next, p->end);
+	if (n + 2 > p->end || *p->sig != type) {
+		p->next = p->end + 1;
 		return 0;
 	}
-	p->n = n + 2;
+	p->next = n + 2;
 	p->sig++;
-	return *(uint16_t *)n;
+	return read_native_2(p->base + n);
 }
 
 static uint32_t parse4(struct iterator *p, char type)
 {
-	const char *n = align4(p->n, p->e);
-	if (n + 4 > p->e || *p->sig != type) {
-		p->error = 1;
+	uint32_t n = align4(p->base, p->next, p->end);
+	if (n + 4 > p->end || *p->sig != type) {
+		p->next = p->end + 1;
 		return 0;
 	}
-	p->n = n + 4;
+	p->next = n + 4;
 	p->sig++;
-	return *(uint32_t *)n;
+	return read_native_4(p->base + n);
 }
 
 static uint64_t parse8(struct iterator *p, char type)
 {
-	const char *n = align8(p->n, p->e);
-	if (n + 4 > p->e || *p->sig != type) {
-		p->error = 1;
+	uint32_t n = align8(p->base, p->next, p->end);
+	if (n + 8 > p->end || *p->sig != type) {
+		p->next = p->end + 1;
 		return 0;
 	}
-	p->n = n + 8;
+	p->next = n + 8;
 	p->sig++;
-	return *(uint64_t *)n;
+	return read_native_8(p->base + n);
 }
 
 uint8_t parse_byte(struct iterator *p)
 {
-	return parse1(p, TYPE_BYTE_BYTE);
+	return parse1(p, TYPE_BYTE);
 }
 
 int16_t parse_int16(struct iterator *p)
 {
-	union {
-		uint16_t u;
-		int16_t i;
-	} u;
-	u.u = parse2(p, TYPE_INT16_BYTE);
-	return u.i;
+	return (int16_t)parse2(p, TYPE_INT16);
 }
 
 uint16_t parse_uint16(struct iterator *p)
 {
-	return parse2(p, TYPE_UINT16_BYTE);
+	return parse2(p, TYPE_UINT16);
 }
 
 int32_t parse_int32(struct iterator *p)
 {
-	union {
-		int32_t i;
-		uint32_t u;
-	} u;
-	u.u = parse4(p, TYPE_INT32_BYTE);
-	return u.i;
+	return (int32_t)parse4(p, TYPE_INT32);
 }
 
 uint32_t parse_uint32(struct iterator *p)
 {
-	return parse4(p, TYPE_UINT32_BYTE);
+	return parse4(p, TYPE_UINT32);
 }
 
 bool parse_bool(struct iterator *p)
 {
-	uint32_t u = parse4(p, TYPE_UINT32_BYTE);
+	uint32_t u = parse4(p, TYPE_UINT32);
 	if (u > 1) {
-		p->error = 1;
+		p->next = p->end + 1;
 	}
 	return u != 0;
 }
 
 int64_t parse_int64(struct iterator *p)
 {
-	union {
-		int64_t i;
-		uint64_t u;
-	} u;
-	u.u = parse4(p, TYPE_INT64_BYTE);
-	return u.i;
+	return (int64_t)parse8(p, TYPE_INT64);
 }
 
 uint64_t parse_uint64(struct iterator *p)
 {
-	return parse4(p, TYPE_UINT64_BYTE);
+	return parse8(p, TYPE_UINT64);
 }
 
 int parse_double(struct iterator *p, double *pv)
@@ -201,52 +188,52 @@ int parse_double(struct iterator *p, double *pv)
 		double d;
 		uint64_t u;
 	} u;
-	u.u = parse4(p, TYPE_DOUBLE_BYTE);
+	u.u = parse8(p, TYPE_DOUBLE);
 	return u.d;
 }
 
-static slice_t parse_string_bytes(struct iterator *p, unsigned len)
+int check_string(slice_t s)
+{
+	// need no nul bytes in the string and nul termination
+	return memchr(s.p, 0, s.len) || s.p[s.len];
+}
+
+static slice_t parse_string_bytes(struct iterator *p, uint32_t len)
 {
 	slice_t ret = MAKE_SLICE("");
-	const char *n = p->n;
-	const char *e = n + len + 1;
-	// need no nul bytes in the string and nul termination
-	if (e > p->e || memchr(n, len, 0) || n[len]) {
-		p->error = 1;
+	ret.p = p->base + p->next;
+	ret.len = len;
+	uint32_t n = p->next + len + 1;
+	if (n > p->end || check_string(ret)) {
+		p->next = p->end + 1;
 		return ret;
 	}
-	ret.p = n;
-	ret.len = len;
-	p->n = e;
+	p->next = n;
 	return ret;
 }
 
 const char *parse_signature(struct iterator *p)
 {
-	uint8_t len = parse1(p, TYPE_SIGNATURE_BYTE);
+	uint8_t len = parse1(p, TYPE_SIGNATURE);
 	slice_t str = parse_string_bytes(p, len);
 	return str.p;
 }
 
 slice_t parse_string(struct iterator *p)
 {
-	uint32_t len = parse4(p, TYPE_STRING_BYTE);
+	uint32_t len = parse4(p, TYPE_STRING);
 	return parse_string_bytes(p, len);
 }
 
-slice_t parse_path(struct iterator *p)
+int check_path(const char *s)
 {
-	uint32_t len = parse4(p, TYPE_PATH_BYTE);
-	slice_t str = parse_string_bytes(p, len);
-	const char *s = str.p;
 	if (*(s++) != '/') {
 		// path must begin with / and can not be the empty string
-		p->error = 1;
-		return str;
+		return -1;
 	}
 	if (!*s) {
 		// trailing / only allowed if the path is "/"
-		return str;
+		return 0;
 	}
 	const char *segment = s;
 	for (;;) {
@@ -260,189 +247,154 @@ slice_t parse_path(struct iterator *p)
 		} else if (s > segment && *s == '/') {
 			segment = ++s;
 		} else if (s > segment && *s == '\0') {
-			return str;
+			return 0;
 		} else {
-			p->error = 1;
-			return str;
+			return -1;
 		}
 	}
 }
 
-static void parse_variant_data(struct iterator *p, union variant_union *pu)
+slice_t parse_path(struct iterator *p)
 {
-	char type = *p->sig;
-	switch (type) {
-	case TYPE_BYTE_BYTE:
-		pu->u8 = parse_byte(p);
-		break;
-	case TYPE_INT16_BYTE:
-	case TYPE_UINT16_BYTE:
-		pu->u16 = parse2(p, type);
-		break;
-	case TYPE_BOOL_BYTE:
-		pu->b = parse_bool(p);
-		break;
-	case TYPE_INT32_BYTE:
-	case TYPE_UINT32_BYTE:
-		pu->u32 = parse4(p, type);
-		break;
-	case TYPE_INT64_BYTE:
-	case TYPE_UINT64_BYTE:
-	case TYPE_DOUBLE_BYTE:
-		pu->u64 = parse8(p, type);
-		break;
-	case TYPE_STRING_BYTE:
-		pu->str = parse_string(p);
-		break;
-	case TYPE_PATH_BYTE:
-		pu->path = parse_path(p);
-		break;
-	case TYPE_SIGNATURE_BYTE:
-		pu->sig = parse_signature(p);
-		break;
-	case TYPE_VARIANT_BYTE: {
-		struct variant v = parse_variant(p);
-		pu->data = v.data;
-		break;
+	uint32_t len = parse4(p, TYPE_PATH);
+	slice_t str = parse_string_bytes(p, len);
+	if (check_path(str.p)) {
+		p->next = p->end + 1;
 	}
-	case TYPE_ARRAY_BYTE:
-		pu->data = skip_array(p);
-		break;
-	case TYPE_STRUCT_BYTE:
-		pu->data = skip_struct(p);
-		break;
-	case TYPE_DICT_BYTE:
-		// Can only occur as an array element. So there is never a need
-		// to skip just a dict entry.
-	default:
-		p->error = 1;
-		break;
-	}
-}
-
-int skip_value(struct iterator *p)
-{
-	union variant_union u;
-	parse_variant_data(p, &u);
-	return p->error;
+	return str;
 }
 
 struct variant parse_variant(struct iterator *p)
 {
-	uint8_t len = parse1(p, TYPE_VARIANT_BYTE);
+	uint8_t len = parse1(p, TYPE_VARIANT);
 	slice_t sig = parse_string_bytes(p, len);
 
 	struct variant ret;
-	ret.data.n = p->n;
-	ret.data.e = p->n;
-	ret.data.sig = "";
-	ret.data.depth = ++p->depth;
-	ret.data.error = 1;
-	ret.sig = TYPE_INVALID;
+	ret.sig = sig.p;
 
 	const char *nextsig = p->sig;
 	p->sig = sig.p;
 
-	if (p->depth < MAX_DEPTH) {
-		parse_variant_data(p, &ret.u);
-		if (*p->sig || p->error) {
-			p->error = 1;
-		} else {
-			ret.sig = sig.p;
-			ret.data.sig = sig.p;
-			ret.data.error = 0;
-			ret.data.e = p->n;
-		}
+	char type = *p->sig;
+	switch (type) {
+	case TYPE_BYTE:
+		ret.u.u8 = parse_byte(p);
+		break;
+	case TYPE_INT16:
+	case TYPE_UINT16:
+		ret.u.u16 = parse2(p, type);
+		break;
+	case TYPE_BOOL:
+		ret.u.b = parse_bool(p);
+		break;
+	case TYPE_INT32:
+	case TYPE_UINT32:
+		ret.u.u32 = parse4(p, type);
+		break;
+	case TYPE_INT64:
+	case TYPE_UINT64:
+	case TYPE_DOUBLE:
+		ret.u.u64 = parse8(p, type);
+		break;
+	case TYPE_STRING:
+		ret.u.str = parse_string(p);
+		break;
+	case TYPE_PATH:
+		ret.u.path = parse_path(p);
+		break;
+	case TYPE_SIGNATURE:
+		ret.u.sig = parse_signature(p);
+		break;
+	case TYPE_VARIANT:
+	case TYPE_STRUCT_BEGIN:
+		ret.u.data = skip_value(p);
+		break;
+	case TYPE_ARRAY:
+		ret.u.data = skip_array(p);
+		break;
+	case TYPE_DICT_BEGIN:
+		// Can only occur as an array element. So there is never a need
+		// to skip just a dict entry.
+	default:
+		p->end = p->next + 1;
+		break;
+	}
+
+	if (iter_error(p)) {
+		ret.sig = "";
 	}
 
 	p->sig = nextsig;
-	p->depth--;
-
 	return ret;
 }
 
 struct iterator skip_array(struct iterator *p)
 {
-	uint32_t len = parse4(p, TYPE_ARRAY_BYTE);
-	const char *n = alignx(*p->sig, p->n, p->e + 1);
+	uint32_t len = parse4(p, TYPE_ARRAY);
+	uint32_t start = alignx(*p->sig, p->base, p->next, p->end);
 
 	struct iterator ret;
-	ret.n = n;
-	ret.e = n;
-	ret.depth = p->depth;
+	ret.base = p->base;
+	ret.next = start;
+	ret.end = start + len;
 	ret.sig = p->sig;
-	ret.error = 1;
 
-	if (p->error || n + len > p->e || skip_signature(&p->sig)) {
-		p->error = 1;
+	if (start + len > p->end || skip_signature(&p->sig, true)) {
+		ret.next = ret.end + 1;
 	} else {
-		p->n = n + len;
-		ret.e = p->n;
-		ret.error = 0;
+		p->next = ret.end;
 	}
+
 	return ret;
 }
 
 static void _parse_struct(struct iterator *p, char type)
 {
-	const char *n = align8(p->n, p->e);
-	if (!p->error && p->depth < MAX_DEPTH && n <= p->e && *p->sig == type) {
-		p->sig++;
-		p->depth++;
-		p->n = n;
+	uint32_t n = align8(p->base, p->next, p->end);
+	if (n > p->end || *p->sig != type) {
+		p->next = p->end + 1;
 	} else {
-		p->error = 1;
+		p->sig++;
+		p->next = n;
 	}
 }
 
 void parse_struct_begin(struct iterator *p)
 {
-	_parse_struct(p, TYPE_STRUCT_BYTE);
+	_parse_struct(p, TYPE_STRUCT_BEGIN);
 }
 
 void parse_dict_begin(struct iterator *p)
 {
-	_parse_struct(p, TYPE_DICT_BYTE);
+	_parse_struct(p, TYPE_DICT_BEGIN);
 }
 
 void parse_dict_end(struct iterator *p)
 {
-	if (!p->error && *p->sig == TYPE_DICT_END_BYTE) {
+	if (*p->sig == TYPE_DICT_END) {
 		p->sig++;
-		p->depth--;
 	} else {
-		p->error = 1;
+		p->next = p->end + 1;
 	}
 }
 
 void parse_struct_end(struct iterator *p)
 {
-	do {
+	for (;;) {
 		skip_value(p);
-	} while (*p->sig != TYPE_STRUCT_END_BYTE && !p->error);
-	p->sig++;
-	p->depth--;
-}
-
-struct iterator skip_struct(struct iterator *p)
-{
-	struct iterator ret;
-	parse_struct_begin(p);
-	ret.n = p->n;
-	ret.e = p->n;
-	ret.depth = p->depth;
-	ret.sig = p->sig;
-	parse_struct_end(p);
-	ret.error = p->error;
-	if (!p->error) {
-		ret.e = p->n;
+		if (iter_error(p)) {
+			return;
+		}
+		if (*p->sig == TYPE_STRUCT_END) {
+			p->sig++;
+			return;
+		}
 	}
-	return ret;
 }
 
 bool parse_array_next(struct iterator *p, const char **psig)
 {
-	if (p->n >= p->e) {
+	if (p->next >= p->end) {
 		return false; // end of array data
 	} else if (*psig) {
 		p->sig = *psig;
@@ -453,38 +405,236 @@ bool parse_array_next(struct iterator *p, const char **psig)
 	}
 }
 
-int skip_signature(const char **psig)
+struct iterator skip_value(struct iterator *p)
 {
-	switch (*((*psig)++)) {
-	case TYPE_BYTE_BYTE:
-	case TYPE_BOOL_BYTE:
-	case TYPE_INT16_BYTE:
-	case TYPE_UINT16_BYTE:
-	case TYPE_INT32_BYTE:
-	case TYPE_UINT32_BYTE:
-	case TYPE_INT64_BYTE:
-	case TYPE_UINT64_BYTE:
-	case TYPE_DOUBLE_BYTE:
-	case TYPE_STRING_BYTE:
-	case TYPE_PATH_BYTE:
-	case TYPE_SIGNATURE_BYTE:
-	case TYPE_VARIANT_BYTE:
-		return 0;
-	case TYPE_ARRAY_BYTE:
-		return skip_signature(psig);
-	case TYPE_DICT_BYTE:
-		return skip_signature(psig) || skip_signature(psig) ||
-		       *((*psig)++) != TYPE_DICT_END_BYTE;
-	case TYPE_STRUCT_BYTE:
-		do {
-			if (skip_signature(psig)) {
+	const char *base = p->base;
+	uint32_t next = p->next;
+	uint32_t end = p->end;
+	const char *sig = p->sig;
+	const char *stack[MAX_DEPTH];
+	int stackn = 0;
+
+	struct iterator ret;
+	ret.base = p->base;
+	ret.sig = sig;
+	ret.next = next;
+
+	if (*sig) {
+		goto error;
+	}
+
+	for (;;) {
+		switch (*(sig++)) {
+		case '\0':
+			if (stackn) {
+				// we've reached the end of the variant
+				sig = stack[--stackn];
+				continue;
+			}
+			goto success;
+
+		case TYPE_BYTE:
+			next++;
+			break;
+
+		case TYPE_INT16:
+		case TYPE_UINT16:
+			next = ALIGN_UINT_UP(next, 2) + 2;
+			break;
+
+		case TYPE_BOOL:
+		case TYPE_INT32:
+		case TYPE_UINT32:
+			next = ALIGN_UINT_UP(next, 4) + 4;
+			break;
+
+		case TYPE_INT64:
+		case TYPE_UINT64:
+		case TYPE_DOUBLE:
+			next = ALIGN_UINT_UP(next, 8) + 8;
+			break;
+
+		case TYPE_STRING:
+		case TYPE_PATH: {
+			next = ALIGN_UINT_UP(next, 4) + 4;
+			if (next > end) {
+				goto error;
+			}
+			uint32_t len = read_native_4(base + next - 4);
+			next += len + 1;
+			break;
+		}
+
+		case TYPE_SIGNATURE: {
+			if (next == end) {
+				goto error;
+			}
+			uint8_t len = *(uint8_t *)(base + next);
+			next += 1 + len + 1;
+			break;
+		}
+
+		case TYPE_ARRAY: {
+			next = ALIGN_UINT_UP(next, 4) + 4;
+			if (next > end) {
+				goto error;
+			}
+			uint32_t len = read_native_4(base + next - 4);
+			next = alignx(*sig, base, next, end) + len;
+			if (skip_signature(&sig, true)) {
+				goto error;
+			}
+			break;
+		}
+
+		case TYPE_STRUCT_BEGIN:
+			next = ALIGN_UINT_UP(next, 8);
+			break;
+
+		case TYPE_VARIANT: {
+			// Need to save the current signature to a stack.
+			const char **psig = &stack[stackn++];
+			if (psig == stack + sizeof(stack) || next == end) {
+				goto error;
+			}
+			// parse to get the new signature from the data
+			slice_t s;
+			s.len = *(uint8_t *)(base + next);
+			s.p = base + next + 1;
+			next += 1 + s.len + 1;
+			if (next > end || check_string(s)) {
+				goto error;
+			}
+
+			// and then push the current signature onto the stack
+			*psig = sig;
+			sig = s.p;
+			break;
+		}
+
+		case TYPE_DICT_BEGIN:
+			// dict can not exist outside an array
+		default:
+			goto error;
+		}
+
+		if (next > end) {
+			goto error;
+		}
+	}
+success:
+	ret.end = next;
+	p->next = next;
+	return ret;
+error:
+	ret.end = 0;
+	ret.next = 1;
+	p->next = end + 1;
+	return ret;
+}
+
+int skip_signature(const char **psig, bool in_array)
+{
+	char s[32];
+	char *p = s;
+	char *e = s + sizeof(s) - 1;
+	*p = 0;
+
+	if (in_array) {
+		*(p++) = TYPE_ARRAY;
+		*p = 0;
+	}
+
+	for (;;) {
+		switch (*((*psig)++)) {
+		case TYPE_BYTE:
+		case TYPE_BOOL:
+		case TYPE_INT16:
+		case TYPE_UINT16:
+		case TYPE_INT32:
+		case TYPE_UINT32:
+		case TYPE_INT64:
+		case TYPE_UINT64:
+		case TYPE_DOUBLE:
+		case TYPE_STRING:
+		case TYPE_PATH:
+		case TYPE_SIGNATURE:
+		case TYPE_VARIANT:
+			break;
+
+		case TYPE_ARRAY:
+			if (p == e) {
 				return -1;
 			}
-		} while (**psig != TYPE_STRUCT_END_BYTE);
-		(*psig)++;
-		return 0;
-	default:
-		return -1;
+			*(p++) = TYPE_ARRAY;
+			*p = 0;
+			// loop around to consume another item
+			continue;
+
+		case TYPE_DICT_BEGIN:
+			if (p == s || p[-1] != TYPE_ARRAY) {
+				return -1;
+			}
+			// transform the array into a dict
+			p[-1] = TYPE_DICT;
+			break;
+
+		case TYPE_STRUCT_BEGIN:
+			if (p == e) {
+				return -1;
+			}
+			*(p++) = TYPE_STRUCT;
+			*p = 0;
+			break;
+
+		case TYPE_STRUCT_END:
+			if (p == s || p[-1] != TYPE_STRUCT) {
+				return -1;
+			}
+			*(--p) = 0;
+			break;
+
+		case TYPE_DICT_END:
+			if (p == s || p[-1] != TYPE_DICT_END) {
+				return -1;
+			}
+			*(--p) = 0;
+			break;
+		default:
+			(*psig)--;
+			return -1;
+		}
+
+		if (p > s) {
+			switch (p[-1]) {
+			case TYPE_ARRAY:
+				// We've consumed the array data and it was not
+				// a dict. Otherwise the type code would have
+				// been changed.
+				*(--p) = 0;
+				break;
+
+			case TYPE_DICT:
+				// we've consumed one item in the dict
+				p[-1] = TYPE_DICT_BEGIN;
+				break;
+
+			case TYPE_DICT_BEGIN:
+				// we've consumed both items in the dict
+				p[-1] = TYPE_DICT_END;
+				break;
+
+			case TYPE_DICT_END:
+				// we expected a closing brace but didn't get
+				// one
+				return -1;
+			}
+		}
+
+		if (p == s) {
+			// we've consumed an item and have nothing on the stack
+			return 0;
+		}
 	}
 }
 
@@ -493,15 +643,15 @@ void TEST_parse()
 {
 	fprintf(stderr, "TEST_parse\n");
 	struct iterator p;
-	static const uint8_t test1[] __attribute__((aligned(8))) = {
+	static const alignas(8) uint8_t test1[] = {
 		1, // byte
 		0, 2, 0, // u16
 		3, 0, 0, 0, // u32
 	};
-	init_iterator(&p, "yqu", test1, sizeof(test1));
-	assert(parse_byte(&p) == 1 && !p.error);
-	assert(parse_uint16(&p) == 2 && !p.error);
-	assert(parse_uint32(&p) == 3 && !p.error);
-	assert(parse_byte(&p) == 0 && p.error);
+	init_iterator(&p, "yqu", test1, 0, sizeof(test1));
+	assert(parse_byte(&p) == 1 && !iter_error(&p));
+	assert(parse_uint16(&p) == 2 && !iter_error(&p));
+	assert(parse_uint32(&p) == 3 && !iter_error(&p));
+	assert(parse_byte(&p) == 0 && iter_error(&p));
 }
 #endif

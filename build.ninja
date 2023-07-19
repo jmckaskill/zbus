@@ -20,6 +20,9 @@ rule ar
     command = rm -f $out && $ar $out $in
     description = AR $out
 
+# dmem
+build obj/dmem/vector.o: cc dmem/vector.c
+build obj/dmem.a: ar obj/dmem/vector.o
 
 # lib
 
@@ -44,41 +47,30 @@ build obj/lib.a: ar $
         obj/lib/str.o $
         obj/lib/unix.o $
 
+# bus
 
-# sockbusd
+build obj/bus/bus.o:    cc bus/bus.c
+build obj/bus/main.o:   cc bus/main.c
+build obj/bus/msgq.o:   cc bus/msgq.c
+build obj/bus/page.o:   cc bus/page.c
+build obj/bus/remote.o: cc bus/remote.c
+build obj/bus/rcu.o:    cc bus/rcu.c
 
-
-build obj/sockbusd/daemon.o: cc cmd/sockbusd/daemon.c
-
-build bin/sockbusd: ld $
-        obj/sockbusd/daemon.o $
+build bin/bus: ld $
+        obj/bus/bus.o $
+        obj/bus/main.o $
+        obj/bus/msgq.o $
+        obj/bus/page.o $
+        obj/bus/remote.o $
+        obj/bus/rcu.o $
         obj/lib.a $
-
-
-#sockbusp
-
-build obj/sockbusp/proxy.o: cc cmd/sockbusp/proxy.c
-
-build obj/sockbusp.test: test bin/sockbusp
-
-build bin/sockbusp: ld $
-        obj/sockbusp/proxy.o $
-        obj/lib.a $
-
-#sockbusp
-
-build obj/sockbus/client.o: cc cmd/sockbus/client.c
-
-build bin/sockbus: ld $
-        obj/sockbus/client.o $
-        obj/lib.a $
+        obj/dmem.a $
 
 
 # default targets
 
-default bin/sockbusp bin/sockbusd bin/sockbus
+default bin/bus
 build test: phony $
-    obj/sockbusp.test $
 
 
 
