@@ -4,135 +4,141 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
 
-const struct rcu_root *rcu_lock(struct rcu_handle *h)
+const struct rcu *rcu_lock(struct gc_handle *h)
 {
-	// First set the version to the oldest possible (1).
-	// This way we don't end up with a dangling root pointer in case a GC
-	// happens between the two store calls.
-	atomic_store_explicit(&h->version, 1, memory_order_release);
-	uintptr_t uptr = atomic_load_explicit(h->root, memory_order_acquire);
-	const struct rcu_root *root = (void *)uptr;
-	// Then once we have the root pointer, bring our version forward
-	atomic_store_explicit(&h->version, root->version, memory_order_release);
-	return root;
-}
-
-void rcu_unlock(struct rcu_handle *h)
-{
+	// First set the version to the oldest possible.
+	// This way we don't end up with a dangling data pointer in case a GC
+	// happens between the load and store.
 	atomic_store_explicit(&h->version, 0, memory_order_release);
+	struct rcu *data = atomic_load_explicit(h->data, memory_order_acquire);
+	// Then once we have the data pointer, bring our version forward
+	atomic_store_explicit(&h->version, data->version, memory_order_release);
+	return data;
 }
 
-struct rcu_header {
-	struct rcu_header *next;
-	uintptr_t version;
-};
-
-static_assert(sizeof(struct rcu_header) == 2 * sizeof(void *), "");
-
-DVECTOR_INIT(rcu_handle, rcu_handle_t);
-
-struct rcu {
-	d_vector(rcu_handle) handles;
-	uintptr_t version;
-
-	struct rcu_header *free_oldest;
-	struct rcu_header *free_newest;
-
-	atomic_uintptr_t root CACHE_ALIGNED;
-};
-
-struct rcu *rcu_new()
+void rcu_unlock(struct gc_handle *h)
 {
-	struct rcu *r = aligned_alloc(CACHE_LINE_SIZE, sizeof(struct rcu));
-	memset(r, 0, sizeof(*r));
-	r->version = 1;
-	return r;
+	atomic_store_explicit(&h->version, -1, memory_order_release);
 }
 
-static void run_gc(struct rcu *r, unsigned version);
+struct gc_header {
+	alignas(max_align_t) struct gc_header *next;
+	destructor_fn destroy;
+	unsigned version;
+};
 
-void rcu_free(struct rcu *r)
+DVECTOR_INIT(gc_handle, struct gc_handle *);
+
+struct gc {
+	d_vector(gc_handle) handles;
+	int version;
+
+	struct gc_header *free_oldest;
+	struct gc_header *free_newest;
+
+	alignas(CACHE_LINE_SIZE) _Atomic(struct rcu *) data;
+};
+
+struct gc *new_gc()
 {
-	if (r) {
-		assert(r->root == 0);
-		assert(r->handles.size == 0);
-		run_gc(r, r->version);
-		dv_free(r->handles);
-		free(r);
+	struct gc *g = aligned_alloc(CACHE_LINE_SIZE, sizeof(struct gc));
+	dv_init(&g->handles);
+	g->version = 0;
+	g->free_newest = NULL;
+	g->free_oldest = NULL;
+	g->data = 0;
+	return g;
+}
+
+static void do_run_gc(struct gc *g, int version);
+
+void free_gc(struct gc *g)
+{
+	if (g) {
+		assert(g->data == 0);
+		assert(g->handles.size == 0);
+		do_run_gc(g, g->version);
+		dv_free(g->handles);
+		free(g);
 	}
 }
 
-void rcu_register(struct rcu *r, struct rcu_handle *h)
+struct gc_handle *gc_register(struct gc *g)
 {
-	dv_append1(&r->handles, h);
-	h->version = 0;
-	h->root = &r->root;
+	struct gc_handle *h = aligned_alloc(CACHE_LINE_SIZE, sizeof(*h));
+	dv_append1(&g->handles, h);
+	h->version = -1;
+	h->data = &g->data;
+	return h;
 }
 
-void rcu_unregister(struct rcu *r, struct rcu_handle *h)
+void gc_unregister(struct gc *g, struct gc_handle *h)
 {
-	dv_remove(&r->handles, h);
+	dv_remove(&g->handles, h);
+	free(h);
 }
 
-void rcu_update(struct rcu *r, struct rcu_root *root)
+void update_rcu(struct gc *g, struct rcu *data)
 {
-	root->version = ++r->version;
-	uintptr_t u = (uintptr_t)(void *)root;
-	atomic_store_explicit(&r->root, u, memory_order_release);
+	// TODO: handle overflow
+	data->version = ++g->version;
+	atomic_store_explicit(&g->data, data, memory_order_release);
 }
 
-void rcu_run_gc(struct rcu *r)
+void run_gc(struct gc *g)
 {
-	uintptr_t version = r->version;
-	for (int i = 0; i < r->handles.size; i++) {
-		rcu_handle_t h = r->handles.data[i];
-		uintptr_t hver =
-			atomic_load_explicit(&h->version, memory_order_relaxed);
-		if (hver && hver < version) {
-			version = hver;
+	int version = g->version;
+	for (int i = 0; i < g->handles.size; i++) {
+		struct gc_handle *h = g->handles.data[i];
+		int v = atomic_load_explicit(&h->version, memory_order_relaxed);
+		if (0 <= v && v < version) {
+			version = v;
 		}
 	}
 
-	run_gc(r, version);
+	do_run_gc(g, version);
 }
 
-static void run_gc(struct rcu *r, unsigned version)
+static void do_run_gc(struct gc *g, int version)
 {
-	struct rcu_header *p = r->free_oldest;
-	while (p != NULL && p->version < version) {
-		struct rcu_header *next = p->next;
-		free(p);
-		p = next;
+	struct gc_header *h = g->free_oldest;
+	while (h && h->version < version) {
+		struct gc_header *next = h->next;
+		if (h->destroy) {
+			h->destroy(h + 1);
+		}
+		free(h);
+		h = next;
+	}
+	g->free_oldest = h;
+	if (h == NULL) {
+		g->free_newest = NULL;
 	}
 }
 
-void *rcu_alloc(size_t num, size_t sz)
+void *gc_alloc(size_t num, size_t sz)
 {
 	if (num && sz > -1 / num) {
-		return 0;
+		return NULL;
 	}
-	struct rcu_header *h = malloc(num * sz + 16);
-	return h ? h + 16 : NULL;
+	struct gc_header *h = malloc((num * sz) + sizeof(struct gc_header));
+	return h ? (h + 1) : NULL;
 }
 
-void rcu_collect(struct rcu *r, void *p)
+void gc_collect(struct gc *g, void *p, destructor_fn destroy)
 {
-	struct rcu_header *hdr = ((struct rcu_header *)p) - 1;
-	if (r->free_newest) {
-		r->free_newest->next = hdr;
-	} else {
-		r->free_oldest = hdr;
+	if (p) {
+		struct gc_header *hdr = ((struct gc_header *)p) - 1;
+		if (g->free_newest) {
+			g->free_newest->next = hdr;
+		} else {
+			g->free_oldest = hdr;
+		}
+		g->free_newest = hdr;
+		hdr->next = NULL;
+		hdr->version = g->version;
+		hdr->destroy = destroy;
 	}
-	r->free_newest = hdr;
-	hdr->next = NULL;
-	hdr->version = r->version;
-}
-
-char *rcu_strdup(const char *s)
-{
-	size_t sz = strlen(s);
-	char *p = RCU_ALLOC(char, sz + 1);
-	memcpy(p, s, sz + 1);
-	return p;
 }

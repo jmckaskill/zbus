@@ -6,8 +6,6 @@
 
 #define MIN_MESSAGE_SIZE 16
 #define MAX_MESSAGE_SIZE (64 * 1024)
-#define MAX_FIELD_SIZE 256
-#define MULTIPART_WORKING_SPACE (256 + 8)
 #define MAX_UNIX_FDS 16
 
 #define FIELD_PATH 1
@@ -53,9 +51,9 @@ struct message {
 	slice_t destination;
 	slice_t sender;
 	const char *signature;
-	unsigned fdnum;
-	unsigned field_len;
-	unsigned body_len;
+	uint32_t fdnum;
+	uint32_t field_len;
+	uint32_t body_len;
 	uint32_t serial;
 	uint32_t reply_serial;
 	enum msg_type type;
@@ -65,8 +63,6 @@ struct message {
 void init_message(struct message *m, enum msg_type type, uint32_t serial);
 bool is_reply(const struct message *request, const struct message *reply);
 
-int check_string(slice_t s);
-int check_path(const char *p);
 int check_member(const char *p);
 int check_interface(const char *p);
 int check_address(const char *p);
@@ -77,7 +73,7 @@ static int check_known_address(const char *p);
 // buffer needs to be at least MIN_MESSAGE_SIZE large
 // returns -ve on invalid message header
 // returns number of bytes for full message
-int parse_header(struct message *msg, const char *p);
+int parse_header(struct message *msg, str_t *parts);
 
 // called after parse_header once we've received enough data bytes
 // parts contains the message data bytes and does not need to be aligned
@@ -87,16 +83,18 @@ int parse_header(struct message *msg, const char *p);
 // with the message body parts. Returns zero on success, non-zero on error.
 int parse_message(struct message *msg, str_t *parts);
 
-static inline int buffer_error(struct buffer b)
+static inline int buffer_error(struct builder b)
 {
-	return b.off > b.cap;
+	return (intptr_t)((uintptr_t)b.next - (uintptr_t)b.end) > 0;
 }
 
-struct buffer start_message(const struct message *m, void *buf, size_t bufsz);
+struct builder start_message(const struct message *m, void *buf, size_t bufsz);
 
 // returns negative on error marshalling the message
 // positive number of bytes in the message
-int end_message(struct buffer b);
+int end_message(struct builder b);
+
+int write_message_header(const struct message *m, void *buf, size_t bufsz);
 
 ////////////////////////////////////////
 // inline implementations

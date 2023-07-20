@@ -27,38 +27,38 @@ build obj/dmem.a: ar obj/dmem/vector.o
 # lib
 
 build obj/lib/auth.o:       cc lib/auth.c
-build obj/lib/bus.o:        cc lib/bus.c
 build obj/lib/log.o:        cc lib/log.c
 build obj/lib/marshal.o:    cc lib/marshal.c
 build obj/lib/message.o:    cc lib/message.c
+build obj/lib/multipart.o:  cc lib/multipart.c
 build obj/lib/parse.o:      cc lib/parse.c
-build obj/lib/stream.o:     cc lib/stream.c
 build obj/lib/str.o:        cc lib/str.c
 build obj/lib/unix.o:       cc lib/unix.c
 
 build obj/lib.a: ar $
         obj/lib/auth.o $
-        obj/lib/bus.o $
         obj/lib/log.o $
         obj/lib/marshal.o $
         obj/lib/message.o $
+        obj/lib/multipart.o $
         obj/lib/parse.o $
-        obj/lib/stream.o $
         obj/lib/str.o $
         obj/lib/unix.o $
 
 # bus
 
-build obj/bus/bus.o:    cc bus/bus.c
-build obj/bus/main.o:   cc bus/main.c
-build obj/bus/msgq.o:   cc bus/msgq.c
-build obj/bus/page.o:   cc bus/page.c
-build obj/bus/remote.o: cc bus/remote.c
-build obj/bus/rcu.o:    cc bus/rcu.c
+build obj/bus/bus.o:        cc bus/bus.c
+build obj/bus/main.o:       cc bus/main.c
+build obj/bus/messages.o:   cc bus/messages.c
+build obj/bus/msgq.o:       cc bus/msgq.c
+build obj/bus/page.o:       cc bus/page.c
+build obj/bus/remote.o:     cc bus/remote.c
+build obj/bus/rcu.o:        cc bus/rcu.c
 
 build bin/bus: ld $
         obj/bus/bus.o $
         obj/bus/main.o $
+        obj/bus/messages.o $
         obj/bus/msgq.o $
         obj/bus/page.o $
         obj/bus/remote.o $

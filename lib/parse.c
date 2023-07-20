@@ -204,7 +204,7 @@ static slice_t parse_string_bytes(struct iterator *p, uint32_t len)
 	ret.p = p->base + p->next;
 	ret.len = len;
 	uint32_t n = p->next + len + 1;
-	if (n > p->end || check_string(ret)) {
+	if (len > MAX_ARRAY_SIZE || n > p->end || check_string(ret)) {
 		p->next = p->end + 1;
 		return ret;
 	}
@@ -307,10 +307,10 @@ struct variant parse_variant(struct iterator *p)
 		break;
 	case TYPE_VARIANT:
 	case TYPE_STRUCT_BEGIN:
-		ret.u.data = skip_value(p);
+		ret.u.record = skip_value(p);
 		break;
 	case TYPE_ARRAY:
-		ret.u.data = skip_array(p);
+		ret.u.array = skip_array(p);
 		break;
 	case TYPE_DICT_BEGIN:
 		// Can only occur as an array element. So there is never a need
@@ -339,7 +339,8 @@ struct iterator skip_array(struct iterator *p)
 	ret.end = start + len;
 	ret.sig = p->sig;
 
-	if (start + len > p->end || skip_signature(&p->sig, true)) {
+	if (len > MAX_ARRAY_SIZE || start + len > p->end ||
+	    skip_signature(&p->sig, true)) {
 		ret.next = ret.end + 1;
 	} else {
 		p->next = ret.end;

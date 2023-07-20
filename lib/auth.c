@@ -21,9 +21,9 @@ static char *split_after_space(char *line)
 	}
 }
 
-static int split_line(str_t *s, char **pline, unsigned *pnext)
+static int split_line(str_t *s, char **pline, int *pnext)
 {
-	unsigned n = 0;
+	int n = 0;
 	for (;;) {
 		if (n + 2 > s->len) {
 			return AUTH_READ_MORE;
@@ -46,137 +46,10 @@ static int split_line(str_t *s, char **pline, unsigned *pnext)
 	}
 }
 
-static void writes(int fd, const char *str)
-{
-	size_t sz = strlen(str);
-	if (sz > 2) {
-		dlog("write auth: '%.*s'", (int)(sz - 2), str);
-		write(fd, str, sz);
-	}
-}
-
-static int peek_byte(int fd, str_t *s, unsigned idx)
-{
-	if (idx == s->len) {
-		if (idx > s->cap) {
-			return -1;
-		}
-
-	try_again:
-		int r = read(fd, s->p + s->len, s->cap - s->len);
-		if (r < 0 && errno == EINTR) {
-			goto try_again;
-		} else if (r <= 0) {
-			return -1;
-		}
-
-		s->len += r;
-	}
-
-	return *(uint8_t *)(s->p + idx);
-}
-
-static int read_byte(int fd, str_t *s)
-{
-	int ch = peek_byte(fd, s, 0);
-	if (ch >= 0) {
-		memmove(s->p, s->p + 1, s->len - 1);
-	}
-	return ch;
-}
-
-static void remove_data(str_t *s, unsigned off)
+static void remove_data(str_t *s, int off)
 {
 	memmove(s->p, s->p + off, s->len - off);
 	s->len -= off;
-}
-
-static int read_line(int fd, str_t *s, char **pline, unsigned *pnext)
-{
-	unsigned n = 0;
-
-	for (;;) {
-		int ch = peek_byte(fd, s, n);
-		// look for a terminating \r\n
-		if (ch == '\r') {
-			if (peek_byte(fd, s, n + 1) != '\n') {
-				return -1;
-			}
-			// return the line, removing the \r\n
-			char *line = s->p;
-			line[n] = 0;
-			*pline = line;
-			*pnext = n + 2;
-			return 0;
-		}
-		// only ASCII non control characters are allowed
-		if (ch < 0 || ch < ' ' || ch > '~') {
-			return -1;
-		}
-		n++;
-	}
-}
-
-int perform_auth(int fd, const char *busid, str_t *buf)
-{
-	// first read the credentials nul
-	if (read_byte(fd, buf) != 0) {
-		return -1;
-	}
-
-	unsigned next = 1;
-
-	// the auth portion
-	// we look for AUTH EXTERNAL xxxx that we like
-	// ends with us sending OK <busid>
-	for (;;) {
-		remove_data(buf, next);
-
-		char *arg0;
-		if (read_line(fd, buf, &arg0, &next)) {
-			return -1;
-		}
-		char *arg1 = split_after_space(arg0);
-		char *arg2 = split_after_space(arg1);
-		if (strcmp(arg0, "AUTH")) {
-			// unknown command
-			writes(fd, "ERROR\r\n");
-		} else if (strcmp(arg1, "EXTERNAL")) {
-			// unsupported auth type
-			writes(fd, "REJECTED EXTERNAL\r\n");
-		} else {
-			// for now ignore the argument
-			(void)arg2;
-			char buf[32];
-			str_t s = MAKE_STR(buf);
-			if (str_addf(&s, "OK %s\r\n", busid)) {
-				return -1;
-			}
-			writes(fd, s.p);
-			break;
-		}
-	}
-
-	// now the post auth portion
-	// finishes with the client sending BEGIN
-	for (;;) {
-		remove_data(buf, next);
-		char *line;
-		if (read_line(fd, buf, &line, &next)) {
-			return -1;
-		}
-
-		if (!strcmp(line, "BEGIN")) {
-			break;
-		} else if (!strcmp(line, "NEGOTIATE_UNIX_FD")) {
-			writes(fd, "AGREE_UNIX_FD\r\n");
-		} else {
-			writes(fd, "ERROR\r\n");
-		}
-	}
-
-	remove_data(buf, next);
-	return 0;
 }
 
 enum auth_phase {
@@ -189,7 +62,7 @@ enum auth_phase {
 int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 		     int *pstate)
 {
-	unsigned remove = 0;
+	int remove = 0;
 
 	switch (*pstate) {
 	case AUTH_WAIT_FOR_NUL:
@@ -281,17 +154,20 @@ int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 			return AUTH_READ_MORE;
 		}
 
+		// copy the input str as parse_header & parse_message
+		// modify the str as they consume it
+		str_t s[2];
+		s[0] = *in;
+		s[1].p = NULL;
+		s[1].len = 0;
+		s[1].cap = 0;
+
 		struct message msg;
-		int msgsz = parse_header(&msg, in->p);
+		int msgsz = parse_header(&msg, s);
 		if (in->len < msgsz) {
 			return AUTH_READ_MORE;
 		}
-
-		str_t s;
-		s.p = in->p;
-		s.len = msgsz;
-		s.cap = msgsz;
-		if (parse_message(&msg, &s)) {
+		if (parse_message(&msg, s)) {
 			return AUTH_ERROR;
 		}
 		if (!msg.serial || msg.type != MSG_METHOD ||
@@ -307,7 +183,7 @@ int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 		reply.reply_serial = msg.serial;
 		reply.signature = "s";
 
-		struct buffer b = start_message(&reply, out->p, out->cap);
+		struct builder b = start_message(&reply, out->p, out->cap);
 		append_string(&b, unique_addr);
 		int sz = end_message(b);
 		if (sz < 0) {

@@ -6,38 +6,29 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-struct rcu_root {
-	uintptr_t version;
-	struct rcu_data data;
+struct gc_handle {
+	alignas(CACHE_LINE_SIZE) atomic_int version;
+	_Atomic(struct rcu *) *data;
 };
 
-struct rcu_handle {
-	atomic_uintptr_t version CACHE_ALIGNED;
-	atomic_uintptr_t *root;
-};
+static_assert(sizeof(struct gc_handle) == CACHE_LINE_SIZE, "");
 
-static_assert(sizeof(struct rcu_handle) == CACHE_LINE_SIZE, "");
+const struct rcu *rcu_lock(struct gc_handle *h);
+void rcu_unlock(struct gc_handle *h);
 
-typedef struct rcu_handle *rcu_handle_t;
+struct gc;
 
-const struct rcu_root *rcu_lock(struct rcu_handle *h);
-void rcu_unlock(struct rcu_handle *h);
+struct gc_handle *gc_register(struct gc *r);
+void gc_unregister(struct gc *r, struct gc_handle *h);
 
-struct rcu;
+void update_rcu(struct gc *r, struct rcu *data);
 
-void rcu_register(struct rcu *root, struct rcu_handle *h);
-void rcu_unregister(struct rcu *root, struct rcu_handle *h);
+struct gc *new_gc();
+void free_gc(struct gc *r);
 
-void rcu_update(struct rcu *r, struct rcu_root *root);
+void run_gc(struct gc *gc);
 
-struct rcu *rcu_new();
-void rcu_free(struct rcu *r);
+void *gc_alloc(size_t num, size_t sz);
+void gc_collect(struct gc *gc, void *p, destructor_fn destroy);
 
-unsigned rcu_gc_version(rcu_handle_t *handles, unsigned num);
-void rcu_run_gc(struct rcu *gc);
-
-void *rcu_alloc(size_t num, size_t sz);
-char *rcu_strdup(const char *s);
-void rcu_collect(struct rcu *gc, void *p);
-
-#define RCU_ALLOC(TYPE, NUM) ((TYPE *)rcu_alloc((NUM), sizeof(TYPE)))
+#define GC_ALLOC(TYPE, NUM) ((TYPE *)gc_alloc((NUM), sizeof(TYPE)))

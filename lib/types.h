@@ -6,7 +6,7 @@
 #include <stdbool.h>
 
 struct iterator;
-struct buffer;
+struct builder;
 struct stream;
 struct message;
 struct unix_oob;
@@ -16,9 +16,12 @@ struct unix_oob;
 #define ALIGN_UINT_UP(VAL, BOUNDARY) \
 	(((VAL) + (BOUNDARY##U - 1)) & (~(BOUNDARY##U - 1)))
 
-#define ALIGN_PTR_UP(TYPE, PTR, BOUNDARY)                            \
-	((TYPE)((((uintptr_t)(PTR)) + ((uintptr_t)(BOUNDARY)) - 1) & \
-		(~((((uintptr_t)(BOUNDARY)) - 1)))))
+#define ALIGN_PTR_UP(PTR, BOUNDARY)                                    \
+	((char *)((((uintptr_t)(PTR)) + ((uintptr_t)(BOUNDARY)) - 1) & \
+		  (~((((uintptr_t)(BOUNDARY)) - 1)))))
+
+#define MAX_ARRAY_SIZE 0x4000000U
+#define MAX_TYPE_DEPTH 64
 
 #define TYPE_BYTE 'y'
 #define TYPE_BOOL 'b'
@@ -48,43 +51,6 @@ static inline bool is_signature(const char *sig, const char *test)
 	// type, which it should be as the programmer provided it, we just
 	// need to test up to strlen(test)
 	return !strncmp(sig, test, strlen(test));
-}
-
-struct iterator {
-	const char *base;
-	const char *sig;
-	uint32_t next;
-	uint32_t end;
-};
-
-union variant_union {
-	bool b;
-	uint8_t u8;
-	int16_t i16;
-	uint16_t u16;
-	int32_t i32;
-	uint32_t u32;
-	int64_t i64;
-	uint64_t u64;
-	double d;
-	slice_t str;
-	slice_t path;
-	const char *sig;
-	struct iterator data; // used for struct, array and variant
-};
-
-struct variant {
-	const char *sig;
-	union variant_union u;
-};
-
-static inline void init_iterator(struct iterator *p, const char *sig,
-				 const void *base, unsigned off, unsigned end)
-{
-	p->base = (const char *)base;
-	p->next = off;
-	p->end = end;
-	p->sig = sig;
 }
 
 static inline void write_native_2(char *p, uint16_t v)

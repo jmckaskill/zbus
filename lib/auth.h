@@ -12,4 +12,3 @@
 int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 		     int *pstate);
 
-int perform_auth(int fd, const char *busid, str_t *buf);

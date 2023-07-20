@@ -14,10 +14,10 @@ void init_unix_oob(struct unix_oob *u)
 	u->gid = -1;
 }
 
-void close_fds(struct unix_oob *u, unsigned num)
+void close_fds(struct unix_oob *u, int num)
 {
 	assert(num <= u->fdn);
-	for (unsigned i = 0; i < num; i++) {
+	for (int i = 0; i < num; i++) {
 		close(u->fdv[i]);
 	}
 	memmove(u->fdv, u->fdv + num, u->fdn - num);

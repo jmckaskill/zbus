@@ -30,7 +30,7 @@ static char ascii(unsigned char ch)
 	return (' ' <= ch && ch <= '~') ? ch : '.';
 }
 
-void log_data(const void *p, unsigned len, const char *fmt, ...)
+void log_data(const void *p, size_t len, const char *fmt, ...)
 {
 	if (!verbose) {
 		return;
@@ -59,8 +59,8 @@ void log_data(const void *p, unsigned len, const char *fmt, ...)
 		return;
 	}
 	fputs("    ", stderr);
-	int wr = 0;
-	for (int i = 0; i < len; i++) {
+	size_t wr = 0;
+	for (size_t i = 0; i < len; i++) {
 		fprintf(stderr, "%02x", u[i]);
 		wr += 2;
 		if (i == 3) {
@@ -74,7 +74,7 @@ void log_data(const void *p, unsigned len, const char *fmt, ...)
 	}
 	fputs("    ", stderr);
 	wr = 0;
-	for (int i = 0; i < len; i++) {
+	for (size_t i = 0; i < len; i++) {
 		fputc(ascii(u[i]), stderr);
 		wr++;
 		if (i == 3) {

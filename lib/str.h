@@ -1,13 +1,14 @@
 #pragma once
 #include <assert.h>
 #include <string.h>
+#include <stdbool.h>
 
 #define STRLEN(x) (sizeof(x) - 1)
 
 struct str {
 	char *p;
-	int cap;
 	int len;
+	int cap;
 };
 typedef struct str str_t;
 
@@ -70,12 +71,12 @@ static inline slice_t make_slice2(const char *str, int sz)
 
 #define MAKE_SLICE(STR) make_slice2((STR), STRLEN(STR))
 
-static inline int slice_eq(slice_t a, const char *test)
+static inline bool slice_eq(slice_t a, const char *test)
 {
 	return a.len == strlen(test) && !memcmp(a.p, test, a.len);
 }
 
-static inline int slice_eqs(slice_t a, slice_t b)
+static inline bool slice_eqs(slice_t a, slice_t b)
 {
 	return a.len == b.len && !memcmp(a.p, b.p, a.len);
 }
@@ -83,4 +84,15 @@ static inline int slice_eqs(slice_t a, slice_t b)
 static inline slice_t to_slice(str_t s)
 {
 	return make_slice2(s.p, s.len);
+}
+
+static inline bool begins_with_slice(slice_t s, slice_t pfx)
+{
+	return s.len >= pfx.len && !memcmp(s.p, pfx.p, pfx.len);
+}
+
+static inline bool begins_with(slice_t s, const char *pfx)
+{
+	slice_t p = { pfx, strlen(pfx) };
+	return begins_with_slice(s, p);
 }

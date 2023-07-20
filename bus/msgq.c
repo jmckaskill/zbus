@@ -39,32 +39,13 @@ uintptr_t msgq_event(struct msgq *q)
 }
 #endif
 
-static void free_entry(struct msgq_entry *e)
-{
-	switch (e->cmd & MSGQ_TYPE_MASK) {
-	case MSGQ_TYPE_PTR:
-		free(e->u.ptr);
-		break;
-	case MSGQ_TYPE_PAGED:
-		deref_paged_data(e->u.paged.p, 1);
-		break;
-	case MSGQ_TYPE_FILE:
-#ifdef _WIN32
-		CloseHandle(e->u.file);
-#else
-		close(e->u.file);
-#endif
-		break;
-	}
-}
-
 void msgq_free(struct msgq *q)
 {
 	if (q) {
 		for (int i = 0; i < MSGQ_SIZE; i++) {
 			struct msgq_entry *e = &q->entries[i];
-			if (e->valid) {
-				free_entry(e);
+			if (e->valid && e->cleanup) {
+				e->cleanup(e->data);
 			}
 		}
 #ifdef _WIN32
@@ -84,7 +65,7 @@ int msgq_allocate(struct msgq *q, int num, unsigned *pidx)
 						 memory_order_relaxed);
 	// check if we have overrun the queue
 	// by seeing if the last item we allocated is still valid
-	struct msgq_entry *e = MSGQ_ENTRY(q, idx + num - 1);
+	struct msgq_entry *e = msgq_get(q, idx + num - 1);
 	if (atomic_load_explicit(&e->valid, memory_order_acquire) == true) {
 		// We've overrun the queue. Another thread may have tried to
 		// allocate some more so we can't return them without having
@@ -108,13 +89,13 @@ int msgq_release(struct msgq *q, unsigned idx, int num)
 
 	// set the valid flag for all but the first using relaxed
 	for (int i = idx + num - 1; i > idx; i--) {
-		atomic_store_explicit(&MSGQ_ENTRY(q, i)->valid, 1,
-				      memory_order_relaxed);
+		struct msgq_entry *e = msgq_get(q, i);
+		atomic_store_explicit(&e->valid, 1, memory_order_relaxed);
 	}
 
 	// and then finally use release ordering for the first item which
 	// gives us a single write barrier for the whole lot
-	struct msgq_entry *e = MSGQ_ENTRY(q, idx);
+	struct msgq_entry *e = msgq_get(q, idx);
 	atomic_store_explicit(&e->valid, 1, memory_order_release);
 
 	if (atomic_flag_test_and_set_explicit(&q->awake,
@@ -131,7 +112,7 @@ int msgq_release(struct msgq *q, unsigned idx, int num)
 
 struct msgq_entry *msgq_acquire(struct msgq *q)
 {
-	struct msgq_entry *e = MSGQ_ENTRY(q, q->consumer_next);
+	struct msgq_entry *e = msgq_get(q, q->consumer_next);
 	if (atomic_load_explicit(&e->valid, memory_order_acquire)) {
 		// this one is available
 		return e;
@@ -147,21 +128,25 @@ struct msgq_entry *msgq_acquire(struct msgq *q)
 
 void msgq_pop(struct msgq *q, struct msgq_entry *e)
 {
-	free_entry(e);
+	if (e->cleanup) {
+		e->cleanup(e->data);
+	}
 	q->consumer_next++;
 }
 
-int _msgq_send(struct msgq *q, uint16_t cmd, const void *p, size_t sz)
+int msgq_send(struct msgq *q, uint16_t cmd, const void *p, size_t sz,
+	      destructor_fn cleanup)
 {
 	struct msgq_entry *e;
 	unsigned idx;
-	assert(sz <= sizeof(e->u.data));
+	assert(sz <= MSGQ_DATA_SIZE);
 	if (msgq_allocate(q, 1, &idx)) {
 		return -1;
 	}
-	e = MSGQ_ENTRY(q, idx);
+	e = msgq_get(q, idx);
 	e->cmd = cmd;
 	e->time_ms = 0;
-	memcpy(e->u.data, p, sz);
+	e->cleanup = cleanup;
+	memcpy(e->data, p, sz);
 	return msgq_release(q, idx, 1);
 }

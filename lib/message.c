@@ -1,4 +1,5 @@
 #include "message.h"
+#include "multipart.h"
 #include <assert.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -8,9 +9,9 @@ struct raw_header {
 	uint8_t type;
 	uint8_t flags;
 	uint8_t version;
-	char body_len[4];
-	char serial[4];
-	char field_len[4];
+	uint32_t body_len;
+	uint32_t serial;
+	uint32_t field_len;
 };
 
 static_assert(sizeof(struct raw_header) == MIN_MESSAGE_SIZE, "");
@@ -126,93 +127,10 @@ void init_message(struct message *m, enum msg_type type, uint32_t serial)
 	m->type = type;
 }
 
-struct multipart_iterator {
-	str_t *p; // current part
-	char *p_next; // next data byte in current part
-	char *p_end; // end of current part
-	uint32_t m_off; // offset within message
-	uint32_t m_end; // offset where the iterator ends
-	// if m_off < m_end then p_next < p_end
-	// even if p_next is the start of a part
-};
-
-static void init_multipart(struct multipart_iterator *mi, str_t *parts,
-			   uint32_t len)
-{
-	mi->p = parts;
-	mi->p_next = parts->p;
-	mi->p_end = parts->p + parts->len;
-	mi->m_off = 0;
-	mi->m_end = len;
-}
-
-static void skip_multipart(struct multipart_iterator *mi, uint32_t len)
-{
-	mi->m_off += len;
-	if (mi->m_off > mi->m_end) {
-		return;
-	}
-	for (;;) {
-		mi->p_next += len;
-		if (mi->p_next < mi->p_end) {
-			// next data is in this part
-			return;
-		}
-
-		// consume the overflow bytes in the next part
-		len = mi->p_next - mi->p_end;
-		mi->p++;
-		mi->p_next = mi->p->p;
-		mi->p_end = mi->p->p + mi->p->len;
-	}
-}
-
-static inline void align_multipart_2(struct multipart_iterator *mi)
-{
-	uint32_t pad = mi->m_off & 1;
-	mi->m_off += pad;
-	mi->p_next += pad;
-}
-
-static inline void align_multipart_4(struct multipart_iterator *mi)
-{
-	uint32_t pad = (4 - (mi->m_off & 3)) & 3;
-	mi->m_off += pad;
-	mi->p_next += pad;
-}
-
-static inline void align_multipart_8(struct multipart_iterator *mi)
-{
-	uint32_t pad = (8 - (mi->m_off & 7)) & 7;
-	mi->m_off += pad;
-	mi->p_next += pad;
-}
-
-static str_t *copy_into_working(str_t *dst, str_t *src, uint32_t len)
-{
-	char *end = dst->p + dst->len;
-	dst->len += len;
-	assert(dst->len <= dst->cap);
-
-	// copy complete parts
-	while (src->len >= len) {
-		memcpy(end, src->p, src->len);
-		end += src->len;
-		len -= src->len;
-		src++;
-	}
-	// copy partial part
-	memcpy(end, src->p, len);
-	src->p += len;
-	src->len -= len;
-	src->cap -= len;
-	return src;
-}
-
-static void compact_parts(str_t *dst, str_t *src, uint32_t len)
+static int compact_parts(str_t *dst, str_t *src, uint32_t len)
 {
 	// work through the parts before the last one
-	while (src->len < len) {
+	while (len > src->len) {
 		// skip over empty parts
 		while (!src->len) {
 			src++;
@@ -227,24 +145,29 @@ static void compact_parts(str_t *dst, str_t *src, uint32_t len)
 		if (dst->len & 7) {
 			uint32_t tocopy = 8 - (dst->len & 7);
 			if (tocopy > len) {
+				// there's not enough bytes remaining to fully 8
+				// byte align this part
 				tocopy = len;
 			}
-			src = copy_into_working(dst, src, tocopy);
+			if (dst->len + tocopy > dst->cap) {
+				return -1;
+			}
+			src = defragment(dst->p + dst->len, src, tocopy);
+			dst->len += tocopy;
 		}
 		dst++;
 	}
 
 	// copy the final part, it can be any length
 	*dst = *src;
+	return 0;
 }
 
-static void copy_remainder(str_t *dst, struct multipart_iterator *mi,
-			   uint32_t len)
+static void copy_remainder(str_t *dst, str_t *src, uint32_t off, uint32_t len)
 {
-	str_t *src = mi->p;
-	src->cap -= mi->p_next - src->p;
-	src->len -= mi->p_next - src->p;
-	src->p = mi->p_next;
+	src->cap -= off;
+	src->len -= off;
+	src->p += off;
 	while (src->len < len) {
 		len -= src->len;
 		*(dst++) = *(src++);
@@ -252,219 +175,119 @@ static void copy_remainder(str_t *dst, struct multipart_iterator *mi,
 	*dst = *src;
 }
 
-static slice_t compact_string(struct multipart_iterator *mi, uint32_t len)
+int parse_header(struct message *m, str_t *parts)
 {
-	char *ret = mi->p_next;
-	mi->m_off += len + 1;
-	mi->p_next += len + 1;
+	struct raw_header h;
+	defragment((char *)&h, parts, sizeof(h));
 
-	if (mi->p_next >= mi->p_end) {
-		uint32_t need = mi->p_next - mi->p_end;
-		str_t *n = copy_into_working(mi->p, mi->p + 1, need);
-		mi->p = n;
-		mi->p_next = n->p;
-		mi->p_end = n->p + n->len;
-	}
-
-	return make_slice2(ret, len);
-}
-
-static int get_multipart_string(struct multipart_iterator *mi, slice_t *pslice)
-{
-	if (mi->m_off + 4 > mi->m_end) {
-		return -1;
-	}
-	uint32_t len = read_native_4(mi->p_next);
-	if (mi->m_off + 4 + len + 1 > mi->m_end) {
-		return -1;
-	}
-	mi->m_off += 4;
-	mi->p_next += 4;
-	*pslice = compact_string(mi, len);
-	return check_string(*pslice);
-}
-
-static const char *get_multipart_signature(struct multipart_iterator *mi)
-{
-	assert(mi->m_off + 1 <= mi->m_end);
-	uint8_t len = *(uint8_t *)(mi->p_next);
-	if (mi->m_off + 1 + len + 1 > mi->m_end) {
-		return NULL;
-	}
-	mi->m_off++;
-	mi->p_next++;
-	slice_t slice = compact_string(mi, len);
-	return check_string(slice) ? NULL : slice.p;
-}
-
-static uint32_t array_padding(uint32_t off, char type)
-{
-	switch (type) {
-	case TYPE_INT16:
-	case TYPE_UINT16:
-		return off & 1;
-
-	case TYPE_INT32:
-	case TYPE_UINT32:
-	case TYPE_BOOL:
-	case TYPE_ARRAY:
-	case TYPE_STRING:
-		return (4 - (off & 3)) & 3;
-
-	case TYPE_INT64:
-	case TYPE_UINT64:
-	case TYPE_DOUBLE:
-	case TYPE_DICT_BEGIN:
-	case TYPE_STRUCT_BEGIN:
-		return (8 - (off & 7)) & 7;
-
-	case TYPE_BYTE:
-	case TYPE_SIGNATURE:
-	case TYPE_VARIANT:
-	default:
-		return 0;
-	}
-}
-
-static int skip_multipart_variant(struct multipart_iterator *mi,
-				  const char *sig)
-{
-	// We're about to filter out this data, so we don't need to validate it.
-	// Instead we're just trying to skip over the data assuming it's valid.
-	// If the data is invalid then we just need to not crash.
-	const char *stack[16];
-	int stackn = 0;
-
-	for (;;) {
-		switch (*(sig++)) {
-		case '\0':
-			if (stackn) {
-				// we've reached the end of the variant
-				sig = stack[--stackn];
-				continue;
-			}
-			return 0;
-
-		case TYPE_BYTE:
-			skip_multipart(mi, 1);
-			break;
-
-		case TYPE_INT16:
-		case TYPE_UINT16:
-			align_multipart_2(mi);
-			skip_multipart(mi, 2);
-			break;
-
-		case TYPE_BOOL:
-		case TYPE_INT32:
-		case TYPE_UINT32:
-			align_multipart_4(mi);
-			skip_multipart(mi, 4);
-			break;
-
-		case TYPE_INT64:
-		case TYPE_UINT64:
-		case TYPE_DOUBLE:
-			align_multipart_8(mi);
-			skip_multipart(mi, 8);
-			break;
-
-		case TYPE_STRING:
-		case TYPE_PATH: {
-			align_multipart_4(mi);
-			if (mi->m_off + 4 > mi->m_end) {
-				return -1;
-			}
-			uint32_t len = read_native_4(mi->p_next);
-			skip_multipart(mi, 4 + len + 1);
-			break;
-		}
-
-		case TYPE_SIGNATURE: {
-			if (mi->m_off >= mi->m_end) {
-				return -1;
-			}
-			uint8_t len = *(uint8_t *)mi->p_next;
-			skip_multipart(mi, 1 + len + 1);
-			break;
-		}
-
-		case TYPE_ARRAY: {
-			align_multipart_4(mi);
-			if (mi->m_off + 4 > mi->m_end) {
-				return -1;
-			}
-			uint32_t len = read_native_4(mi->p_next);
-			uint32_t pad = array_padding(mi->m_off + 4, *sig);
-			skip_multipart(mi, 4 + pad + len);
-			if (skip_signature(&sig, true)) {
-				return -1;
-			}
-			break;
-		}
-
-		case TYPE_STRUCT_BEGIN:
-			align_multipart_8(mi);
-			break;
-
-		case TYPE_VARIANT: {
-			// A nested variant could legitimitely exist within a
-			// struct within the header field. Need to save the
-			// current signature to a stack.
-			const char **psig = &stack[stackn++];
-			if (psig == stack + sizeof(stack)) {
-				return -1;
-			}
-			// save the current signature to the stack and get the
-			// new one from the data
-			*psig = sig;
-			sig = get_multipart_signature(mi);
-			if (sig == NULL) {
-				return -1;
-			}
-			break;
-		}
-
-		case TYPE_DICT_BEGIN:
-			// dict can not exist outside an array
-		default:
-			return -1;
-		}
-
-		if (mi->m_off > mi->m_end) {
-			return -1;
-		}
-	}
-}
-
-int parse_header(struct message *m, const char *p)
-{
-	const struct raw_header *h = (const struct raw_header *)p;
-	if (h->endian != native_endian()) {
+	if (h.endian != native_endian()) {
 		return -1;
 	}
 
-	uint32_t field_len = read_native_4(h->field_len);
-	uint32_t body_len = read_native_4(h->body_len);
+	uint32_t field_len = h.field_len;
+	uint32_t body_len = h.body_len;
 	uint32_t field_off = MIN_MESSAGE_SIZE;
 	uint32_t field_end = field_off + field_len;
 	uint32_t body_end = ALIGN_UINT_UP(field_end, 8) + body_len;
 	if (body_end > MAX_MESSAGE_SIZE) {
 		return -1;
 	}
-	init_message(m, h->type, read_native_4(h->serial));
-	m->flags = h->flags;
+	init_message(m, h.type, h.serial);
+	m->flags = h.flags;
 	m->body_len = body_len;
 	m->field_len = field_len;
 	return (int)body_end;
 }
 
+static int parse_field(struct message *msg, struct multipart *mi)
+{
+	// Min possible field size is 5 for a field of type byte: \xx
+	// \01 'y' \00 \yy. We can always grab 5 bytes more in the
+	// current part as each part is 8 byte aligned and mi->next is
+	// always < mi->end
+	unsigned pad = padding_8(mi->m_off);
+	if (mi->m_off + pad + 5 > mi->m_end) {
+		return -1;
+	}
+	skip_multipart_bytes(mi, pad);
+
+	uint8_t ftype = *(uint8_t *)mi->p_next;
+
+	if (ftype > FIELD_LAST) {
+		// Unknown header, need to find the end.
+		skip_multipart_bytes(mi, 1);
+		mi->sig = "v";
+		return skip_multipart_value(mi);
+
+	} else {
+		uint32_t ftag = read_little_4(mi->p_next);
+		skip_multipart_bytes(mi, 4);
+
+		switch (ftag) {
+		case FTAG_REPLY_SERIAL:
+			if (mi->m_off + 4 > mi->m_end) {
+				return -1;
+			}
+			msg->reply_serial = read_little_4(mi->p_next);
+			skip_multipart_bytes(mi, 4);
+			return 0;
+
+		case FTAG_UNIX_FDS:
+			if (mi->m_off + 4 > mi->m_end) {
+				return -1;
+			}
+			msg->fdnum = read_little_4(mi->p_next);
+			skip_multipart_bytes(mi, 4);
+			return 0;
+
+		case FTAG_PATH:
+			mi->sig = "s";
+			return parse_multipart_string(mi, &msg->path) ||
+			       check_path(msg->path.p);
+
+		case FTAG_INTERFACE:
+			mi->sig = "s";
+			return parse_multipart_string(mi, &msg->interface) ||
+			       check_interface(msg->interface.p);
+
+		case FTAG_MEMBER:
+			mi->sig = "s";
+			return parse_multipart_string(mi, &msg->member) ||
+			       check_member(msg->member.p);
+
+		case FTAG_ERROR_NAME:
+			mi->sig = "s";
+			return parse_multipart_string(mi, &msg->error) ||
+			       check_error_name(msg->error.p);
+
+		case FTAG_DESTINATION:
+			mi->sig = "s";
+			return parse_multipart_string(mi, &msg->destination) ||
+			       check_address(msg->destination.p);
+
+		case FTAG_SENDER:
+			mi->sig = "s";
+			return parse_multipart_string(mi, &msg->sender) ||
+			       check_unique_address(msg->sender.p);
+
+		case FTAG_SIGNATURE:
+			mi->sig = "g";
+			return parse_multipart_signature(mi, &msg->signature);
+
+		default:
+			// unexpected field signature
+			return -1;
+		}
+	}
+}
+
 int parse_message(struct message *msg, str_t *parts)
 {
-	uint32_t field_off = MIN_MESSAGE_SIZE;
+	uint32_t field_off = 0; // the header has already been consumed
 	uint32_t field_len = msg->field_len;
 	uint32_t field_end = field_off + field_len;
-	uint32_t body_off = ALIGN_UINT_UP(field_end, 8);
+	uint32_t field_pad = padding_8(field_end);
+	uint32_t body_off = field_end + field_pad;
 	uint32_t body_end = body_off + msg->body_len;
 
 #ifndef NDEBUG
@@ -478,101 +301,16 @@ int parse_message(struct message *msg, str_t *parts)
 
 	// compact and align the part lengths so that each part (except for the
 	// last) contains at least 8 bytes and is 8 byte aligned
-	compact_parts(parts, parts, body_end);
+	if (compact_parts(parts, parts, body_end)) {
+		return -1;
+	}
 
-	struct multipart_iterator mi;
-	init_multipart(&mi, parts, field_end);
-	skip_multipart(&mi, MIN_MESSAGE_SIZE);
+	struct multipart mi;
+	init_multipart(&mi, parts, field_end, "");
 
 	while (mi.m_off < field_end) {
-		// Min possible field size is 5 for a field of type byte: \xx
-		// \01 'y' \00 \yy. We can always grab 5 bytes more in the
-		// current part as each part is 8 byte aligned and mi->next is
-		// always < mi->end
-		align_multipart_8(&mi);
-		if (mi.m_off + 5 > field_end) {
+		if (parse_field(msg, &mi)) {
 			return -1;
-		}
-
-		assert(mi.p_next + 5 <= mi.p_end);
-
-		uint32_t ftag = read_little_4(mi.p_next);
-		mi.p_next += 4;
-		mi.m_off += 4;
-
-		switch (ftag) {
-		case FTAG_REPLY_SERIAL: {
-			if (mi.m_off + 4 > mi.m_end) {
-				return -1;
-			}
-			msg->reply_serial = *(uint32_t *)mi.p_next;
-			mi.p_next += 4;
-			mi.m_off += 4;
-			break;
-		}
-		case FTAG_UNIX_FDS: {
-			if (mi.m_off + 4 > mi.m_end) {
-				return -1;
-			}
-			msg->fdnum = *(uint32_t *)mi.p_next;
-			mi.p_next += 4;
-			mi.m_off += 4;
-			break;
-		}
-		case FTAG_PATH:
-			if (get_multipart_string(&mi, &msg->path) ||
-			    check_path(msg->path.p)) {
-				return -1;
-			}
-			break;
-		case FTAG_INTERFACE:
-			if (get_multipart_string(&mi, &msg->interface) ||
-			    check_interface(msg->interface.p)) {
-				return -1;
-			}
-			break;
-		case FTAG_MEMBER:
-			if (get_multipart_string(&mi, &msg->member) ||
-			    check_member(msg->member.p)) {
-				return -1;
-			}
-			break;
-		case FTAG_ERROR_NAME:
-			if (get_multipart_string(&mi, &msg->error) ||
-			    check_error_name(msg->error.p)) {
-				return -1;
-			}
-			break;
-		case FTAG_DESTINATION:
-			if (get_multipart_string(&mi, &msg->destination) ||
-			    check_address(msg->destination.p)) {
-				return -1;
-			}
-			break;
-		case FTAG_SENDER:
-			if (get_multipart_string(&mi, &msg->sender) ||
-			    check_unique_address(msg->sender.p)) {
-				return -1;
-			}
-			break;
-		case FTAG_SIGNATURE:
-			msg->signature = get_multipart_signature(&mi);
-			if (msg->signature == NULL) {
-				return -1;
-			}
-			break;
-		default: {
-			// Unknown header, need to find the end. The signature
-			// could be longer than 2 bytes, so put the signature
-			// back and parse it properly.
-			mi.p_next -= 3;
-			mi.m_off -= 3;
-			const char *sig = get_multipart_signature(&mi);
-			if (skip_multipart_variant(&mi, sig)) {
-				return -1;
-			}
-			break;
-		}
 		}
 	}
 
@@ -580,12 +318,17 @@ int parse_message(struct message *msg, str_t *parts)
 		return -1;
 	}
 
-	// align to the beginning of the body
-	mi.m_end = body_off;
-	align_multipart_8(&mi);
+	// find the first chunk of the body
+	str_t *body = mi.p;
+	unsigned off = mi.p_next - body->p + field_pad;
+	if (mi.p_next + field_pad == mi.p_end) {
+		// end of header was aligned with end of the part
+		body++;
+		off = 0;
+	}
 
 	// copy the body parts into the parts variable
-	copy_remainder(parts, &mi, msg->body_len);
+	copy_remainder(parts, body, off, msg->body_len);
 
 	return 0;
 }
@@ -599,64 +342,66 @@ bool is_reply(const struct message *request, const struct message *reply)
 ////////////////////////////////////////////////////////
 // message writing
 
-static void append_uint32_field(struct buffer *b, uint32_t tag, uint32_t v)
+static void append_uint32_field(struct builder *b, uint32_t tag, uint32_t v)
 {
 	// should be called first so that we are still aligned
-	assert(ALIGN_UINT_UP(b->off, 4) == b->off);
-	b->off += 8;
-	if (b->off <= b->cap) {
-		write_little_4(b->base + b->off - 8, tag);
-		write_native_4(b->base + b->off - 4, v);
+	assert(!((uintptr_t)b->next & 3U));
+	char *ptag = b->next;
+	char *pval = ptag + 4;
+	b->next = pval + 4;
+	if (b->next <= b->end) {
+		write_little_4(ptag, tag);
+		*(uint32_t *)pval = v;
 	}
 }
 
-static void append_string_field(struct buffer *b, uint32_t tag, slice_t str)
+static void append_string_field(struct builder *b, uint32_t tag, slice_t str)
 {
 	align_buffer_8(b);
-	uint32_t tag_off = b->off;
-	uint32_t len_off = tag_off + 4;
-	uint32_t str_off = len_off + 4;
-	uint32_t nul_off = str_off + str.len;
-	b->off = nul_off + 1;
-	if (b->off <= b->cap) {
-		write_little_4(b->base + tag_off, tag);
-		write_native_4(b->base + len_off, str.len);
-		memcpy(b->base + str_off, str.p, str.len);
-		b->base[nul_off] = 0;
+	char *ptag = b->next;
+	char *plen = ptag + 4;
+	char *pstr = plen + 4;
+	char *pnul = pstr + str.len;
+	b->next = pnul + 1;
+	if (b->next <= b->end) {
+		write_little_4(ptag, tag);
+		*(uint32_t *)plen = str.len;
+		memcpy(pstr, str.p, str.len);
+		pnul[0] = 0;
 	}
 }
 
-static void append_signature_field(struct buffer *b, uint32_t tag,
+static void append_signature_field(struct builder *b, uint32_t tag,
 				   const char *sig)
 {
 	align_buffer_8(b);
-	size_t slen = strlen(sig);
-	if (slen > 255) {
-		b->off = b->cap + 1;
+	size_t len = strlen(sig);
+	if (len > 255) {
+		b->next = b->end + 1;
 		return;
 	}
-	uint32_t tag_off = b->off;
-	uint32_t len_off = tag_off + 4;
-	uint32_t str_off = len_off + 1;
-	b->off = str_off + slen + 1;
-	if (b->off <= b->cap) {
-		write_little_4(b->base + tag_off, tag);
-		b->base[len_off] = (uint8_t)slen;
-		memcpy(b->base + str_off, sig, slen + 1);
+	char *ptag = b->next;
+	char *plen = ptag + 4;
+	char *pstr = plen + 1;
+	b->next = pstr + len + 1;
+	if (b->next <= b->end) {
+		write_little_4(ptag, tag);
+		*(uint8_t *)plen = (uint8_t)len;
+		memcpy(pstr, sig, len + 1);
 	}
 }
 
-struct buffer start_message(const struct message *m, void *buf, size_t bufsz)
+struct builder start_message(const struct message *m, void *buf, size_t bufsz)
 {
-	struct buffer b;
-	init_buffer(&b, buf, bufsz);
+	struct builder b;
+	init_builder(&b, buf, bufsz);
 
-	if (MIN_MESSAGE_SIZE > b.cap) {
-		b.off = UINT_MAX;
+	if (bufsz < MIN_MESSAGE_SIZE) {
+		b.end = b.next + 1;
 		return b;
 	}
 
-	b.off = MIN_MESSAGE_SIZE;
+	b.next += MIN_MESSAGE_SIZE;
 
 	// unwrap the standard marshalling functions to add the field
 	// type and variant signature in one go
@@ -690,33 +435,36 @@ struct buffer start_message(const struct message *m, void *buf, size_t bufsz)
 		append_string_field(&b, FTAG_SENDER, m->sender);
 	}
 
+	struct raw_header *h = (struct raw_header *)buf;
+	h->endian = native_endian();
+	h->type = m->type;
+	h->flags = m->flags;
+	h->version = DBUS_VERSION;
+	h->body_len = m->body_len;
+	h->serial = m->serial;
+	h->field_len = b.next - b.base - MIN_MESSAGE_SIZE;
+
 	// align the end of the fields
-
-	struct raw_header hdr;
-	hdr.endian = native_endian();
-	hdr.type = m->type;
-	hdr.flags = m->flags;
-	hdr.version = DBUS_VERSION;
-	write_native_4(hdr.body_len, 0);
-	write_native_4(hdr.serial, m->serial);
-	write_native_4(hdr.field_len, b.off - MIN_MESSAGE_SIZE);
-
-	memcpy(buf, &hdr, sizeof(hdr));
-
 	align_buffer_8(&b);
 	b.sig = m->signature;
 	return b;
 }
 
-int end_message(struct buffer b)
+int end_message(struct builder b)
 {
-	if (b.off > b.cap || *b.sig) {
-		// did you forget to add some arguments?
+	if (buffer_error(b) || *b.sig) {
+		// error during marshalling or missing arguments
 		return -1;
 	}
 	struct raw_header *h = (struct raw_header *)b.base;
-	uint32_t field_len = read_native_4(h->field_len);
+	uint32_t field_len = h->field_len;
 	uint32_t start = MIN_MESSAGE_SIZE + ALIGN_UINT_UP(field_len, 8);
-	write_native_4(h->body_len, b.off - start);
-	return 0;
+	h->body_len = b.next - b.base - start;
+	return (int)(b.next - b.base);
+}
+
+int write_message_header(const struct message *m, void *buf, size_t bufsz)
+{
+	struct builder b = start_message(m, buf, bufsz);
+	return buffer_error(b) ? -1 : (int)(b.next - b.base);
 }

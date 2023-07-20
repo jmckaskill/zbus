@@ -2,6 +2,7 @@
 #include "bus.h"
 #include "remote.h"
 #include "messages.h"
+#include "rcu.h"
 #include "lib/str.h"
 #include "dmem/vector.h"
 #include <stdint.h>
@@ -15,7 +16,7 @@
 #include <poll.h>
 #include <errno.h>
 
-DVECTOR_INIT(remote_ptr, struct remote *);
+#define BUS_DESTINATION "org.freedesktop.DBus"
 
 static void signal_wakeup()
 {
@@ -93,46 +94,186 @@ error:
 	return -1;
 }
 
-int run_bus(int lfd)
-{
-	int next_remote = 1;
-	d_vector(remote_ptr) remotes = DV_INIT;
+DVECTOR_INIT(remote_ptr, struct remote *);
 
-	char busid_buf[BUSID_BUFLEN];
-	if (generate_busid(busid_buf)) {
+struct bus {
+	struct msgq *q;
+	int next_remote_id;
+	struct gc *gc;
+	struct rcu *rcu;
+	d_vector(remote_ptr) remotes;
+	char busid[BUSID_BUFLEN];
+};
+
+static int init_bus(struct bus *b)
+{
+	if (generate_busid(b->busid)) {
 		return -1;
 	}
-	slice_t busid = make_slice2(busid_buf, BUSID_LENGTH);
 
-	struct rcu *r = rcu_new();
+	b->q = msgq_new();
+	b->gc = new_gc();
+	b->next_remote_id = 1;
+	dv_init(&b->remotes);
 
-	struct rcu_root *d = RCU_ALLOC(struct rcu_root, 1);
-	d->data.test_string = rcu_strdup("test");
-	rcu_update(r, d);
+	// set an initial rcu data
+	b->rcu = gc_alloc(1, sizeof(*b->rcu));
+	memset(b->rcu, 0, sizeof(*b->rcu));
+	update_rcu(b->gc, b->rcu);
 
-	struct msgq *q = msgq_new();
+	return 0;
+}
+
+static void destroy_bus(struct bus *b)
+{
+	assert(b->remotes.size == 0);
+
+	for (int i = 0; i < b->rcu->names_n; i++) {
+		gc_collect(b->gc, b->rcu->names_v[i], NULL);
+	}
+	gc_collect(b->gc, b->rcu->names_v, NULL);
+	gc_collect(b->gc, b->rcu->remotes_v, NULL);
+	gc_collect(b->gc, b->rcu, NULL);
+	msgq_free(b->q);
+	free_gc(b->gc);
+	dv_free(b->remotes);
+}
+
+static int add_remote(struct bus *b, int sock)
+{
+	struct remote *r = gc_alloc(1, sizeof(*r));
+	r->id = b->next_remote_id++;
+	r->handle = gc_register(b->gc);
+	r->bus = b;
+	r->busid = make_slice2(b->busid, BUSID_LENGTH);
+	r->busq = b->q;
+	r->sock = sock;
+
+	if (start_remote(r)) {
+		close(sock);
+		gc_unregister(b->gc, r->handle);
+		return -1;
+	}
+
+	dv_append1(&b->remotes, r);
+	return 0;
+}
+
+static void activate_remote(struct bus *b, struct remote *r)
+{
+	fprintf(stderr, "remote %d activated\n", r->id);
+	struct rcu *d = gc_alloc(1, sizeof(struct rcu));
+	struct rcu *old = b->rcu;
+	*d = *old;
+
+	struct unique_name *v =
+		gc_alloc(d->remotes_n + 1, sizeof(struct unique_name));
+
+	// copy the remotes list over inserting the new remote in place
+	int i = 0;
+	while (i < d->remotes_n && d->remotes_v[i].id < r->id) {
+		v[i] = d->remotes_v[i];
+		i++;
+	}
+	v[i].id = r->id;
+	v[i].owner = r;
+	while (i < d->remotes_n) {
+		v[i + 1] = d->remotes_v[i];
+		i++;
+	}
+
+	d->remotes_v = v;
+	d->remotes_n++;
+
+	// mark the old data for collection
+	gc_collect(b->gc, old, NULL);
+	gc_collect(b->gc, old->remotes_v, NULL);
+
+	// update the other remotes
+	update_rcu(b->gc, d);
+	b->rcu = d;
+
+	// and collect the garbage
+	run_gc(b->gc);
+}
+
+static void remove_remote(struct bus *b, struct remote *r)
+{
+	fprintf(stderr, "removing remote %u\n", r->id);
+
+	// deregister it from the bus first
+	struct rcu *d = gc_alloc(1, sizeof(struct rcu));
+	struct rcu *old = b->rcu;
+	*d = *old;
+
+	struct unique_name *v =
+		gc_alloc(d->remotes_n - 1, sizeof(struct unique_name));
+
+	// copy the remotes list over removing the remote
+	int i = 0;
+	while (d->remotes_v[i].id != r->id) {
+		v[i] = d->remotes_v[i];
+		i++;
+	}
+	while (i < d->remotes_n) {
+		v[i - 1] = d->remotes_v[i];
+		i++;
+	}
+
+	d->remotes_v = v;
+	d->remotes_n--;
+
+	// mark the old rcu data for collection
+	gc_collect(b->gc, old, NULL);
+	gc_collect(b->gc, old->remotes_v, NULL);
+	gc_collect(b->gc, r, &gc_remote);
+
+	// update the other remotes
+	update_rcu(b->gc, d);
+	b->rcu = d;
+
+	// join the thread
+	join_remote(r);
+
+	// and then cleanup unneeded memory
+	dv_remove(&b->remotes, r);
+	gc_unregister(b->gc, r->handle);
+	run_gc(b->gc);
+}
+
+static void request_name(struct bus *b, struct remote *r, slice_t name)
+{
+}
+
+int run_bus(int lfd)
+{
+	struct bus b;
+	if (init_bus(&b)) {
+		return -1;
+	}
 
 	for (;;) {
 		struct msgq_entry *e;
-		while ((e = msgq_acquire(q)) != NULL) {
+		while ((e = msgq_acquire(b.q)) != NULL) {
 			switch (e->cmd) {
 			case MSG_AUTHENTICATED: {
-				struct msg_authenticated *m =
-					MSGQ_DATA(e, MSG_AUTHENTICATED);
-				fprintf(stderr, "remote %u is ready\n", m->id);
+				struct msg_authenticated *m = (void *)e->data;
+				activate_remote(m->remote->bus, m->remote);
 				break;
 			}
 			case MSG_DISCONNECTED: {
-				struct msg_disconnected *m =
-					MSGQ_DATA(e, MSG_DISCONNECTED);
-				fprintf(stderr, "remote %u is closing\n",
-					m->r->id);
-				join_remote(m->r);
-				dv_remove(&remotes, m->r);
+				struct msg_disconnected *m = (void *)e->data;
+				remove_remote(m->remote->bus, m->remote);
+				break;
+			}
+			case CMD_REQUEST_NAME: {
+				struct cmd_request_name *m = (void *)e->data;
+				request_name(m->remote->bus, m->remote,
+					     m->name);
 				break;
 			}
 			}
-			msgq_pop(q, e);
+			msgq_pop(b.q, e);
 		}
 
 		struct pollfd pfd;
@@ -163,19 +304,10 @@ int run_bus(int lfd)
 				break;
 			}
 
-			struct remote *r =
-				start_remote(q, busid, next_remote++, cfd);
-			if (r == NULL) {
-				close(cfd);
-				continue;
-			}
-
-			dv_append1(&remotes, r);
+			add_remote(&b, cfd);
 		}
 	}
 
-	msgq_free(q);
-	rcu_free(r);
-	dv_free(remotes);
+	destroy_bus(&b);
 	return 0;
 }

@@ -26,7 +26,7 @@ void deref_page(struct page *pg, int num)
 void ref_paged_data(const char *p, int num)
 {
 	struct page *pg = GET_PAGE(p);
-	deref_page(pg, num);
+	ref_page(pg, num);
 }
 
 void deref_paged_data(const char *p, int num)
