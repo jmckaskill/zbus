@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include <limits.h>
 
-const struct rcu *rcu_lock(struct gc_handle *h)
+struct rcu *rcu_lock(struct gc_handle *h)
 {
 	// First set the version to the oldest possible.
 	// This way we don't end up with a dangling data pointer in case a GC
@@ -80,7 +80,7 @@ void gc_unregister(struct gc *g, struct gc_handle *h)
 	free(h);
 }
 
-void update_rcu(struct gc *g, struct rcu *data)
+void gc_set_rcu(struct gc *g, struct rcu *data)
 {
 	// TODO: handle overflow
 	data->version = ++g->version;
@@ -120,11 +120,31 @@ static void do_run_gc(struct gc *g, int version)
 
 void *gc_alloc(size_t num, size_t sz)
 {
-	if (num && sz > -1 / num) {
+	if (!num || !sz || sz > (size_t)-1 / num) {
 		return NULL;
 	}
 	struct gc_header *h = malloc((num * sz) + sizeof(struct gc_header));
 	return h ? (h + 1) : NULL;
+}
+
+slice_t gc_dup(slice_t s)
+{
+	str_t ret = gc_alloc_str(s.len);
+	if (ret.p) {
+		memcpy(ret.p, s.p, s.len);
+		ret.len = s.len;
+		ret.p[ret.len] = 0;
+	}
+	return to_slice(ret);
+}
+
+str_t gc_alloc_str(size_t sz)
+{
+	str_t ret;
+	ret.p = gc_alloc(sz + 1, 1);
+	ret.len = 0;
+	ret.cap = ret.p ? (sz + 1) : 0;
+	return ret;
 }
 
 void gc_collect(struct gc *g, void *p, destructor_fn destroy)

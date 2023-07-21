@@ -77,8 +77,7 @@ int msgq_allocate(struct msgq *q, int num, unsigned *pidx);
 
 // used by the producer to release entries to the consumer
 // and wakes up the consumer if required
-// returns non-zero if there was an error waking up the consumer
-int msgq_release(struct msgq *q, unsigned idx, int num);
+void msgq_release(struct msgq *q, unsigned idx, int num);
 
 // used by the consumer to get the current queue head
 // returns current entry in the queue

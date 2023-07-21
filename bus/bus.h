@@ -2,17 +2,20 @@
 #include "remote.h"
 
 struct bus_name {
+	slice_t name;
 	struct remote *owner;
 	int user;
 	int group;
-	int name_len;
-	char name[1];
 };
+
+int compare_bus_name(const void *a, const void *b);
 
 struct unique_name {
 	int id;
 	struct remote *owner;
 };
+
+int compare_unique_name(const void *a, const void *b);
 
 struct rcu {
 	uintptr_t version;
@@ -22,7 +25,7 @@ struct rcu {
 	int remotes_n;
 
 	// bus names sorted by name
-	struct bus_name **names_v;
+	struct bus_name *names_v;
 	int names_n;
 };
 

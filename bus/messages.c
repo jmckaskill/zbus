@@ -7,15 +7,15 @@
 #include <unistd.h>
 #endif
 
-void gc_send_data(void *p)
+void gc_msg_data(void *p)
 {
-	struct msg_send_data *m = p;
+	struct msg_data *m = p;
 	deref_paged_data(m->data.p, 1);
 }
 
-void gc_send_file(void *p)
+void gc_msg_file(void *p)
 {
-	struct msg_send_file *m = p;
+	struct msg_file *m = p;
 #ifdef _WIN32
 	CloseHandle(m->file);
 #else
@@ -23,14 +23,18 @@ void gc_send_file(void *p)
 #endif
 }
 
-void gc_request_name(void *p)
+struct cmd_name make_cmd_name(struct remote *r, slice_t name, uint32_t reply)
 {
-	struct cmd_request_name *m = p;
-	deref_paged_data(m->name.p, 1);
+	struct cmd_name ret;
+	ret.remote = r;
+	ret.name = name;
+	ret.reply_serial = reply;
+	ref_paged_data(ret.name.p, 1);
+	return ret;
 }
 
-void gc_release_name(void *p)
+void gc_cmd_name(void *p)
 {
-	struct cmd_release_name *m = p;
+	struct cmd_name *m = p;
 	deref_paged_data(m->name.p, 1);
 }

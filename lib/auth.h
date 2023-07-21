@@ -2,7 +2,8 @@
 #include "str.h"
 
 #define AUTH_ERROR -1
-#define AUTH_READ_MORE 0
+#define AUTH_OK 0
+#define AUTH_READ_MORE 1
 
 // returns -ve on error
 // 0 or need more data
@@ -11,4 +12,3 @@
 // 0
 int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 		     int *pstate);
-

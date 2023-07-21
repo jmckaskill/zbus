@@ -1,6 +1,6 @@
 #include "auth.h"
-#include "log.h"
-#include "message.h"
+#include "decode.h"
+#include "encode.h"
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdarg.h>
@@ -36,7 +36,7 @@ static int split_line(str_t *s, char **pline, int *pnext)
 			s->p[n] = 0;
 			*pline = s->p;
 			*pnext = n + 2;
-			return 1;
+			return AUTH_OK;
 		}
 		// only ASCII non control characters are allowed
 		if (ch0 < 0 || ch0 < ' ' || ch0 > '~') {
@@ -81,16 +81,16 @@ int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 		remove_data(in, remove);
 
 		char *arg0;
-		int sts = split_line(in, &arg0, &remove);
-		if (sts <= 0) {
-			return sts;
+		int err = split_line(in, &arg0, &remove);
+		if (err) {
+			return err;
 		}
 		char *arg1 = split_after_space(arg0);
 		char *arg2 = split_after_space(arg1);
 
 		if (strcmp(arg0, "AUTH")) {
 			// unknown command
-			if (str_add(out, "ERROR\r\n")) {
+			if (str_add(out, S("ERROR\r\n"))) {
 				return AUTH_ERROR;
 			}
 			goto wait_for_auth;
@@ -98,7 +98,7 @@ int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 
 		if (strcmp(arg1, "EXTERNAL")) {
 			// unsupported auth type
-			if (str_add(out, "REJECTED EXTERNAL\r\n")) {
+			if (str_add(out, S("REJECTED EXTERNAL\r\n"))) {
 				return AUTH_ERROR;
 			}
 			goto wait_for_auth;
@@ -118,23 +118,21 @@ int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 		remove_data(in, remove);
 
 		char *line;
-		int sts = split_line(in, &line, &remove);
-		if (sts <= 0) {
-			return sts;
-		}
+		int err = split_line(in, &line, &remove);
+		if (err) {
+			return err;
 
-		if (!strcmp(line, "BEGIN")) {
-			remove_data(in, remove);
+		} else if (!strcmp(line, "BEGIN")) {
 			goto wait_for_hello;
 
 		} else if (!strcmp(line, "NEGOTIATE_UNIX_FD")) {
-			if (str_add(out, "AGREE_UNIX_FD\r\n")) {
+			if (str_add(out, S("AGREE_UNIX_FD\r\n"))) {
 				return AUTH_ERROR;
 			}
 			goto wait_for_begin;
 
 		} else {
-			if (str_add(out, "ERROR\r\n")) {
+			if (str_add(out, S("ERROR\r\n"))) {
 				return AUTH_ERROR;
 			}
 			goto wait_for_begin;
@@ -144,54 +142,67 @@ int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 	wait_for_hello:
 	case AUTH_WAIT_FOR_HELLO: {
 		*pstate = AUTH_WAIT_FOR_HELLO;
+		remove_data(in, remove);
+
 		if (out->len) {
 			// we shouldn't have any pending send data at this point
 			// as the remote should have consumed everything before
 			// sending BEGIN
 			return AUTH_ERROR;
 		}
-		if (in->len < MIN_MESSAGE_SIZE) {
-			return AUTH_READ_MORE;
-		}
-
-		// copy the input str as parse_header & parse_message
-		// modify the str as they consume it
-		str_t s[2];
-		s[0] = *in;
-		s[1].p = NULL;
-		s[1].len = 0;
-		s[1].cap = 0;
 
 		struct message msg;
-		int msgsz = parse_header(&msg, s);
-		if (in->len < msgsz) {
+
+		// process the Hello header
+
+		if (in->len < DBUS_HDR_SIZE) {
 			return AUTH_READ_MORE;
 		}
-		if (parse_message(&msg, s)) {
+		int fsz = parse_header(&msg, in->p);
+		if (fsz < 0 || DBUS_HDR_SIZE + fsz > in->cap) {
 			return AUTH_ERROR;
 		}
+
+		// process the Hello fields
+
+		if (in->len < DBUS_HDR_SIZE + fsz) {
+			return AUTH_READ_MORE;
+		}
+		int bsz = parse_fields(&msg, in->p + DBUS_HDR_SIZE);
+		if (bsz != 0) {
+			// we don't expect any arguments for Hello
+			return AUTH_ERROR;
+		}
+
+		// verify the fields
+
 		if (!msg.serial || msg.type != MSG_METHOD ||
-		    !slice_eq(msg.destination, "org.freedesktop.DBus") ||
-		    !slice_eq(msg.interface, "org.freedesktop.DBus") ||
-		    !slice_eq(msg.member, "Hello")) {
+		    !slice_eq(msg.destination, S("org.freedesktop.DBus")) ||
+		    !slice_eq(msg.path, S("/org/freedesktop/DBus")) ||
+		    !slice_eq(msg.interface, S("org.freedesktop.DBus")) ||
+		    !slice_eq(msg.member, S("Hello")) || msg.signature[0]) {
 			return AUTH_ERROR;
 		}
 
-		struct message reply;
-		init_message(&reply, MSG_REPLY, 1);
-		reply.sender = MAKE_SLICE("org.freedesktop.DBus");
-		reply.reply_serial = msg.serial;
-		reply.signature = "s";
+		// Send the reply
 
-		struct builder b = start_message(&reply, out->p, out->cap);
+		struct message o;
+		init_message(&o, MSG_REPLY, 1);
+		o.sender = S("org.freedesktop.DBus");
+		o.reply_serial = msg.serial;
+		o.signature = "s";
+
+		struct builder b = start_message(&o, out->p, out->cap);
 		append_string(&b, unique_addr);
-		int sz = end_message(b);
-		if (sz < 0) {
+		int osz = end_message(b);
+		if (osz < 0) {
 			return AUTH_ERROR;
 		}
 
-		out->len = sz;
-		return msgsz;
+		remove_data(in, DBUS_HDR_SIZE + fsz);
+
+		out->len = osz;
+		return 0;
 	}
 	}
 

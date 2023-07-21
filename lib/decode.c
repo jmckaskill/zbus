@@ -1,4 +1,4 @@
-#include "parse.h"
+#include "decode.h"
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
@@ -109,9 +109,11 @@ static uint16_t parse2(struct iterator *p, char type)
 		p->next = p->end + 1;
 		return 0;
 	}
+	uint16_t ret;
+	memcpy(&ret, p->base + n, 2);
 	p->next = n + 2;
 	p->sig++;
-	return read_native_2(p->base + n);
+	return ret;
 }
 
 static uint32_t parse4(struct iterator *p, char type)
@@ -121,9 +123,11 @@ static uint32_t parse4(struct iterator *p, char type)
 		p->next = p->end + 1;
 		return 0;
 	}
+	uint32_t ret;
+	memcpy(&ret, p->base + n, 4);
 	p->next = n + 4;
 	p->sig++;
-	return read_native_4(p->base + n);
+	return ret;
 }
 
 static uint64_t parse8(struct iterator *p, char type)
@@ -133,9 +137,11 @@ static uint64_t parse8(struct iterator *p, char type)
 		p->next = p->end + 1;
 		return 0;
 	}
+	uint64_t ret;
+	memcpy(&ret, p->base + n, 4);
 	p->next = n + 8;
 	p->sig++;
-	return read_native_8(p->base + n);
+	return ret;
 }
 
 uint8_t parse_byte(struct iterator *p)
@@ -200,11 +206,11 @@ int check_string(slice_t s)
 
 static slice_t parse_string_bytes(struct iterator *p, uint32_t len)
 {
-	slice_t ret = MAKE_SLICE("");
+	slice_t ret = S("");
 	ret.p = p->base + p->next;
 	ret.len = len;
 	uint32_t n = p->next + len + 1;
-	if (len > MAX_ARRAY_SIZE || n > p->end || check_string(ret)) {
+	if (len > DBUS_MAX_VALUE_SIZE || n > p->end || check_string(ret)) {
 		p->next = p->end + 1;
 		return ret;
 	}
@@ -339,7 +345,7 @@ struct iterator skip_array(struct iterator *p)
 	ret.end = start + len;
 	ret.sig = p->sig;
 
-	if (len > MAX_ARRAY_SIZE || start + len > p->end ||
+	if (len > DBUS_MAX_VALUE_SIZE || start + len > p->end ||
 	    skip_signature(&p->sig, true)) {
 		ret.next = ret.end + 1;
 	} else {
@@ -461,7 +467,12 @@ struct iterator skip_value(struct iterator *p)
 			if (next > end) {
 				goto error;
 			}
-			uint32_t len = read_native_4(base + next - 4);
+			uint32_t len;
+			memcpy(&len, base + next - 4, 4);
+			if (len > DBUS_MAX_VALUE_SIZE) {
+				// protect against overflow
+				goto error;
+			}
 			next += len + 1;
 			break;
 		}
@@ -480,7 +491,12 @@ struct iterator skip_value(struct iterator *p)
 			if (next > end) {
 				goto error;
 			}
-			uint32_t len = read_native_4(base + next - 4);
+			uint32_t len;
+			memcpy(&len, base + next - 4, 4);
+			if (len > DBUS_MAX_VALUE_SIZE) {
+				// protect against overflow
+				goto error;
+			}
 			next = alignx(*sig, base, next, end) + len;
 			if (skip_signature(&sig, true)) {
 				goto error;
@@ -536,14 +552,12 @@ error:
 
 int skip_signature(const char **psig, bool in_array)
 {
-	char s[32];
-	char *p = s;
-	char *e = s + sizeof(s) - 1;
-	*p = 0;
+	int d = 0; // current stack entry index
+	char s[32]; // type code stack
 
+	s[d] = TYPE_INVALID;
 	if (in_array) {
-		*(p++) = TYPE_ARRAY;
-		*p = 0;
+		s[d++] = TYPE_ARRAY;
 	}
 
 	for (;;) {
@@ -564,65 +578,64 @@ int skip_signature(const char **psig, bool in_array)
 			break;
 
 		case TYPE_ARRAY:
-			if (p == e) {
+			if (++d == sizeof(s)) {
 				return -1;
 			}
-			*(p++) = TYPE_ARRAY;
-			*p = 0;
+			s[d] = TYPE_ARRAY;
 			// loop around to consume another item
 			continue;
 
 		case TYPE_DICT_BEGIN:
-			if (p == s || p[-1] != TYPE_ARRAY) {
+			if (s[d] != TYPE_ARRAY) {
 				return -1;
 			}
 			// transform the array into a dict
-			p[-1] = TYPE_DICT;
+			s[d] = TYPE_DICT;
 			break;
 
 		case TYPE_STRUCT_BEGIN:
-			if (p == e) {
+			if (++d == sizeof(s)) {
 				return -1;
 			}
-			*(p++) = TYPE_STRUCT;
-			*p = 0;
+			s[d] = TYPE_STRUCT;
 			break;
 
 		case TYPE_STRUCT_END:
-			if (p == s || p[-1] != TYPE_STRUCT) {
+			if (s[d] != TYPE_STRUCT) {
 				return -1;
 			}
-			*(--p) = 0;
+			d--;
 			break;
 
 		case TYPE_DICT_END:
-			if (p == s || p[-1] != TYPE_DICT_END) {
+			if (s[d] != TYPE_DICT_END) {
 				return -1;
 			}
-			*(--p) = 0;
+			d--;
 			break;
 		default:
+			// did we go off the end of the string?
 			(*psig)--;
 			return -1;
 		}
 
-		if (p > s) {
-			switch (p[-1]) {
+		if (d) {
+			switch (s[d]) {
 			case TYPE_ARRAY:
 				// We've consumed the array data and it was not
 				// a dict. Otherwise the type code would have
 				// been changed.
-				*(--p) = 0;
+				d--;
 				break;
 
 			case TYPE_DICT:
 				// we've consumed one item in the dict
-				p[-1] = TYPE_DICT_BEGIN;
+				s[d] = TYPE_DICT_BEGIN;
 				break;
 
 			case TYPE_DICT_BEGIN:
 				// we've consumed both items in the dict
-				p[-1] = TYPE_DICT_END;
+				s[d] = TYPE_DICT_END;
 				break;
 
 			case TYPE_DICT_END:
@@ -632,7 +645,7 @@ int skip_signature(const char **psig, bool in_array)
 			}
 		}
 
-		if (p == s) {
+		if (d == 0) {
 			// we've consumed an item and have nothing on the stack
 			return 0;
 		}
@@ -643,16 +656,287 @@ int skip_signature(const char **psig, bool in_array)
 void TEST_parse()
 {
 	fprintf(stderr, "TEST_parse\n");
-	struct iterator p;
-	static const alignas(8) uint8_t test1[] = {
+	static const char test1[] = {
 		1, // byte
 		0, 2, 0, // u16
 		3, 0, 0, 0, // u32
 	};
-	init_iterator(&p, "yqu", test1, 0, sizeof(test1));
-	assert(parse_byte(&p) == 1 && !iter_error(&p));
-	assert(parse_uint16(&p) == 2 && !iter_error(&p));
-	assert(parse_uint32(&p) == 3 && !iter_error(&p));
-	assert(parse_byte(&p) == 0 && iter_error(&p));
+	struct iterator ii =
+		make_iterator("yqu", make_slice2(test1, sizeof(test1)));
+	assert(parse_byte(&ii) == 1 && !iter_error(&ii));
+	assert(parse_uint16(&ii) == 2 && !iter_error(&ii));
+	assert(parse_uint32(&ii) == 3 && !iter_error(&ii));
+	assert(parse_byte(&ii) == 0 && iter_error(&ii));
 }
 #endif
+
+///////////////////////////////////
+// Message field checking
+
+int check_member(const char *p)
+{
+	if (!*p) {
+		return -1;
+	}
+	const char *begin = p;
+	while (*p) {
+		// must be composed of [A-Z][a-z][0-9]_ and must not start with
+		// a digit
+		if (('A' <= *p && *p <= 'Z') || ('a' <= *p && *p <= 'z') ||
+		    *p == '_' || (p > begin && '0' <= *p && *p <= '9')) {
+			p++;
+		} else {
+			return -1;
+		}
+	}
+	return p - begin > 255;
+}
+
+int check_interface(const char *p)
+{
+	int have_dot = 0;
+	const char *begin = p;
+	const char *segment = p;
+	for (;;) {
+		// must be composed of [A-Z][a-z][0-9]_ and must not start with
+		// a digit segments can not be zero length ie no two dots in a
+		// row nor a leading dot the name as a whole must comprise at
+		// least two segments ie have a dot and must not be longer than
+		// the requested size
+		if (('A' <= *p && *p <= 'Z') || ('a' <= *p && *p <= 'z') ||
+		    *p == '_' || (p > segment && '0' <= *p && *p <= '9')) {
+			p++;
+		} else if (p > segment && *p == '.') {
+			segment = ++p;
+			have_dot = 1;
+		} else if (p > segment && have_dot && *p == '\0' &&
+			   p - begin <= 255) {
+			return 0;
+		} else {
+			return -1;
+		}
+	}
+}
+
+int check_unique_address(const char *p)
+{
+	const char *begin = p;
+	if (*(p++) != ':') {
+		return -1;
+	}
+	int have_dot = 0;
+	const char *segment = p;
+	for (;;) {
+		// must start with a :
+		// must be composed of at least two segments separated by a dot
+		// segments must be composed of [A-Z][a-z][0-9]_
+		// segments can not be zero length
+		if (('A' <= *p && *p <= 'Z') || ('a' <= *p && *p <= 'z') ||
+		    *p == '_' || ('0' <= *p && *p <= '9')) {
+			p++;
+		} else if (p > segment && *p == '.') {
+			segment = ++p;
+			have_dot = 1;
+		} else if (p > segment && have_dot && *p == '\0' &&
+			   p - begin <= 255) {
+			return 0;
+		} else {
+			return -1;
+		}
+	}
+}
+
+int check_address(const char *p)
+{
+	return check_unique_address(p) && check_known_address(p);
+}
+
+//////////////////////////////
+// Message parsing
+
+void init_message(struct message *m, enum msg_type type, uint32_t serial)
+{
+	m->path = S("");
+	m->interface = S("");
+	m->member = S("");
+	m->error = S("");
+	m->destination = S("");
+	m->sender = S("");
+	m->signature = "";
+	m->fdnum = 0;
+	m->field_len = 0;
+	m->body_len = 0;
+	m->reply_serial = 0;
+	m->serial = serial;
+	m->flags = 0;
+	m->type = type;
+}
+
+static_assert(sizeof(struct raw_header) == DBUS_HDR_SIZE, "");
+
+int parse_header(struct message *m, const void *buf)
+{
+	const struct raw_header *h = buf;
+
+	if (h->endian != native_endian()) {
+		return -1;
+	}
+
+	// h may not be 4 byte aligned so copy the values over
+	uint32_t flen, blen, serial;
+	memcpy(&flen, &h->field_len, 4);
+	memcpy(&blen, &h->body_len, 4);
+	memcpy(&serial, &h->serial, 4);
+
+	uint32_t fpadded = ALIGN_UINT_UP(flen, 8);
+
+	if (fpadded > DBUS_MAX_VALUE_SIZE || blen > DBUS_MAX_MSG_SIZE) {
+		return -1;
+	}
+
+	init_message(m, h->type, serial);
+	m->flags = h->flags;
+	m->body_len = (int)blen;
+	m->field_len = (int)flen;
+	return (int)fpadded;
+}
+
+static inline uint32_t read_little_4(const char *n)
+{
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	uint32_t u;
+	memcpy(&u, n, 4);
+	return u;
+#else
+	const uint8_t *u = n;
+	return ((uint32_t)u[0]) | (((uint32_t)u[1]) << 8) |
+	       (((uint32_t)u[2]) << 16) | (((uint32_t)u[3]) << 24);
+#endif
+}
+
+static uint32_t parse_uint32_field(struct iterator *ii)
+{
+	// we should still be aligned from the beginning of this field
+	assert((ii->next & 7U) == 4U);
+	const char *n = ii->base + ii->next;
+	ii->next += 4;
+	return ii->next > ii->end ? 0 : read_little_4(n);
+}
+
+static slice_t parse_string_field(struct iterator *ii)
+{
+	// we should still be aligned from the beginning of the field
+	assert((ii->next & 7U) == 4U);
+	const char *plen = ii->base + ii->next;
+	ii->next += 4;
+	if (ii->next > ii->end) {
+		return S("");
+	}
+	uint32_t len = read_little_4(plen);
+	if (len > DBUS_MAX_VALUE_SIZE) {
+		// protect against overflow
+		return S("");
+	}
+	ii->next += len + 1;
+	slice_t ret = make_slice2(plen + 4, len);
+	if (ii->next <= ii->end && check_string(ret)) {
+		ii->next = ii->end + 1;
+	}
+	return ret;
+}
+
+static const char *parse_signature_field(struct iterator *ii)
+{
+	if (ii->next >= ii->end) {
+		return NULL;
+	}
+	const char *plen = ii->base + ii->next++;
+	uint8_t len = *(uint8_t *)plen;
+	ii->next += len + 1;
+	slice_t ret = make_slice2(plen + 1, len);
+	if (ii->next <= ii->end && check_string(ret)) {
+		ii->next = ii->end + 1;
+	}
+	return ret.p;
+}
+
+static void parse_field(struct message *msg, struct iterator *ii)
+{
+	align_iterator_8(ii);
+
+	// Min field size is 5 for a field of type byte: XX 01 'y' 00 YY
+	if (ii->next + 5 > ii->end) {
+		goto error;
+	}
+
+	uint8_t ftype = *(uint8_t *)(ii->base + ii->next++);
+
+	if (ftype > FIELD_LAST) {
+		ii->sig = "v";
+		skip_value(ii);
+	} else {
+		uint32_t ftag = read_little_4(ii->base + ii->next);
+		ii->next += 4;
+
+		switch (ftag) {
+		case FTAG_REPLY_SERIAL:
+			msg->reply_serial = parse_uint32_field(ii);
+			break;
+
+		case FTAG_UNIX_FDS:
+			msg->fdnum = parse_uint32_field(ii);
+			break;
+
+		case FTAG_PATH:
+			msg->path = parse_string_field(ii);
+			break;
+
+		case FTAG_INTERFACE:
+			msg->interface = parse_string_field(ii);
+			break;
+
+		case FTAG_MEMBER:
+			msg->member = parse_string_field(ii);
+			break;
+
+		case FTAG_ERROR_NAME:
+			msg->error = parse_string_field(ii);
+			break;
+
+		case FTAG_DESTINATION:
+			msg->destination = parse_string_field(ii);
+			break;
+
+		case FTAG_SENDER:
+			msg->sender = parse_string_field(ii);
+			break;
+
+		case FTAG_SIGNATURE:
+			msg->signature = parse_signature_field(ii);
+			break;
+
+		default:
+			// unexpected field signature
+			goto error;
+		}
+	}
+	return;
+error:
+	ii->next = ii->end + 1;
+}
+
+int parse_fields(struct message *msg, const void *buf)
+{
+	struct iterator ii =
+		make_iterator("", make_slice2(buf, msg->field_len));
+
+	while (ii.next < ii.end) {
+		parse_field(msg, &ii);
+	}
+
+	if (ii.next > ii.end) {
+		return -1;
+	}
+
+	return msg->body_len;
+}

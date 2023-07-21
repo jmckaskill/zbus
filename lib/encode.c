@@ -1,8 +1,11 @@
-#include "marshal.h"
-#include "parse.h"
+#include "encode.h"
+#include "decode.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <limits.h>
+
+/////////////////////////////////
+// alignment
 
 // a surprising amount of the time the data is already aligned
 // e.g. string within struct
@@ -77,6 +80,9 @@ static char *alignx(char *next, char type)
 	}
 }
 
+///////////////////////////////
+// raw data encoding
+
 void append_raw(struct builder *b, const char *sig, const void *p, size_t len)
 {
 	char *base = alignx(b->next, *sig);
@@ -115,7 +121,7 @@ void _append2(struct builder *b, uint16_t u, char type)
 void _append4(struct builder *b, uint32_t u, char type)
 {
 	char *base = align4(b->next);
-	b->next = base + 2;
+	b->next = base + 4;
 	if (*b->sig != type) {
 		b->next = b->end + 1;
 	} else if (b->next <= b->end) {
@@ -197,29 +203,29 @@ void append_format(struct builder *b, const char *fmt, ...)
 	va_end(ap);
 }
 
-const char *start_variant(struct builder *b, const char *sig)
+struct variant_data start_variant(struct builder *b, const char *sig)
 {
 	_append_signature(b, sig, TYPE_VARIANT);
-	const char *ret = b->sig;
+	struct variant_data vd = { .nextsig = b->sig };
 	b->sig = sig;
-	return ret;
+	return vd;
 }
 
-void end_variant(struct builder *b, const char *start)
+void end_variant(struct builder *b, struct variant_data vd)
 {
 	// should have consumed the signature
 	if (*b->sig) {
 		b->next = b->end + 1;
 	}
-	b->sig = start;
+	b->sig = vd.nextsig;
 }
 
 void append_variant(struct builder *b, const char *sig, const void *raw,
 		    size_t len)
 {
-	const char *nextsig = start_variant(b, sig);
+	struct variant_data vd = start_variant(b, sig);
 	append_raw(b, sig, raw, len);
-	end_variant(b, nextsig);
+	end_variant(b, vd);
 }
 
 void start_struct(struct builder *b)
@@ -282,7 +288,7 @@ void next_in_array(struct builder *b, struct array_data *a)
 
 void end_array(struct builder *b, struct array_data a)
 {
-	size_t len = b->next - a.start;
+	size_t len = b->next - a.start - a.hdrlen;
 	*(uint32_t *)a.start = (uint32_t)len;
 	if (!len) {
 		// no elements added, so need to move forward sig manually
@@ -340,4 +346,146 @@ void end_dict(struct builder *b, struct dict_data d)
 	if (*b->sig) {
 		b->sig++; // }
 	}
+}
+
+//////////////////////////////
+// message encoding
+
+static inline void write_little_4(char *p, uint32_t v)
+{
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	memcpy(p, &v, 4);
+#else
+	*(uint8_t *)(p) = (uint8_t)(v);
+	*(uint8_t *)(p + 1) = (uint8_t)(v >> 8);
+	*(uint8_t *)(p + 2) = (uint8_t)(v >> 16);
+	*(uint8_t *)(p + 3) = (uint8_t)(v >> 24);
+#endif
+}
+
+static void append_uint32_field(struct builder *b, uint32_t tag, uint32_t v)
+{
+	// should be called first so that we are still aligned
+	assert(!((uintptr_t)b->next & 3U));
+	char *ptag = b->next;
+	char *pval = ptag + 4;
+	b->next = pval + 4;
+	if (b->next <= b->end) {
+		write_little_4(ptag, tag);
+		*(uint32_t *)pval = v;
+	}
+}
+
+static void append_string_field(struct builder *b, uint32_t tag, slice_t str)
+{
+	align_buffer_8(b);
+	char *ptag = b->next;
+	char *plen = ptag + 4;
+	char *pstr = plen + 4;
+	char *pnul = pstr + str.len;
+	b->next = pnul + 1;
+	if (b->next <= b->end) {
+		write_little_4(ptag, tag);
+		*(uint32_t *)plen = str.len;
+		memcpy(pstr, str.p, str.len);
+		pnul[0] = 0;
+	}
+}
+
+static void append_signature_field(struct builder *b, uint32_t tag,
+				   const char *sig)
+{
+	align_buffer_8(b);
+	size_t len = strlen(sig);
+	if (len > 255) {
+		b->next = b->end + 1;
+		return;
+	}
+	char *ptag = b->next;
+	char *plen = ptag + 4;
+	char *pstr = plen + 1;
+	b->next = pstr + len + 1;
+	if (b->next <= b->end) {
+		write_little_4(ptag, tag);
+		*(uint8_t *)plen = (uint8_t)len;
+		memcpy(pstr, sig, len + 1);
+	}
+}
+
+struct builder start_message(struct message *m, void *buf, size_t bufsz)
+{
+	struct builder b;
+	init_builder(&b, buf, bufsz);
+
+	if (bufsz < DBUS_HDR_SIZE) {
+		b.end = b.next + 1;
+		return b;
+	}
+
+	b.next += DBUS_HDR_SIZE;
+
+	// unwrap the standard marshalling functions to add the field
+	// type and variant signature in one go
+
+	// fixed length fields go first so we can maintain 8 byte alignment
+	if (m->reply_serial) {
+		append_uint32_field(&b, FTAG_REPLY_SERIAL, m->reply_serial);
+	}
+	if (m->fdnum) {
+		append_uint32_field(&b, FTAG_UNIX_FDS, m->fdnum);
+	}
+	if (*m->signature) {
+		append_signature_field(&b, FTAG_SIGNATURE, m->signature);
+	}
+	if (m->path.len) {
+		append_string_field(&b, FTAG_PATH, m->path);
+	}
+	if (m->interface.len) {
+		append_string_field(&b, FTAG_INTERFACE, m->interface);
+	}
+	if (m->member.len) {
+		append_string_field(&b, FTAG_MEMBER, m->member);
+	}
+	if (m->error.len) {
+		append_string_field(&b, FTAG_ERROR_NAME, m->error);
+	}
+	if (m->destination.len) {
+		append_string_field(&b, FTAG_DESTINATION, m->destination);
+	}
+	if (m->sender.len) {
+		append_string_field(&b, FTAG_SENDER, m->sender);
+	}
+
+	struct raw_header *h = (struct raw_header *)buf;
+	h->endian = native_endian();
+	h->type = m->type;
+	h->flags = m->flags;
+	h->version = DBUS_VERSION;
+	h->body_len = m->body_len;
+	h->serial = m->serial;
+	h->field_len = b.next - b.base - DBUS_HDR_SIZE;
+
+	// align the end of the fields
+	align_buffer_8(&b);
+	b.sig = m->signature;
+	return b;
+}
+
+int end_message(struct builder b)
+{
+	if (builder_error(b) || *b.sig) {
+		// error during marshalling or missing arguments
+		return -1;
+	}
+	struct raw_header *h = (struct raw_header *)b.base;
+	uint32_t field_len = h->field_len;
+	uint32_t start = DBUS_HDR_SIZE + ALIGN_UINT_UP(field_len, 8);
+	h->body_len = b.next - b.base - start;
+	return (int)(b.next - b.base);
+}
+
+int write_message_header(struct message *m, void *buf, size_t bufsz)
+{
+	struct builder b = start_message(m, buf, bufsz);
+	return builder_error(b) ? -1 : (int)(b.next - b.base);
 }

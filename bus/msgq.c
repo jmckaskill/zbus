@@ -83,7 +83,7 @@ int msgq_allocate(struct msgq *q, int num, unsigned *pidx)
 	return 0;
 }
 
-int msgq_release(struct msgq *q, unsigned idx, int num)
+void msgq_release(struct msgq *q, unsigned idx, int num)
 {
 	assert(num > 0);
 
@@ -101,12 +101,10 @@ int msgq_release(struct msgq *q, unsigned idx, int num)
 	if (atomic_flag_test_and_set_explicit(&q->awake,
 					      memory_order_acq_rel) == false) {
 #ifdef _WIN32
-		return SetEvent(q->wakeup.handle) == FALSE;
+		SetEvent(q->wakeup.handle);
 #else
-		return pthread_kill(q->wakeup.thread, SIGMSGQ);
+		pthread_kill(q->wakeup.thread, SIGMSGQ);
 #endif
-	} else {
-		return 0;
 	}
 }
 
@@ -148,5 +146,6 @@ int msgq_send(struct msgq *q, uint16_t cmd, const void *p, size_t sz,
 	e->time_ms = 0;
 	e->cleanup = cleanup;
 	memcpy(e->data, p, sz);
-	return msgq_release(q, idx, 1);
+	msgq_release(q, idx, 1);
+	return 0;
 }
