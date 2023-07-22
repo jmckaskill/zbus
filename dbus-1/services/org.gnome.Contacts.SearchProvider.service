@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.gnome.Contacts.SearchProvider
+Exec=/usr/libexec/gnome-contacts-search-provider

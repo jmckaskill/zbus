@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.xfce.ScreenSaver
+Exec=/usr/bin/xfce4-screensaver

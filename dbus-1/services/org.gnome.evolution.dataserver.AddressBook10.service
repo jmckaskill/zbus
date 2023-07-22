@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.gnome.evolution.dataserver.AddressBook10
+Exec=/usr/libexec/evolution-addressbook-factory
+SystemdService=evolution-addressbook-factory.service

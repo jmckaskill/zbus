@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.gnome.TextEditor
+Exec=/usr/bin/gnome-text-editor --gapplication-service
+

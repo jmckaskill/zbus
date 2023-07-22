@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.ayatana.bamf
+Exec=/usr/libexec/bamf/bamfdaemon-dbus-runner
+SystemdService=bamfdaemon.service

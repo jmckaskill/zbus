@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.ladish.conf
+Exec=/usr/bin/ladiconfd

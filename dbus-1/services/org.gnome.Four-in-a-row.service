@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.gnome.Four-in-a-row
+Exec=/usr/bin/four-in-a-row --gapplication-service

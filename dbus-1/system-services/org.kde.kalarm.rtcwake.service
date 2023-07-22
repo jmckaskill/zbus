@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.kde.kalarm.rtcwake
+Exec=/usr/libexec/kauth/kalarm_helper
+User=root

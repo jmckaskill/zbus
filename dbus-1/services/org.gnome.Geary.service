@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.gnome.Geary
+Exec=/usr/bin/geary --gapplication-service

@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.gnome.gnome-latex
+Exec=/usr/bin/gnome-latex --gapplication-service

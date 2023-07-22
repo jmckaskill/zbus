@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=org.usbguard1
+Exec=/usr/bin/usbguard-dbus --system
+SystemdService=dbus-org.usbguard.service
+

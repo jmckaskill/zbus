@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.kde.kscreen.osdService
+Exec=/usr/libexec/kscreen_osd_service
+SystemdService=plasma-kscreen-osd.service

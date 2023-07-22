@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.mpris.MediaPlayer2.mpd
+Exec=/usr/bin/mpDris2 --use-journal
+SystemdService=mpDris2.service

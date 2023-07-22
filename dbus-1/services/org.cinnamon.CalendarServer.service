@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.cinnamon.CalendarServer
+Exec=/usr/bin/cinnamon-calendar-server

@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.gnome.GPaste.Preferences
+Exec=/usr/libexec/gpaste/gpaste-preferences --gapplication-service
+SystemdService=org.gnome.GPaste.Preferences.service

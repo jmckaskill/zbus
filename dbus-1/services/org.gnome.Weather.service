@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.gnome.Weather
+Exec=/usr/share/org.gnome.Weather/org.gnome.Weather --gapplication-service

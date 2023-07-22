@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.gnome.OnlineMiners.Facebook
+Exec=/usr/libexec/gom-facebook-miner

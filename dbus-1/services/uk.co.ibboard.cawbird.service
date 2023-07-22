@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=uk.co.ibboard.cawbird
+Exec=/usr/bin/cawbird --gapplication-service

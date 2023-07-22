@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=de.haeckerfelix.gradio
+Exec=/usr/bin/gradio --gapplication-service

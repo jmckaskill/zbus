@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=nl.whynothugo.darkman
+Exec=/usr/bin/darkman run
+SystemdService=darkman.service

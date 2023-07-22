@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.gnome.Boxes
+Exec=/usr/bin/gnome-boxes --gapplication-service

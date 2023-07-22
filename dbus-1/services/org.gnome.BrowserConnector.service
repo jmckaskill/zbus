@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.gnome.BrowserConnector
+Exec=/usr/bin/gnome-browser-connector --gapplication-service

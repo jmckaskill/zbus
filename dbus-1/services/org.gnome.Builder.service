@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.gnome.Builder
+Exec=/usr/bin/gnome-builder --gapplication-service
+

@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=org.clightd.clightd
+Exec=/usr/libexec/clightd
+User=root
+

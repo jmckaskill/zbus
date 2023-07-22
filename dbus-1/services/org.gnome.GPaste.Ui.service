@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.gnome.GPaste.Ui
+Exec=/usr/libexec/gpaste/gpaste-ui --gapplication-service
+SystemdService=org.gnome.GPaste.Ui.service

@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.kde.k3b
+Exec=/usr/libexec/kauth/k3bhelper
+User=root

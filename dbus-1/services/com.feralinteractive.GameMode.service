@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=com.feralinteractive.GameMode
+Exec=/usr/bin/gamemoded -d
+SystemdService=gamemoded.service

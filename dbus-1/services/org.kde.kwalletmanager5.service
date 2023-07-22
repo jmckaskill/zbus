@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.kde.kwalletmanager5
+Exec=/usr/bin/kwalletmanager5

@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.kde.kinfocenter.dmidecode
+Exec=/usr/libexec/kauth/kinfocenter-dmidecode-helper
+User=root

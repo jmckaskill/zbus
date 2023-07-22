@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.corectrl.helperkiller
+Exec=/usr/libexec/kauth/corectrl_helperkiller
+User=root

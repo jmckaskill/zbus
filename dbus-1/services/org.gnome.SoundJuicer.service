@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.gnome.SoundJuicer
+Exec=/usr/bin/sound-juicer --gapplication-service

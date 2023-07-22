@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.desktop.kde
+Exec=/usr/libexec/xdg-desktop-portal-kde
+SystemdService=plasma-xdg-desktop-portal-kde.service
