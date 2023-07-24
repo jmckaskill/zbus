@@ -33,8 +33,14 @@ void ref_page(struct page *pg, int num);
 void deref_page(struct page *pg, int num);
 
 // ref or deref the page via pointers into data in the page
-void ref_paged_data(const char *p, int num);
-void deref_paged_data(const char *p, int num);
+static inline void ref_paged_data(const char *s)
+{
+	ref_page(GET_PAGE(s), 1);
+}
+static inline void deref_paged_data(const char *s)
+{
+	deref_page(GET_PAGE(s), 1);
+}
 
 //////////////////////////////////
 // page_buffer provides a buffer service using struct page
@@ -47,18 +53,21 @@ struct page_buffer {
 
 #define MAX_BUFFER_SIZE sizeof(((struct page *)0)->data)
 
-extern int lock_buffer(struct page_buffer *b, str_t *s, int minsz);
-static str_t lock_short_buffer(struct page_buffer *b);
+extern void init_buffer(struct page_buffer *b);
+extern void destroy_buffer(struct page_buffer *b);
+extern int lock_buffer(struct page_buffer *b, buf_t *s, int minsz);
+static buf_t lock_short_buffer(struct page_buffer *b);
 static void unlock_buffer(struct page_buffer *b, int used);
+extern slice_t dup_in_buffer(struct page_buffer *b, slice_t s);
 
 ///////////////////////////////////
 // inline implementations
 
-static inline str_t lock_short_buffer(struct page_buffer *b)
+static inline buf_t lock_short_buffer(struct page_buffer *b)
 {
 	// short buffer shouldn't fail
 	// enough room for a max length encoded 256B bus name
-	str_t buf;
+	buf_t buf;
 	int err = lock_buffer(b, &buf, 264);
 	assert(err == 0);
 	return buf;

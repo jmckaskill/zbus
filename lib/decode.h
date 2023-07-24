@@ -34,9 +34,9 @@ struct variant {
 /////////////////////
 // raw data decoding
 
-static struct iterator make_iterator(const char *sig, slice_t data);
+static void init_iterator(struct iterator *ii, const char *sig, slice_t data);
 
-static inline int iter_error(struct iterator *p);
+static int iter_error(struct iterator *p);
 
 // check iter_error before using any of these values
 extern uint8_t parse_byte(struct iterator *p);
@@ -57,16 +57,16 @@ extern void parse_dict_begin(struct iterator *p);
 extern void parse_dict_end(struct iterator *p);
 
 extern int check_string(slice_t s);
-extern int check_path(const char *p);
-extern int check_member(const char *p);
-extern int check_interface(const char *p);
-extern int check_address(const char *p);
-extern int check_unique_address(const char *p);
-static int check_error_name(const char *p);
-static int check_known_address(const char *p);
+extern int check_path(slice_t s);
+extern int check_member(slice_t s);
+extern int check_interface(slice_t s);
+extern int check_address(slice_t s);
+extern int check_unique_address(slice_t s);
+static int check_error_name(slice_t s);
+static int check_known_address(slice_t s);
 
-// psig must point to NULL before first call
-extern bool parse_array_next(struct iterator *p, const char **psig);
+extern struct array_data parse_array(struct iterator *p);
+extern bool array_has_more(struct iterator *p, struct array_data *pd);
 
 // skip functions skip over data possibly returning an iterator to the data.
 // They do not fully validate the information.
@@ -82,27 +82,26 @@ extern void TEST_parse();
 //////////////////////////////////////
 // message decoding
 
-// buffer needs to be DBUS_MIN_MESSAGE_SIZE large
 // returns -ve on invalid message header
-// returns number of bytes for parse_fields
-int parse_header(struct message *msg, const void *buf);
+// returns 0 on insufficient data to determine size
+// returns number of bytes in header or message
+int parse_header_size(slice_t data);
+int parse_message_size(slice_t data);
 
 // buffer needs to include all the message fields data
-// returns -ve on invalid message fields
-// returns number of bytes in body
-int parse_fields(struct message *msg, const void *buf);
+// returns non-zero on error
+int parse_header(struct message *msg, slice_t data);
 
 ////////////////////////////////////////
 // inline implementations
 
-static inline struct iterator make_iterator(const char *sig, slice_t s)
+static inline void init_iterator(struct iterator *ii, const char *sig,
+				 slice_t s)
 {
-	struct iterator ii;
-	ii.base = s.p;
-	ii.next = 0;
-	ii.end = s.len;
-	ii.sig = sig;
-	return ii;
+	ii->base = s.p;
+	ii->next = 0;
+	ii->end = s.len;
+	ii->sig = sig;
 }
 
 static inline int iter_error(struct iterator *p)
@@ -110,12 +109,12 @@ static inline int iter_error(struct iterator *p)
 	return p->next > p->end;
 }
 
-static inline int check_error_name(const char *p)
+static inline int check_error_name(slice_t p)
 {
 	return check_interface(p);
 }
 
-static inline int check_known_address(const char *p)
+static inline int check_known_address(slice_t p)
 {
 	return check_interface(p);
 }

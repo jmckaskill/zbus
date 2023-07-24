@@ -24,22 +24,30 @@ void deref_page(struct page *pg, int num)
 	}
 }
 
-void ref_paged_data(const char *p, int num)
+void init_buffer(struct page_buffer *b)
 {
-	struct page *pg = GET_PAGE(p);
-	ref_page(pg, num);
+	memset(b, 0, sizeof(*b));
 }
 
-void deref_paged_data(const char *p, int num)
+void destroy_buffer(struct page_buffer *b)
 {
-	struct page *pg = GET_PAGE(p);
-	deref_page(pg, num);
+	deref_page(b->pg, 1);
 }
 
-int lock_buffer(struct page_buffer *b, str_t *pbuf, int minsz)
+slice_t dup_in_buffer(struct page_buffer *b, slice_t src)
+{
+	assert(src.len < MAX_BUFFER_SIZE);
+	buf_t str = lock_short_buffer(b);
+	buf_add(&str, src);
+	slice_t ret = to_slice(str);
+	unlock_buffer(b, ret.len);
+	return ret;
+}
+
+int lock_buffer(struct page_buffer *b, buf_t *pbuf, int minsz)
 {
 	assert(!b->locked);
-	if (!b->locked || minsz > sizeof(b->pg->data)) {
+	if (b->locked || minsz > sizeof(b->pg->data)) {
 		return -1;
 	}
 	b->locked = true;

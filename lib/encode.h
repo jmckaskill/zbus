@@ -7,14 +7,12 @@
 struct builder {
 	char *next;
 	char *end;
-	char *base;
 	const char *sig;
 };
 
 /////////////////////////////
 // raw encoded data handling
 
-static void init_builder(struct builder *b, void *p, size_t len);
 static inline int builder_error(struct builder b);
 
 extern void append_raw(struct builder *b, const char *sig, const void *p,
@@ -46,11 +44,11 @@ extern void end_struct(struct builder *b);
 extern struct array_data start_array(struct builder *b);
 extern void end_array(struct builder *b, struct array_data data);
 // should be called before adding each array element
-extern void next_in_array(struct builder *b, struct array_data *pdata);
+extern void start_array_entry(struct builder *b, struct array_data *pdata);
 
 extern struct dict_data start_dict(struct builder *b);
 extern void end_dict(struct builder *b, struct dict_data a);
-static void next_in_dict(struct builder *b, struct dict_data *a);
+static void start_dict_entry(struct builder *b, struct dict_data *a);
 
 extern void align_buffer_8(struct builder *b);
 
@@ -58,23 +56,18 @@ extern void align_buffer_8(struct builder *b);
 // message handling
 
 void init_message(struct message *m, enum msg_type type, uint32_t serial);
-struct builder start_message(struct message *m, void *buf, size_t bufsz);
 
-// returns -ve on error or +ve number of bytes in message
-int end_message(struct builder b);
+// Appends a message header to the supplied buffer.
+// returns non-zero on error
+int append_header(buf_t *buf, const struct message *m);
 
-// returns -ve on error or +ve number of bytes in header
-int write_message_header(struct message *m, void *buf, size_t bufsz);
+// appends a message to the supplied buffer. The same buffer must be provided to
+// both calls. Returns non-zero on error
+struct builder start_message(buf_t *buf, const struct message *m);
+int end_message(buf_t *buf, struct builder b);
 
 ///////////////////////////////////////////////////////
 // Inline implementationns
-
-struct array_data {
-	const char *sig;
-	const char *start;
-	uint8_t siglen;
-	uint8_t hdrlen;
-};
 
 struct dict_data {
 	struct array_data a;
@@ -87,21 +80,6 @@ struct variant_data {
 void _append2(struct builder *b, uint16_t u, char type);
 void _append4(struct builder *b, uint32_t u, char type);
 void _append8(struct builder *b, uint64_t u, char type);
-
-static inline void init_builder(struct builder *b, void *p, size_t cap)
-{
-#ifndef NDEBUG
-	memset(p, 0xBD, cap);
-#endif
-	// cap and base must be 8 byte aligned
-	assert(!((uintptr_t)p & 7));
-	assert(!(cap & 7));
-	b->next = (char *)p;
-	b->base = (char *)p;
-	b->end = b->next +
-		 (cap > DBUS_MAX_VALUE_SIZE ? DBUS_MAX_VALUE_SIZE : cap);
-	b->sig = "";
-}
 
 static inline int builder_error(struct builder b)
 {
@@ -187,7 +165,7 @@ static inline void append_signature(struct builder *b, const char *sig)
 	_append_signature(b, sig, TYPE_SIGNATURE);
 }
 
-static inline void next_in_dict(struct builder *b, struct dict_data *d)
+static inline void start_dict_entry(struct builder *b, struct dict_data *d)
 {
-	next_in_array(b, &d->a);
+	start_array_entry(b, &d->a);
 }

@@ -31,8 +31,3 @@ void run_gc(struct gc *gc);
 
 void *gc_alloc(size_t num, size_t sz);
 void gc_collect(struct gc *gc, void *p, destructor_fn destroy);
-
-str_t gc_alloc_str(size_t sz);
-slice_t gc_dup(slice_t s);
-
-#define GC_ALLOC(TYPE, NUM) ((TYPE *)gc_alloc((NUM), sizeof(TYPE)))

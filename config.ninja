@@ -1,4 +1,4 @@
-cc = musl-gcc
+stcc = musl-gcc
 ld = musl-gcc
 ar = ar rcs
 cflags = -fstack-usage -fdiagnostics-color -g -Wall -Werror -I.

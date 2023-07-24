@@ -260,27 +260,27 @@ struct array_data start_array(struct builder *b)
 	if (b->next > b->end || skip_signature(&nextsig, true)) {
 		goto error;
 	}
-	b->sig++;
+	a.sig = ++b->sig;
 	a.siglen = (uint8_t)(nextsig - b->sig);
-	a.hdrlen = (uint8_t)(b->next - start);
-	a.sig = b->sig;
-	a.start = start;
+	a.data = start;
+	a.datalen = (uint8_t)(b->next - start);
 	return a;
 error:
-	// setup an error state with siglen = 0 and hdrlen = 0
-	// so that next_in_array and end_array don't crash
+	// setup an error state such that start_array_entry and end_array don't
+	// crash
+	static uint32_t dummy;
 	a.sig = "";
-	a.start = 0;
 	a.siglen = 0;
-	a.hdrlen = 0;
+	a.data = (char *)&dummy;
+	a.datalen = 0;
 	b->next = b->end + 1;
 	return a;
 }
 
-void next_in_array(struct builder *b, struct array_data *a)
+void start_array_entry(struct builder *b, struct array_data *a)
 {
 	// second or more array element, sig should be at the end
-	if (b->next != a->start + a->hdrlen && b->sig != a->sig + a->siglen) {
+	if (b->next != a->data + a->datalen && b->sig != a->sig + a->siglen) {
 		b->next = b->end + 1;
 	}
 	b->sig = a->sig;
@@ -288,8 +288,8 @@ void next_in_array(struct builder *b, struct array_data *a)
 
 void end_array(struct builder *b, struct array_data a)
 {
-	size_t len = b->next - a.start - a.hdrlen;
-	*(uint32_t *)a.start = (uint32_t)len;
+	size_t len = b->next - a.data - a.datalen;
+	*(uint32_t *)a.data = (uint32_t)len;
 	if (!len) {
 		// no elements added, so need to move forward sig manually
 		b->sig = a.sig + a.siglen;
@@ -321,18 +321,19 @@ struct dict_data start_dict(struct builder *b)
 	}
 
 	b->sig += 2; // a{
-	d.a.siglen = (uint8_t)(nextsig - b->sig);
-	d.a.hdrlen = (uint8_t)(data - start);
 	d.a.sig = b->sig;
-	d.a.start = start;
+	d.a.siglen = (uint8_t)(nextsig - b->sig);
+	d.a.data = start;
+	d.a.datalen = (uint8_t)(data - start);
 	return d;
 error:
 	// setup an error state with siglen = 0 and hdrlen = 0
-	// so that next_in_dict and end_dict don't crash
-	d.a.sig = "";
-	d.a.start = 0;
+	// so that start_dict_entry and end_dict don't crash
+	static uint32_t dummy;
+	d.a.sig = "}";
 	d.a.siglen = 0;
-	d.a.hdrlen = 0;
+	d.a.data = (char *)&dummy;
+	d.a.datalen = 0;
 	b->next = b->end + 1;
 	return d;
 }
@@ -341,8 +342,8 @@ void end_dict(struct builder *b, struct dict_data d)
 {
 	end_array(b, d.a);
 
-	// b->sig may be "" in case of an error. Don't want to run the point off
-	// the end of the string
+	// b->sig may be "" in case of an error. Don't want to run the pointer
+	// off the end of the string
 	if (*b->sig) {
 		b->sig++; // }
 	}
@@ -412,80 +413,105 @@ static void append_signature_field(struct builder *b, uint32_t tag,
 	}
 }
 
-struct builder start_message(struct message *m, void *buf, size_t bufsz)
+static inline void init_builder(struct builder *b, buf_t *buf, const char *sig)
 {
-	struct builder b;
-	init_builder(&b, buf, bufsz);
-
-	if (bufsz < DBUS_HDR_SIZE) {
-		b.end = b.next + 1;
-		return b;
+	char *p = buf->p + buf->len;
+	int cap = (buf->cap - buf->len) & ~7U;
+	if (cap > DBUS_MAX_MSG_SIZE) {
+		cap = DBUS_MAX_MSG_SIZE;
 	}
+	// p must be 8 byte aligned as the builder uses aligned stores
+	assert(!((uintptr_t)p & 7));
+#ifndef NDEBUG
+	memset(p, 0xBD, cap);
+#endif
+	b->next = p;
+	b->end = p + cap;
+	b->sig = sig;
+}
 
-	b.next += DBUS_HDR_SIZE;
+static int do_append_header(struct builder *b, const struct message *m)
+{
+	struct raw_header *h = (struct raw_header *)b->next;
+	b->next += sizeof(struct raw_header);
+	if (b->next > b->end) {
+		return -1;
+	}
 
 	// unwrap the standard marshalling functions to add the field
 	// type and variant signature in one go
 
 	// fixed length fields go first so we can maintain 8 byte alignment
 	if (m->reply_serial) {
-		append_uint32_field(&b, FTAG_REPLY_SERIAL, m->reply_serial);
+		append_uint32_field(b, FTAG_REPLY_SERIAL, m->reply_serial);
 	}
 	if (m->fdnum) {
-		append_uint32_field(&b, FTAG_UNIX_FDS, m->fdnum);
+		append_uint32_field(b, FTAG_UNIX_FDS, m->fdnum);
 	}
 	if (*m->signature) {
-		append_signature_field(&b, FTAG_SIGNATURE, m->signature);
+		append_signature_field(b, FTAG_SIGNATURE, m->signature);
 	}
 	if (m->path.len) {
-		append_string_field(&b, FTAG_PATH, m->path);
+		append_string_field(b, FTAG_PATH, m->path);
 	}
 	if (m->interface.len) {
-		append_string_field(&b, FTAG_INTERFACE, m->interface);
+		append_string_field(b, FTAG_INTERFACE, m->interface);
 	}
 	if (m->member.len) {
-		append_string_field(&b, FTAG_MEMBER, m->member);
+		append_string_field(b, FTAG_MEMBER, m->member);
 	}
 	if (m->error.len) {
-		append_string_field(&b, FTAG_ERROR_NAME, m->error);
+		append_string_field(b, FTAG_ERROR_NAME, m->error);
 	}
 	if (m->destination.len) {
-		append_string_field(&b, FTAG_DESTINATION, m->destination);
+		append_string_field(b, FTAG_DESTINATION, m->destination);
 	}
 	if (m->sender.len) {
-		append_string_field(&b, FTAG_SENDER, m->sender);
+		append_string_field(b, FTAG_SENDER, m->sender);
 	}
 
-	struct raw_header *h = (struct raw_header *)buf;
 	h->endian = native_endian();
 	h->type = m->type;
 	h->flags = m->flags;
 	h->version = DBUS_VERSION;
 	h->body_len = m->body_len;
 	h->serial = m->serial;
-	h->field_len = b.next - b.base - DBUS_HDR_SIZE;
+	h->field_len = b->next - (char *)(h + 1);
 
 	// align the end of the fields
-	align_buffer_8(&b);
-	b.sig = m->signature;
+	align_buffer_8(b);
+
+	return (b->next > b->end);
+}
+
+int append_header(buf_t *buf, const struct message *msg)
+{
+	struct builder b;
+	init_builder(&b, buf, NULL);
+	if (do_append_header(&b, msg)) {
+		return -1;
+	}
+	buf->len = b.next - buf->p;
+	return 0;
+}
+
+struct builder start_message(buf_t *buf, const struct message *msg)
+{
+	struct builder b;
+	init_builder(&b, buf, msg->signature);
+	// do_append_header leaves b in an error state if there was an error
+	do_append_header(&b, msg);
 	return b;
 }
 
-int end_message(struct builder b)
+int end_message(buf_t *buf, struct builder b)
 {
 	if (builder_error(b) || *b.sig) {
 		// error during marshalling or missing arguments
 		return -1;
 	}
-	struct raw_header *h = (struct raw_header *)b.base;
-	uint32_t field_len = h->field_len;
-	uint32_t start = DBUS_HDR_SIZE + ALIGN_UINT_UP(field_len, 8);
-	h->body_len = b.next - b.base - start;
-	return (int)(b.next - b.base);
-}
-
-int write_message_header(struct message *m, void *buf, size_t bufsz)
-{
-	struct builder b = start_message(m, buf, bufsz);
-	return builder_error(b) ? -1 : (int)(b.next - b.base);
+	struct raw_header *h = (struct raw_header *)(buf->p + buf->len);
+	h->body_len = b.next - ALIGN_UINT_UP(h->field_len, 8) - (char *)(h + 1);
+	buf->len = b.next - buf->p;
+	return 0;
 }

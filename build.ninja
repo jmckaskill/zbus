@@ -29,51 +29,67 @@ build obj/dmem.a: ar obj/dmem/vector.o
 build obj/lib/auth.o:       cc lib/auth.c
 build obj/lib/decode.o:     cc lib/decode.c
 build obj/lib/encode.o:     cc lib/encode.c
+build obj/lib/log.o:        cc lib/log.c
+build obj/lib/match.o:      cc lib/match.c
 build obj/lib/str.o:        cc lib/str.c
 
 build obj/lib.a: ar $
         obj/lib/auth.o $
         obj/lib/decode.o $
         obj/lib/encode.o $
+        obj/lib/log.o $
+        obj/lib/match.o $
         obj/lib/str.o $
 
 # bus
 
 build obj/bus/bus.o:                cc bus/bus.c
-build obj/bus/log.o:                cc bus/log.c
 build obj/bus/main.o:               cc bus/main.c
 build obj/bus/messages.o:           cc bus/messages.c
 build obj/bus/msgq.o:               cc bus/msgq.c
 build obj/bus/page.o:               cc bus/page.c
-build obj/bus/remote.o:             cc bus/remote.c
+build obj/bus/rcu.o:                cc bus/rcu.c
 build obj/bus/remote-auth.o:        cc bus/remote-auth.c
 build obj/bus/remote-interface.o:   cc bus/remote-interface.c
 build obj/bus/remote-recv.o:        cc bus/remote-recv.c
 build obj/bus/remote-send.o:        cc bus/remote-send.c
-build obj/bus/rcu.o:                cc bus/rcu.c
+build obj/bus/remote-signal.o:      cc bus/remote-signal.c
+build obj/bus/remote.o:             cc bus/remote.c
+build obj/bus/subs.o:               cc bus/subs.c
 build obj/bus/unix.o:               cc bus/unix.c
 
 build bin/bus: ld $
         obj/bus/bus.o $
-        obj/bus/log.o $
         obj/bus/main.o $
         obj/bus/messages.o $
         obj/bus/msgq.o $
         obj/bus/page.o $
-        obj/bus/remote.o $
+        obj/bus/rcu.o $
         obj/bus/remote-auth.o $
         obj/bus/remote-interface.o $
         obj/bus/remote-recv.o $
         obj/bus/remote-send.o $
-        obj/bus/rcu.o $
+        obj/bus/remote-signal.o $
+        obj/bus/remote.o $
+        obj/bus/subs.o $
         obj/bus/unix.o $
         obj/dmem.a $
         obj/lib.a $
 
+# tester
+
+build obj/tester/tester.o: cc tester/tester.c
+
+build bin/tester: ld $
+        obj/tester/tester.o $
+        obj/lib.a $
+
+
+
 
 # default targets
 
-default bin/bus
+default bin/bus bin/tester
 build test: phony $
 
 

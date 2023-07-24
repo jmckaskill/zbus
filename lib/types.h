@@ -47,7 +47,6 @@ struct dict_data;
 #define TYPE_DICT_BEGIN '{'
 #define TYPE_DICT_END '}'
 
-#define DBUS_HDR_SIZE 16
 #define DBUS_MAX_MSG_SIZE 0x8000000U
 #define DBUS_MAX_VALUE_SIZE 0x4000000U
 #define MAX_UNIX_FDS 16
@@ -104,7 +103,7 @@ struct message {
 	uint32_t reply_serial;
 	enum msg_type type;
 	uint8_t flags;
-	int field_len;
+	int header_len;
 	int body_len;
 };
 
@@ -116,4 +115,11 @@ struct raw_header {
 	uint32_t body_len;
 	uint32_t serial;
 	uint32_t field_len;
+};
+
+struct array_data {
+	const char *sig;
+	const char *data;
+	uint8_t siglen;
+	uint8_t datalen;
 };

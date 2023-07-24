@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "bus.h"
+#include "lib/log.h"
 #include "lib/str.h"
 #include <stdio.h>
 #include <getopt.h>
@@ -20,7 +21,7 @@ static int ready_indicator(void *udata)
 		// immediately close it to indicate that we are ready to go
 		int fd = open(fifopn, O_WRONLY | O_CLOEXEC);
 		if (fd < 0) {
-			perror("open ready indicator");
+			ELOG("open ready indicator: %m");
 			return -1;
 		}
 		close(fd);
@@ -31,8 +32,8 @@ static int ready_indicator(void *udata)
 static int usage()
 {
 	fputs("usage: bus [args] socket\n", stderr);
-	fputs("    -v     Enable verbose (default:disabled)\n", stderr);
-	fputs("    -f     FIFO to use as a ready indicator\n", stderr);
+	fputs("    -v     	Enable verbose (default:disabled)\n", stderr);
+	fputs("    -f file    	FIFO to use as a ready indicator\n", stderr);
 	return ERR_INVALID_ARG;
 }
 
@@ -40,10 +41,16 @@ int main(int argc, char *argv[])
 {
 	char *readypn = NULL;
 	int i;
-	while ((i = getopt(argc, argv, "hvf:")) > 0) {
+	while ((i = getopt(argc, argv, "hqvf:")) > 0) {
 		switch (i) {
 		case 'f':
 			readypn = optarg;
+			break;
+		case 'q':
+			log_quiet = 1;
+			break;
+		case 'v':
+			log_verbose = 1;
 			break;
 		case 'h':
 		case '?':

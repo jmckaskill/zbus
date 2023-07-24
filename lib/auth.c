@@ -21,7 +21,7 @@ static char *split_after_space(char *line)
 	}
 }
 
-static int split_line(str_t *s, char **pline, int *pnext)
+static int split_line(buf_t *s, char **pline, int *pnext)
 {
 	int n = 0;
 	for (;;) {
@@ -46,7 +46,7 @@ static int split_line(str_t *s, char **pline, int *pnext)
 	}
 }
 
-static void remove_data(str_t *s, int off)
+static void remove_data(buf_t *s, int off)
 {
 	memmove(s->p, s->p + off, s->len - off);
 	s->len -= off;
@@ -59,12 +59,14 @@ enum auth_phase {
 	AUTH_WAIT_FOR_HELLO,
 };
 
-int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
-		     int *pstate)
+int step_server_auth(buf_t *in, buf_t *out, slice_t busid, slice_t unique_addr,
+		     uint32_t *pserial)
 {
+	// pserial is used as both a state variable and to hold the input
+	// message serial when we are done
 	int remove = 0;
 
-	switch (*pstate) {
+	switch (*pserial) {
 	case AUTH_WAIT_FOR_NUL:
 		if (!in->len) {
 			return AUTH_READ_MORE;
@@ -77,7 +79,7 @@ int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 
 	wait_for_auth:
 	case AUTH_WAIT_FOR_AUTH: {
-		*pstate = AUTH_WAIT_FOR_AUTH;
+		*pserial = AUTH_WAIT_FOR_AUTH;
 		remove_data(in, remove);
 
 		char *arg0;
@@ -90,7 +92,7 @@ int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 
 		if (strcmp(arg0, "AUTH")) {
 			// unknown command
-			if (str_add(out, S("ERROR\r\n"))) {
+			if (buf_add(out, S("ERROR\r\n"))) {
 				return AUTH_ERROR;
 			}
 			goto wait_for_auth;
@@ -98,7 +100,7 @@ int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 
 		if (strcmp(arg1, "EXTERNAL")) {
 			// unsupported auth type
-			if (str_add(out, S("REJECTED EXTERNAL\r\n"))) {
+			if (buf_add(out, S("REJECTED EXTERNAL\r\n"))) {
 				return AUTH_ERROR;
 			}
 			goto wait_for_auth;
@@ -106,7 +108,7 @@ int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 
 		// for now ignore the argument
 		(void)arg2;
-		if (str_addf(out, "OK %.*s\r\n", busid.len, busid.p)) {
+		if (buf_addf(out, "OK %.*s\r\n", busid.len, busid.p)) {
 			return AUTH_ERROR;
 		}
 		goto wait_for_begin;
@@ -114,7 +116,7 @@ int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 
 	wait_for_begin:
 	case AUTH_WAIT_FOR_BEGIN: {
-		*pstate = AUTH_WAIT_FOR_BEGIN;
+		*pserial = AUTH_WAIT_FOR_BEGIN;
 		remove_data(in, remove);
 
 		char *line;
@@ -126,13 +128,13 @@ int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 			goto wait_for_hello;
 
 		} else if (!strcmp(line, "NEGOTIATE_UNIX_FD")) {
-			if (str_add(out, S("AGREE_UNIX_FD\r\n"))) {
+			if (buf_add(out, S("AGREE_UNIX_FD\r\n"))) {
 				return AUTH_ERROR;
 			}
 			goto wait_for_begin;
 
 		} else {
-			if (str_add(out, S("ERROR\r\n"))) {
+			if (buf_add(out, S("ERROR\r\n"))) {
 				return AUTH_ERROR;
 			}
 			goto wait_for_begin;
@@ -141,7 +143,7 @@ int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 
 	wait_for_hello:
 	case AUTH_WAIT_FOR_HELLO: {
-		*pstate = AUTH_WAIT_FOR_HELLO;
+		*pserial = AUTH_WAIT_FOR_HELLO;
 		remove_data(in, remove);
 
 		if (out->len) {
@@ -155,28 +157,17 @@ int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 
 		// process the Hello header
 
-		if (in->len < DBUS_HDR_SIZE) {
-			return AUTH_READ_MORE;
-		}
-		int fsz = parse_header(&msg, in->p);
-		if (fsz < 0 || DBUS_HDR_SIZE + fsz > in->cap) {
+		int hsz = parse_header_size(to_slice(*in));
+		if (hsz < 0 || hsz > in->cap) {
 			return AUTH_ERROR;
-		}
-
-		// process the Hello fields
-
-		if (in->len < DBUS_HDR_SIZE + fsz) {
+		} else if (!hsz) {
 			return AUTH_READ_MORE;
-		}
-		int bsz = parse_fields(&msg, in->p + DBUS_HDR_SIZE);
-		if (bsz != 0) {
-			// we don't expect any arguments for Hello
-			return AUTH_ERROR;
 		}
 
 		// verify the fields
 
-		if (!msg.serial || msg.type != MSG_METHOD ||
+		if (parse_header(&msg, to_slice(*in)) || msg.body_len ||
+		    !msg.serial || msg.type != MSG_METHOD ||
 		    !slice_eq(msg.destination, S("org.freedesktop.DBus")) ||
 		    !slice_eq(msg.path, S("/org/freedesktop/DBus")) ||
 		    !slice_eq(msg.interface, S("org.freedesktop.DBus")) ||
@@ -184,25 +175,9 @@ int step_server_auth(str_t *in, str_t *out, slice_t busid, slice_t unique_addr,
 			return AUTH_ERROR;
 		}
 
-		// Send the reply
-
-		struct message o;
-		init_message(&o, MSG_REPLY, 1);
-		o.sender = S("org.freedesktop.DBus");
-		o.reply_serial = msg.serial;
-		o.signature = "s";
-
-		struct builder b = start_message(&o, out->p, out->cap);
-		append_string(&b, unique_addr);
-		int osz = end_message(b);
-		if (osz < 0) {
-			return AUTH_ERROR;
-		}
-
-		remove_data(in, DBUS_HDR_SIZE + fsz);
-
-		out->len = osz;
-		return 0;
+		remove_data(in, hsz);
+		*pserial = msg.serial;
+		return AUTH_OK;
 	}
 	}
 

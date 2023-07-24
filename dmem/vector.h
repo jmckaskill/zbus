@@ -314,23 +314,21 @@ template <class T, class U> inline void dv_insert(T *to, int idx, U from)
 
 /* ------------------------------------------------------------------------- */
 
-/* Removes all values that equal 'val' in the vector 'pvec' */
-#define dv_remove(pvec, val) dv_remove2(pvec, (pvec)->data[INDEX] == (val))
+/* Removes one value that equal 'val' in the vector 'pvec' */
+#define dv_remove(PVEC, VAL) dv_remove2(PVEC, (PVEC)->data[INDEX] == (VAL))
 
-/* Removes all items for which 'test' resolves to true - use INDEX to
+/* Removes one item for which 'test' resolves to true - use INDEX to
  * reference the current index. eg test could be
  * "should_remove(&myvec.data[INDEX])"
  */
-#define dv_remove2(pvec, test)                            \
-	do {                                              \
-		int INDEX;                                \
-		for (INDEX = 0; INDEX < (pvec)->size;) {  \
-			if (test) {                       \
-				dv_erase(pvec, INDEX, 1); \
-			} else {                          \
-				INDEX++;                  \
-			}                                 \
-		}                                         \
+#define dv_remove2(PVEC, TEST)                                       \
+	do {                                                         \
+		for (int INDEX = 0; INDEX < (PVEC)->size; INDEX++) { \
+			if (TEST) {                                  \
+				dv_erase(PVEC, INDEX, 1);            \
+				break;                               \
+			}                                            \
+		}                                                    \
 	} while (0)
 
 /* ------------------------------------------------------------------------- */

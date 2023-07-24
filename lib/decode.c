@@ -231,40 +231,11 @@ slice_t parse_string(struct iterator *p)
 	return parse_string_bytes(p, len);
 }
 
-int check_path(const char *s)
-{
-	if (*(s++) != '/') {
-		// path must begin with / and can not be the empty string
-		return -1;
-	}
-	if (!*s) {
-		// trailing / only allowed if the path is "/"
-		return 0;
-	}
-	const char *segment = s;
-	for (;;) {
-		// only [A-Z][a-z][0-9]_ are allowed
-		// / and \0 are not allowed as the first char of a segment
-		// this rejects multiple / in sequence and a trailing /
-		// respectively
-		if (('A' <= *s && *s <= 'Z') || ('a' <= *s && *s <= 'z') ||
-		    ('0' <= *s && *s <= '9') || *s == '_') {
-			s++;
-		} else if (s > segment && *s == '/') {
-			segment = ++s;
-		} else if (s > segment && *s == '\0') {
-			return 0;
-		} else {
-			return -1;
-		}
-	}
-}
-
 slice_t parse_path(struct iterator *p)
 {
 	uint32_t len = parse4(p, TYPE_PATH);
 	slice_t str = parse_string_bytes(p, len);
-	if (check_path(str.p)) {
+	if (check_path(str)) {
 		p->next = p->end + 1;
 	}
 	return str;
@@ -355,6 +326,65 @@ struct iterator skip_array(struct iterator *p)
 	return ret;
 }
 
+struct array_data parse_array(struct iterator *p)
+{
+	uint32_t len = parse4(p, TYPE_ARRAY);
+	uint32_t start = alignx(*p->sig, p->base, p->next, p->end);
+	const char *nextsig = p->sig;
+
+	struct array_data ad;
+
+	if (len > DBUS_MAX_MSG_SIZE || start + len > p->end ||
+	    skip_signature(&nextsig, true)) {
+		p->next = p->end + 1;
+		ad.sig = "";
+		ad.siglen = 0;
+		ad.data = NULL;
+		ad.datalen = 0;
+	} else {
+		ad.sig = p->sig;
+		ad.data = p->base + p->end;
+		ad.siglen = (uint8_t)(nextsig - ad.sig);
+		ad.datalen = 0;
+		p->next = start;
+		p->end = start + len;
+	}
+	return ad;
+}
+
+bool array_has_more(struct iterator *p, struct array_data *pd)
+{
+	if (p->next > p->end) {
+		// parse error
+		goto error;
+	}
+
+	const char *sigstart = pd->sig;
+	const char *sigend = pd->sig + pd->siglen;
+
+	// check that the signature is where we expect it to be
+	// start for the first item, end for later items
+	if (p->sig != (pd->datalen ? sigend : sigstart)) {
+		goto error;
+	}
+
+	if (p->next == p->end) {
+		// We've reached the end of the array. Update the iterator to
+		// the next item after the array
+		p->sig = sigend;
+		p->next = pd->data - p->base;
+		return false;
+	} else {
+		// There are further items
+		p->sig = sigstart;
+		pd->datalen = 1;
+		return true;
+	}
+error:
+	p->next = p->end + 1;
+	return false;
+}
+
 static void _parse_struct(struct iterator *p, char type)
 {
 	uint32_t n = align8(p->base, p->next, p->end);
@@ -396,19 +426,6 @@ void parse_struct_end(struct iterator *p)
 			p->sig++;
 			return;
 		}
-	}
-}
-
-bool parse_array_next(struct iterator *p, const char **psig)
-{
-	if (p->next >= p->end) {
-		return false; // end of array data
-	} else if (*psig) {
-		p->sig = *psig;
-		return true; // 2nd or later call
-	} else {
-		*psig = p->sig; // 1st call
-		return true;
 	}
 }
 
@@ -661,8 +678,8 @@ void TEST_parse()
 		0, 2, 0, // u16
 		3, 0, 0, 0, // u32
 	};
-	struct iterator ii =
-		make_iterator("yqu", make_slice2(test1, sizeof(test1)));
+	struct iterator ii;
+	init_iterator(&ii, "yqu", make_slice(test1, sizeof(test1)));
 	assert(parse_byte(&ii) == 1 && !iter_error(&ii));
 	assert(parse_uint16(&ii) == 2 && !iter_error(&ii));
 	assert(parse_uint32(&ii) == 3 && !iter_error(&ii));
@@ -673,13 +690,47 @@ void TEST_parse()
 ///////////////////////////////////
 // Message field checking
 
-int check_member(const char *p)
+int check_path(slice_t s)
 {
-	if (!*p) {
+	if (!s.len || s.len > 255 || *s.p != '/') {
+		// path must begin with / and can not be the empty string
 		return -1;
 	}
+	if (s.len == 1) {
+		// trailing / only allowed if the path is "/"
+		return 0;
+	}
+	const char *p = s.p + 1;
+	const char *end = s.p + s.len;
+	const char *segment = p;
+	while (p < end) {
+		// only [A-Z][a-z][0-9]_ are allowed
+		// / and \0 are not allowed as the first char of a segment
+		// this rejects multiple / in sequence and a trailing /
+		// respectively
+		if (('A' <= *p && *p <= 'Z') || ('a' <= *p && *p <= 'z') ||
+		    ('0' <= *p && *p <= '9') || *p == '_') {
+			p++;
+		} else if (p > segment && *p == '/') {
+			segment = ++p;
+		} else {
+			return -1;
+		}
+	}
+
+	// trailing / not allowed
+	return p == segment;
+}
+
+int check_member(slice_t s)
+{
+	if (!s.len || s.len > 255) {
+		return -1;
+	}
+	const char *p = s.p;
 	const char *begin = p;
-	while (*p) {
+	const char *end = p + s.len;
+	while (p < end) {
 		// must be composed of [A-Z][a-z][0-9]_ and must not start with
 		// a digit
 		if (('A' <= *p && *p <= 'Z') || ('a' <= *p && *p <= 'z') ||
@@ -689,15 +740,19 @@ int check_member(const char *p)
 			return -1;
 		}
 	}
-	return p - begin > 255;
+	return 0;
 }
 
-int check_interface(const char *p)
+int check_interface(slice_t s)
 {
+	if (s.len > 255) {
+		return -1;
+	}
 	int have_dot = 0;
-	const char *begin = p;
-	const char *segment = p;
-	for (;;) {
+	const char *p = s.p;
+	const char *segment = s.p;
+	const char *end = s.p + s.len;
+	while (p < end) {
 		// must be composed of [A-Z][a-z][0-9]_ and must not start with
 		// a digit segments can not be zero length ie no two dots in a
 		// row nor a leading dot the name as a whole must comprise at
@@ -709,24 +764,24 @@ int check_interface(const char *p)
 		} else if (p > segment && *p == '.') {
 			segment = ++p;
 			have_dot = 1;
-		} else if (p > segment && have_dot && *p == '\0' &&
-			   p - begin <= 255) {
-			return 0;
 		} else {
 			return -1;
 		}
 	}
+
+	return p == segment || !have_dot;
 }
 
-int check_unique_address(const char *p)
+int check_unique_address(slice_t s)
 {
-	const char *begin = p;
-	if (*(p++) != ':') {
+	if (!s.len || *s.p != ':' || s.len > 255) {
 		return -1;
 	}
+	const char *p = s.p + 1;
+	const char *end = s.p + s.len;
 	int have_dot = 0;
 	const char *segment = p;
-	for (;;) {
+	while (p < end) {
 		// must start with a :
 		// must be composed of at least two segments separated by a dot
 		// segments must be composed of [A-Z][a-z][0-9]_
@@ -737,18 +792,17 @@ int check_unique_address(const char *p)
 		} else if (p > segment && *p == '.') {
 			segment = ++p;
 			have_dot = 1;
-		} else if (p > segment && have_dot && *p == '\0' &&
-			   p - begin <= 255) {
-			return 0;
 		} else {
 			return -1;
 		}
 	}
+
+	return p == segment || !have_dot;
 }
 
-int check_address(const char *p)
+int check_address(slice_t s)
 {
-	return check_unique_address(p) && check_known_address(p);
+	return check_unique_address(s) && check_known_address(s);
 }
 
 //////////////////////////////
@@ -764,7 +818,6 @@ void init_message(struct message *m, enum msg_type type, uint32_t serial)
 	m->sender = S("");
 	m->signature = "";
 	m->fdnum = 0;
-	m->field_len = 0;
 	m->body_len = 0;
 	m->reply_serial = 0;
 	m->serial = serial;
@@ -772,33 +825,44 @@ void init_message(struct message *m, enum msg_type type, uint32_t serial)
 	m->type = type;
 }
 
-static_assert(sizeof(struct raw_header) == DBUS_HDR_SIZE, "");
+static_assert(sizeof(struct raw_header) == 16, "");
 
-int parse_header(struct message *m, const void *buf)
+int parse_message_size(slice_t data)
 {
-	const struct raw_header *h = buf;
-
+	if (data.len < sizeof(struct raw_header)) {
+		return 0;
+	}
+	const struct raw_header *h = (const struct raw_header *)data.p;
 	if (h->endian != native_endian()) {
 		return -1;
 	}
-
-	// h may not be 4 byte aligned so copy the values over
-	uint32_t flen, blen, serial;
+	uint32_t flen, blen;
 	memcpy(&flen, &h->field_len, 4);
 	memcpy(&blen, &h->body_len, 4);
-	memcpy(&serial, &h->serial, 4);
-
 	uint32_t fpadded = ALIGN_UINT_UP(flen, 8);
-
-	if (fpadded > DBUS_MAX_VALUE_SIZE || blen > DBUS_MAX_MSG_SIZE) {
+	if (fpadded > DBUS_MAX_VALUE_SIZE || blen > DBUS_MAX_MSG_SIZE ||
+	    fpadded + blen > DBUS_MAX_MSG_SIZE) {
 		return -1;
 	}
+	return sizeof(struct raw_header) + (int)fpadded + (int)blen;
+}
 
-	init_message(m, h->type, serial);
-	m->flags = h->flags;
-	m->body_len = (int)blen;
-	m->field_len = (int)flen;
-	return (int)fpadded;
+int parse_header_size(slice_t data)
+{
+	if (data.len < sizeof(struct raw_header)) {
+		return 0;
+	}
+	const struct raw_header *h = (const struct raw_header *)data.p;
+	if (h->endian != native_endian()) {
+		return -1;
+	}
+	uint32_t flen;
+	memcpy(&flen, &h->field_len, 4);
+	uint32_t fpadded = ALIGN_UINT_UP(flen, 8);
+	if (fpadded > DBUS_MAX_VALUE_SIZE) {
+		return -1;
+	}
+	return sizeof(struct raw_header) + (int)fpadded;
 }
 
 static inline uint32_t read_little_4(const char *n)
@@ -838,7 +902,7 @@ static slice_t parse_string_field(struct iterator *ii)
 		return S("");
 	}
 	ii->next += len + 1;
-	slice_t ret = make_slice2(plen + 4, len);
+	slice_t ret = make_slice(plen + 4, len);
 	if (ii->next <= ii->end && check_string(ret)) {
 		ii->next = ii->end + 1;
 	}
@@ -853,7 +917,7 @@ static const char *parse_signature_field(struct iterator *ii)
 	const char *plen = ii->base + ii->next++;
 	uint8_t len = *(uint8_t *)plen;
 	ii->next += len + 1;
-	slice_t ret = make_slice2(plen + 1, len);
+	slice_t ret = make_slice(plen + 1, len);
 	if (ii->next <= ii->end && check_string(ret)) {
 		ii->next = ii->end + 1;
 	}
@@ -869,9 +933,10 @@ static void parse_field(struct message *msg, struct iterator *ii)
 		goto error;
 	}
 
-	uint8_t ftype = *(uint8_t *)(ii->base + ii->next++);
+	uint8_t ftype = *(uint8_t *)(ii->base + ii->next);
 
 	if (ftype > FIELD_LAST) {
+		ii->next++;
 		ii->sig = "v";
 		skip_value(ii);
 	} else {
@@ -925,10 +990,29 @@ error:
 	ii->next = ii->end + 1;
 }
 
-int parse_fields(struct message *msg, const void *buf)
+int parse_header(struct message *msg, slice_t data)
 {
-	struct iterator ii =
-		make_iterator("", make_slice2(buf, msg->field_len));
+	int hsz = parse_header_size(data);
+	if (data.len < hsz) {
+		return -1;
+	}
+
+	// h may not be 4 byte aligned so copy the values
+	// over
+	const struct raw_header *h = (const struct raw_header *)data.p;
+	uint32_t bsz, fsz, serial;
+	memcpy(&bsz, &h->body_len, 4);
+	memcpy(&fsz, &h->field_len, 4);
+	memcpy(&serial, &h->serial, 4);
+	init_message(msg, h->type, serial);
+	msg->flags = h->flags;
+	msg->header_len = hsz;
+	msg->body_len = bsz;
+	msg->serial = serial;
+
+	slice_t fdata = make_slice((char *)(h + 1), fsz);
+	struct iterator ii;
+	init_iterator(&ii, "", fdata);
 
 	while (ii.next < ii.end) {
 		parse_field(msg, &ii);
@@ -938,5 +1022,5 @@ int parse_fields(struct message *msg, const void *buf)
 		return -1;
 	}
 
-	return msg->body_len;
+	return 0;
 }

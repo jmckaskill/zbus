@@ -127,26 +127,6 @@ void *gc_alloc(size_t num, size_t sz)
 	return h ? (h + 1) : NULL;
 }
 
-slice_t gc_dup(slice_t s)
-{
-	str_t ret = gc_alloc_str(s.len);
-	if (ret.p) {
-		memcpy(ret.p, s.p, s.len);
-		ret.len = s.len;
-		ret.p[ret.len] = 0;
-	}
-	return to_slice(ret);
-}
-
-str_t gc_alloc_str(size_t sz)
-{
-	str_t ret;
-	ret.p = gc_alloc(sz + 1, 1);
-	ret.len = 0;
-	ret.cap = ret.p ? (sz + 1) : 0;
-	return ret;
-}
-
 void gc_collect(struct gc *g, void *p, destructor_fn destroy)
 {
 	if (p) {

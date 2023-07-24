@@ -1,5 +1,5 @@
 #include "remote.h"
-#include "log.h"
+#include "lib/log.h"
 #include "page.h"
 #include "messages.h"
 #include "bus.h"
@@ -30,70 +30,44 @@
 
 #define METHOD_PING S("Ping")
 
-/////////////////////////
-// Unique address parsing
-
-void id_to_string(str_t *s, int id)
-{
-	assert(s->cap - s->len > strlen(":1.") + (sizeof(int) * 4 + 2) / 3);
-	int err = str_addf(s, ":1.%o", (unsigned)id);
-	assert(!err);
-}
-
-int id_from_string(slice_t s)
-{
-	const char *p = s.p + strlen(":1.");
-	int len = s.len - strlen(":1.");
-	if (len <= 0 || len > ((sizeof(int) * 4) - 1) / 3) {
-		// make sure the number of octal bits wouldn't overflow an int
-		return -1;
-	}
-	int id = 0;
-	for (int i = 0; i < len; i++) {
-		if (p[i] < (i ? '0' : '1') || p[i] > '7') {
-			return -1;
-		}
-		id = (id << 3) | (p[i] - '0');
-	}
-	return id;
-}
-
 ////////////////////////////////////
 // RequestName & ReleaseName
 
 static int request_name(struct remote *r, struct message *m, struct body b,
-			uint16_t cmd)
+			bool add)
 {
 	slice_t name;
-	str_t buf = lock_short_buffer(&r->out);
+	buf_t buf = lock_short_buffer(&r->out);
 
 	if (read_string_msg(&buf, m, b, &name)) {
-		goto error;
+		unlock_buffer(&r->out, 0);
+		return STS_PARSE_FAILED;
 	}
 
-	dlog("remote requesting %.*s", name.len, name.p);
+	DLOG("remote requesting %.*s", name.len, name.p);
 
 	// send the request off and wait for the response
-	struct cmd_name c = make_cmd_name(r, name, m->reply_serial);
-	if (msgq_send(r->busq, cmd, &c, sizeof(c), &gc_cmd_name)) {
-		gc_cmd_name(&c);
-		goto error;
+	struct cmd_name c;
+	c.add = add;
+	c.name = name;
+	c.remote = r;
+	c.serial = m->serial;
+	if (msgq_send(r->busq, CMD_UPDATE_NAME, &c, sizeof(c), &gc_cmd_name)) {
+		unlock_buffer(&r->out, 0);
+		return STS_REMOTE_FAILED;
+	} else {
+		ref_paged_data(name.p);
+		unlock_buffer(&r->out, name.len);
+		return 0;
 	}
-
-	unlock_buffer(&r->out, name.len);
-	return 0;
-
-error:
-	unlock_buffer(&r->out, 0);
-	return STS_PARSE_FAILED;
 }
 
-int reply_request_name(struct remote *r, struct rep_name *q)
+int reply_errcode(struct remote *r, struct rep_errcode *c)
 {
-	if (q->errcode == DBUS_REQUEST_NAME_NOT_ALLOWED) {
-		return loopback_error(r, q->reply_serial, STS_NOT_ALLOWED);
+	if (c->errcode == DBUS_REQUEST_NAME_NOT_ALLOWED) {
+		return loopback_error(r, c->serial, STS_NOT_ALLOWED);
 	}
-	return loopback_uint32(r, q->reply_serial, q->errcode);
+	return loopback_uint32(r, c->serial, c->errcode);
 }
 
 /////////////////////////////
@@ -116,27 +90,27 @@ static int bufsz_list_names(struct rcu *d)
 	return bufsz;
 }
 
-static int encode_list_names(str_t *buf, struct message *m, struct rcu *d)
+static int encode_list_names(buf_t *buf, struct message *m, struct rcu *d)
 {
-	struct builder b = start_message(m, buf->p, buf->cap);
+	struct builder b = start_message(buf, m);
 	struct array_data ad = start_array(&b);
 
 	// get bus names that have owners
 	for (int i = 0; i < d->names_n; i++) {
 		if (d->names_v[i].owner) {
-			next_in_array(&b, &ad);
+			start_array_entry(&b, &ad);
 			append_string(&b, d->names_v[i].name);
 		}
 	}
 
 	// get unique names
 	for (int i = 0; i < d->remotes_n; i++) {
-		next_in_array(&b, &ad);
+		start_array_entry(&b, &ad);
 		append_string(&b, d->remotes_v[i].owner->addr);
 	}
 
 	end_array(&b, ad);
-	return end_message(b);
+	return end_message(buf, b);
 }
 
 static int list_names(struct remote *r, struct message *m)
@@ -150,17 +124,16 @@ static int list_names(struct remote *r, struct message *m)
 	struct rcu *d = rcu_lock(r->handle);
 	int bufsz = bufsz_list_names(d);
 
-	str_t buf;
+	buf_t buf;
 	if (lock_buffer(&r->out, &buf, bufsz)) {
 		goto error_unlock_rcu;
 	}
 
-	int msgsz = encode_list_names(&buf, &o, d);
-	if (send_loopback(r, buf.p, msgsz)) {
+	if (encode_list_names(&buf, &o, d) || send_loopback(r, to_slice(buf))) {
 		goto error_unlock_buffer;
 	}
 
-	unlock_buffer(&r->out, msgsz);
+	unlock_buffer(&r->out, buf.len);
 	rcu_unlock(r->handle);
 	return 0;
 
@@ -174,30 +147,11 @@ error_unlock_rcu:
 ///////////////////////////////
 // GetNameOwner & NameHasOwner
 
-static struct remote *lookup_name(struct rcu *d, slice_t name)
-{
-	int id;
-	if (!has_prefix(name, UNIQUE_ADDR_PREFIX)) {
-		struct bus_name key = { .name = name };
-		struct bus_name *n = bsearch(&key, d->names_v, d->names_n,
-					     sizeof(key), &compare_bus_name);
-		return n->owner;
-
-	} else if ((id = id_from_string(name)) >= 0) {
-		struct unique_name key = { .id = id };
-		struct unique_name *n = bsearch(&key, d->remotes_v,
-						d->remotes_n, sizeof(key),
-						&compare_unique_name);
-		return n->owner;
-	}
-	return NULL;
-}
-
 static struct remote *parse_and_lookup_name(struct page_buffer *p,
 					    struct rcu *d, struct message *m,
 					    struct body b)
 {
-	str_t s = lock_short_buffer(p);
+	buf_t s = lock_short_buffer(p);
 	struct remote *ret = NULL;
 	slice_t name;
 
@@ -246,33 +200,6 @@ int unicast(struct remote *r, struct message *m, struct body b)
 	return err;
 }
 
-///////////////////////////
-// Match processing
-
-static int add_match(struct remote *r, struct message *m, struct body b)
-{
-	str_t buf;
-	if (lock_buffer(&r->out, &buf, m->body_len)) {
-		// match string is far too long
-		return STS_NOT_SUPPORTED;
-	}
-	slice_t match;
-	if (read_string_msg(&buf, m, b, &match)) {
-		unlock_buffer(&r->out, 0);
-		return STS_PARSE_FAILED;
-	}
-
-	dlog("add_match %.*s", match.len, match.p);
-	unlock_buffer(&r->out, 0);
-	return STS_NOT_SUPPORTED;
-}
-
-int broadcast(struct remote *r, struct message *m, struct body b)
-{
-	// TODO
-	return 0;
-}
-
 /////////////////////////
 // Bus Interfaces
 
@@ -298,10 +225,11 @@ int bus_interface(struct remote *r, struct message *m, struct body b)
 		break;
 	case 11:
 		if (slice_eq(m->member, METHOD_REMOVE_MATCH)) {
+			return rm_match(r, m, b);
 		} else if (slice_eq(m->member, METHOD_REQUEST_NAME)) {
-			return request_name(r, m, b, CMD_REQUEST_NAME);
+			return request_name(r, m, b, true);
 		} else if (slice_eq(m->member, METHOD_RELEASE_NAME)) {
-			return request_name(r, m, b, CMD_RELEASE_NAME);
+			return request_name(r, m, b, false);
 		}
 		break;
 	case 12:

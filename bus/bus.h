@@ -8,14 +8,10 @@ struct bus_name {
 	int group;
 };
 
-int compare_bus_name(const void *a, const void *b);
-
 struct unique_name {
 	int id;
 	struct remote *owner;
 };
-
-int compare_unique_name(const void *a, const void *b);
 
 struct rcu {
 	uintptr_t version;
@@ -27,8 +23,25 @@ struct rcu {
 	// bus names sorted by name
 	struct bus_name *names_v;
 	int names_n;
+
+	// broadcast sorted by interface, use functions in subs.h
+	struct subscription *bcast_v;
+	int bcast_n;
 };
+
+// API for interacting with bus from main
 
 int setup_signals();
 int bind_bus(const char *sockpn);
 int run_bus(int lfd);
+
+// API for interacting with rcu data from remote
+
+#define UNIQUE_ADDR_PREFIX S(":1.")
+
+void id_to_string(buf_t *s, int id);
+int id_from_string(slice_t s);
+struct remote *lookup_name(struct rcu *d, slice_t name);
+struct bus_name *lookup_bus_name(struct rcu *d, slice_t name);
+struct remote *lookup_unique_name(struct rcu *d, slice_t name);
+struct remote *lookup_remote(struct rcu *d, int id);

@@ -1,50 +1,49 @@
 #include "remote.h"
 #include "page.h"
-#include "log.h"
+#include "lib/log.h"
 #include "lib/decode.h"
 #include <poll.h>
 #include <errno.h>
 
-#define BUS_PATH S("/org/freedesktop/DBus")
-#define BUS_INTERFACE S("org.freedesktop.DBus")
-#define PEER_INTERFACE S("org.freedesktop.DBus.Peer")
-#define MONITORING_INTERFACE S("org.freedesktop.DBus.Monitoring")
-
 ///////////////////////////////
 // Generic functions to read messages
 
-slice_t defragment(str_t *buf, slice_t *slices, int len)
+slice_t defragment(buf_t *buf, const slice_t *slices, int len)
 {
-	if (!len) {
-		return S("");
-	}
-	// skip over empty slices that a previous call to defragment consumed
-	while (!slices->len) {
-		slices++;
-	}
 	if (len <= slices->len) {
 		// the chunk we are interested in is in a single fragment
-
-		return split_slice(slices, len);
+		return make_slice(slices->p, len);
 	}
 	// the data is spread over multiple slices we have to make a copy
 	// copy over complete parts
-	int left = len;
-	while (left > slices->len) {
-		str_add(buf, *slices);
-		left -= slices->len;
+	while (len && len > slices->len) {
+		buf_add(buf, *slices);
+		len -= slices->len;
 		slices++;
 	}
 	// and then the final partial part
-	str_add(buf, split_slice(slices, left));
-
+	buf_add(buf, make_slice(slices->p, len));
 	return to_slice(*buf);
 }
 
-int read_string_msg(str_t *buf, struct message *m, struct body b, slice_t *p)
+slice_t *skip_parts(slice_t *slices, int len)
+{
+	// skip complete parts
+	while (len && len > slices->len) {
+		len -= slices->len;
+		slices++;
+	}
+	// split the last partial part
+	slices->p += len;
+	slices->len -= len;
+	return slices;
+}
+
+int read_string_msg(buf_t *buf, struct message *m, struct body b, slice_t *p)
 {
 	slice_t data = defragment(buf, b.slices, m->body_len);
-	struct iterator ii = make_iterator(m->signature, data);
+	struct iterator ii;
+	init_iterator(&ii, m->signature, data);
 	*p = parse_string(&ii);
 	return iter_error(&ii);
 }
@@ -52,36 +51,40 @@ int read_string_msg(str_t *buf, struct message *m, struct body b, slice_t *p)
 /////////////////////////
 // Socket processing functions
 
-// returns +ve if the client socket was triggered
-// 0 if just the message queue has been triggered
-// -ve on error
-int poll_remote(struct remote *r)
+// returns -ve on error
+int poll_socket(int fd, bool *pcan_write)
 {
 	struct pollfd pfd;
-	pfd.fd = r->sock;
-	pfd.events = POLLIN | (r->send_stalled ? POLLOUT : 0);
+	pfd.fd = fd;
+	pfd.events = POLLIN;
 	pfd.revents = 0;
+	if (pcan_write && !*pcan_write) {
+		pfd.events |= POLLOUT;
+	}
 	sigset_t sig;
 	sigfillset(&sig);
 	sigdelset(&sig, SIGMSGQ);
+	sigdelset(&sig, SIGINT);
+	sigdelset(&sig, SIGTERM);
 try_again:
-	int n = ppoll(&pfd, 1, NULL, &sig);
+	int n = ppoll(&pfd, (fd >= 0 ? 1 : 0), NULL, &sig);
 	if (n < 0 && errno == EAGAIN) {
 		goto try_again;
-	} else if (r == 0 || (r < 0 && errno != EINTR)) {
+	} else if (n == 0 || (n < 0 && errno != EINTR)) {
+		ELOG("poll: %m");
 		return -1;
 	}
 	// either we've been signalled to process the message queue or there is
 	// data to be read from the client socket
-	if (n == 1 && (pfd.revents & POLLOUT)) {
-		r->send_stalled = false;
+	if (pcan_write && (n == 1) && (pfd.revents & POLLOUT)) {
+		*pcan_write = true;
 	}
-	return n > 0;
+	return 0;
 }
 
 static int process_message(struct remote *r, struct message *m, struct body b)
 {
-	dlog("have message type %d to %s -> %s.%s on %s", m->type,
+	ELOG("have message type %d to %s -> %s.%s on %s", m->type,
 	     m->destination.p, m->interface.p, m->member.p, m->path.p);
 
 	int err = STS_NOT_FOUND;
@@ -139,23 +142,28 @@ static void get_page_slices(struct remote *r, slice_t *s)
 	}
 }
 
-static struct body get_body(slice_t *slices, int sz)
+static struct body get_body(slice_t *slices, int hsz, int bsz)
 {
-	struct body b;
-	if (sz) {
-		// skip over empty slices to find the
-		// start
+	struct body b = {
+		.slices = NULL,
+		.len = bsz,
+	};
+	if (bsz) {
+		// skip over the header
+		while (hsz > slices->len) {
+			hsz -= slices->len;
+			slices++;
+		}
+		slices->p += hsz;
+		slices->len -= hsz;
 		b.slices = slices;
-		while (!b.slices->len) {
-			b.slices++;
-		}
+
 		// skip to the last to update the length
-		slice_t *last = b.slices;
-		int left = sz;
-		while (left > last->len) {
-			left -= last->len;
+		while (bsz > slices->len) {
+			bsz -= slices->len;
+			slices++;
 		}
-		last->len = sz;
+		slices->len = bsz;
 	}
 	return b;
 }
@@ -163,9 +171,6 @@ static struct body get_body(slice_t *slices, int sz)
 int read_socket(struct remote *r)
 {
 	for (;;) {
-		int page_read_size =
-			sizeof(r->in->data) - MULTIPART_WORKING_SPACE;
-
 		union {
 			char buf[CONTROL_BUFFER_SIZE];
 			struct cmsghdr align;
@@ -175,9 +180,9 @@ int read_socket(struct remote *r)
 		int have = r->recv_have;
 		int used = r->recv_used;
 		struct page **ppg = &r->in;
-		while (have > page_read_size) {
+		while (have > sizeof((*ppg)->data)) {
 			ppg = &(*ppg)->next;
-			have -= page_read_size;
+			have -= sizeof((*ppg)->data);
 			used = 0;
 		}
 
@@ -192,9 +197,9 @@ int read_socket(struct remote *r)
 
 		struct iovec iov[2];
 		iov[0].iov_base = (*ppg)->data + used;
-		iov[0].iov_len = page_read_size - used;
+		iov[0].iov_len = sizeof((*ppg)->data) - used;
 		iov[1].iov_base = (*ppg)->next->data;
-		iov[1].iov_len = page_read_size;
+		iov[1].iov_len = sizeof((*ppg)->next->data);
 
 		struct msghdr msg;
 		msg.msg_name = NULL;
@@ -212,76 +217,68 @@ int read_socket(struct remote *r)
 		} else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
 			return 0;
 		} else if (n < 0) {
-			elog("recvmsg: %m");
+			ELOG("recvmsg: %m");
 			return -1;
 		} else if (n == 0) {
 			return -1;
 		}
 
 		if (parse_cmsg(&r->recv_oob, &msg)) {
-			elog("too many file descriptors");
+			ELOG("too many file descriptors");
 			return -1;
 		}
 
 		r->recv_have += n;
 
-		for (;;) {
-			// parse out as many messages as we can
-			assert(r->recv_used < page_read_size);
-			assert(r->recv_have <= MAX_NUM_PAGES * page_read_size);
-
-			if (r->recv_used + DBUS_HDR_SIZE > r->recv_have) {
-				// loop around and read some more
-				break;
-			}
-
+		while (r->recv_used < r->recv_have) {
 			// copy the buffer ranges into slices
 			slice_t slices[MAX_NUM_PAGES];
 			get_page_slices(r, slices);
 
 			struct message msg;
 
-			// parse the header
-			int hsz = DBUS_HDR_SIZE;
-			str_t buf = lock_short_buffer(&r->out);
-			slice_t hdr = defragment(&buf, slices, hsz);
-			int fsz = parse_header(&msg, hdr.p);
-			unlock_buffer(&r->out, 0);
+			// parse the header size
+			char szbuf[16];
+			buf_t buf = MAKE_BUF(szbuf);
+			slice_t hdr = defragment(&buf, slices, buf.cap);
+			int hsz = parse_header_size(hdr);
 
-			if (fsz < 0) {
+			if (hsz < sizeof(szbuf)) {
 				return -1;
-			} else if (r->recv_used + hsz + fsz > r->recv_have) {
+			} else if (r->recv_used + hsz > r->recv_have) {
 				break;
 			}
 
 			// parse the fields
-			if (lock_buffer(&r->out, &buf, fsz)) {
+			if (lock_buffer(&r->out, &buf, hsz)) {
 				return -1;
 			}
-			slice_t fields = defragment(&buf, slices, fsz);
-			int bsz = parse_fields(&msg, fields.p);
+			hdr = defragment(&buf, slices, hsz);
+			int bsz = parse_header(&msg, hdr);
 			unlock_buffer(&r->out, 0);
 
-			int msgsz = hsz + fsz + bsz;
+			// get the body
+			int msgsz = hsz + bsz;
 			if (bsz < 0 || msgsz > BUS_MAX_MSG_SIZE) {
 				return -1;
 			} else if (r->recv_used + msgsz > r->recv_have) {
 				break;
 			}
-
-			// process the message
-			if (process_message(r, &msg, get_body(slices, bsz))) {
-				return -1;
-			}
+			struct body body = get_body(slices, hsz, bsz);
 			r->recv_used += msgsz;
 
+			// process the message
+			if (process_message(r, &msg, body)) {
+				return -1;
+			}
+
 			// drop any completed pages
-			while (r->recv_used >= page_read_size) {
+			while (r->recv_used >= sizeof(r->in->data)) {
 				struct page *pg = r->in;
 				r->in = pg->next;
 				deref_page(pg, 1);
-				r->recv_used -= page_read_size;
-				r->recv_have -= page_read_size;
+				r->recv_used -= sizeof(pg->data);
+				r->recv_have -= sizeof(pg->data);
 			}
 
 			// loop around to process the next message

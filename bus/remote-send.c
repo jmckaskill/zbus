@@ -1,7 +1,7 @@
 #include "remote.h"
 #include "messages.h"
 #include "page.h"
-#include "log.h"
+#include "lib/log.h"
 #include "lib/encode.h"
 #include <errno.h>
 #include <sys/socket.h>
@@ -47,10 +47,10 @@ try_again:
 	if (w < 0 && errno == EINTR) {
 		goto try_again;
 	} else if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-		r->send_stalled = true;
+		r->can_write = false;
 		return 0;
 	} else if (w <= 0) {
-		elog("write: %m");
+		ELOG("write: %m");
 		return -1;
 	}
 
@@ -97,20 +97,14 @@ int process_dataq(struct remote *r)
 //////////////////////
 // Functions to feed the data queue
 
-int send_loopback(struct remote *r, const char *buf, int msgsz)
+int send_loopback(struct remote *r, slice_t data)
 {
-	if (msgsz < 0) {
-		return STS_SEND_FAILED;
-	}
-
 	struct msg_data m;
-	m.data = make_slice2(buf, msgsz);
-	ref_paged_data(buf, 1);
+	m.data = data;
 	if (msgq_send(r->qdata, MSG_DATA, &m, sizeof(m), &gc_msg_data)) {
-		deref_paged_data(buf, 1);
 		return STS_SEND_FAILED;
 	}
-
+	ref_paged_data(data.p);
 	return STS_OK;
 }
 
@@ -118,16 +112,14 @@ int send_to(struct remote *r, struct remote *to, struct message *m,
 	    struct body b)
 {
 	// update the sender by rewriting the header
-	str_t hdr;
-	if (lock_buffer(&r->out, &hdr, 32 + m->field_len)) {
+	buf_t hdr;
+	if (lock_buffer(&r->out, &hdr, 32 + m->header_len)) {
 		return STS_REMOTE_FAILED;
 	}
 	m->sender = r->addr;
-	int hdrsz = write_message_header(m, hdr.p, hdr.cap);
-	if (hdrsz < 0) {
+	if (append_header(&hdr, m)) {
 		goto unlock;
 	}
-	hdr.len = hdrsz;
 
 	// Allocate the messages as one chunk.
 	// Need one message for the header + 1 for each body part
@@ -150,7 +142,7 @@ int send_to(struct remote *r, struct remote *to, struct message *m,
 
 	struct msg_data *s = (void *)e->data;
 	s->data = to_slice(hdr);
-	ref_paged_data(hdr.p, 1);
+	ref_paged_data(hdr.p);
 
 	// setup the body
 	for (int i = 1; i < msgs; i++) {
@@ -160,12 +152,12 @@ int send_to(struct remote *r, struct remote *to, struct message *m,
 
 		s = (void *)e->data;
 		s->data = b.slices[i - 1];
-		ref_paged_data(b.slices[i - 1].p, 1);
+		ref_paged_data(b.slices[i - 1].p);
 	}
 
 	// and send it off
 	msgq_release(to->qdata, msgidx, msgs);
-	unlock_buffer(&r->out, hdrsz);
+	unlock_buffer(&r->out, hdr.len);
 	return 0;
 unlock:
 	unlock_buffer(&r->out, 0);
@@ -175,28 +167,23 @@ unlock:
 ///////////////////////////
 // Generic functions to send loopback messages
 
-#define SLICE(STR)               \
-	{                        \
-		STR, STRLEN(STR) \
-	}
-
-static const slice_t error_names[-STS_ERROR_NUM] = {
-	SLICE(""),
-	SLICE("org.freedesktop.DBus.Error.NotAllowed"),
-	SLICE("org.freedesktop.DBus.Error.WrongSignature"),
-	SLICE("org.freedesktop.DBus.Error.NotFound"),
-	SLICE("org.freedesktop.DBUs.Error.NotSupported"),
-	SLICE("org.freedesktop.DBus.Error.NoRemote"),
-	SLICE("org.freedesktop.DBus.Error.RemoteNotResponsive"),
-	SLICE("org.freedesktop.DBus.Error.NameHasNoOwner"),
+static const slice_t error_names[-(STS_MAX_ERROR + 1)] = {
+	SLICE_INIT("org.freedesktop.DBus.Error.NotAllowed"),
+	SLICE_INIT("org.freedesktop.DBus.Error.WrongSignature"),
+	SLICE_INIT("org.freedesktop.DBus.Error.NotFound"),
+	SLICE_INIT("org.freedesktop.DBUs.Error.NotSupported"),
+	SLICE_INIT("org.freedesktop.DBus.Error.NoRemote"),
+	SLICE_INIT("org.freedesktop.DBus.Error.RemoteNotResponsive"),
+	SLICE_INIT("org.freedesktop.DBus.Error.NameHasNoOwner"),
+	SLICE_INIT("org.freedesktop.DBus.Error.OutOfMemory"),
 };
 
 int loopback_error(struct remote *r, uint32_t serial, int errcode)
 {
-	if (errcode >= 0 || errcode < STS_ERROR_NUM) {
+	if (!(STS_MAX_ERROR < errcode && errcode < 0)) {
 		return errcode;
 	}
-	slice_t error_name = error_names[-errcode];
+	slice_t error_name = error_names[-(errcode + 1)];
 
 	struct message rep;
 	init_message(&rep, MSG_ERROR, r->next_serial++);
@@ -204,11 +191,13 @@ int loopback_error(struct remote *r, uint32_t serial, int errcode)
 	rep.sender = BUS_DESTINATION;
 	rep.error = error_name;
 
-	str_t s = lock_short_buffer(&r->out);
-	int msgsz = end_message(start_message(&rep, s.p, s.cap));
-	int err = send_loopback(r, s.p, msgsz);
-	unlock_buffer(&r->out, err ? 0 : msgsz);
-	return err;
+	buf_t s = lock_short_buffer(&r->out);
+	if (append_header(&s, &rep) || send_loopback(r, to_slice(s))) {
+		unlock_buffer(&r->out, 0);
+		return STS_SEND_FAILED;
+	}
+	unlock_buffer(&r->out, s.len);
+	return 0;
 }
 
 static int _loopback_uint32(struct remote *r, uint32_t serial, const char *sig,
@@ -219,13 +208,14 @@ static int _loopback_uint32(struct remote *r, uint32_t serial, const char *sig,
 	m.reply_serial = serial;
 	m.sender = BUS_DESTINATION;
 	m.signature = sig;
+	m.body_len = 4;
 
-	str_t s = lock_short_buffer(&r->out);
-	struct builder b = start_message(&m, s.p, s.cap);
+	buf_t s = lock_short_buffer(&r->out);
+	append_header(&s, &m);
+	struct builder b = start_message(&s, &m);
 	_append4(&b, value, *sig);
-	int msgsz = end_message(b);
-	int err = send_loopback(r, s.p, msgsz);
-	unlock_buffer(&r->out, err ? 0 : msgsz);
+	int err = end_message(&s, b) || send_loopback(r, to_slice(s));
+	unlock_buffer(&r->out, err ? 0 : s.len);
 
 	return err;
 }
@@ -248,12 +238,11 @@ int loopback_string(struct remote *r, uint32_t serial, slice_t str)
 	rep.sender = BUS_DESTINATION;
 	rep.signature = "s";
 
-	str_t s = lock_short_buffer(&r->out);
-	struct builder b = start_message(&rep, s.p, s.cap);
+	buf_t s = lock_short_buffer(&r->out);
+	struct builder b = start_message(&s, &rep);
 	append_string(&b, r->addr);
-	int msgsz = end_message(b);
-	int err = send_loopback(r, s.p, msgsz);
-	unlock_buffer(&r->out, err ? 0 : msgsz);
+	int err = end_message(&s, b) || send_loopback(r, to_slice(s));
+	unlock_buffer(&r->out, err ? 0 : s.len);
 
 	return err;
 }
@@ -265,10 +254,10 @@ int loopback_empty(struct remote *r, uint32_t serial)
 	rep.reply_serial = serial;
 	rep.sender = BUS_DESTINATION;
 
-	str_t s = lock_short_buffer(&r->out);
-	int msgsz = end_message(start_message(&rep, s.p, s.cap));
-	int err = send_loopback(r, s.p, msgsz);
-	unlock_buffer(&r->out, err ? 0 : msgsz);
+	buf_t s = lock_short_buffer(&r->out);
+	int err = end_message(&s, start_message(&s, &rep)) ||
+		  send_loopback(r, to_slice(s));
+	unlock_buffer(&r->out, err ? 0 : s.len);
 
 	return err;
 }

@@ -5,7 +5,7 @@
 #include "bus.h"
 #include "rcu.h"
 #include "unix.h"
-#include "log.h"
+#include "lib/log.h"
 #include "lib/str.h"
 #include "lib/auth.h"
 #include "lib/encode.h"
@@ -29,13 +29,23 @@ static int process_controlq(struct remote *r)
 		switch (e->cmd) {
 		case MSG_SHUTDOWN:
 			return -1;
-		case REP_RELEASE_NAME:
-		case REP_REQUEST_NAME: {
-			struct rep_name *m = (void *)e->data;
-			if (reply_request_name(r, m)) {
+		case REP_UPDATE_NAME:
+		case REP_UPDATE_NAME_SUB:
+		case REP_UPDATE_SUB: {
+			struct rep_errcode *c = (void *)e->data;
+			if (reply_errcode(r, c)) {
 				return -1;
 			}
 			break;
+		}
+		case MSG_NAME: {
+			struct msg_name *c = (void *)e->data;
+			if (c->new_owner >= 0) {
+				update_bus_matches(r, c->name);
+			}
+			break;
+		}
+		case CMD_UPDATE_SUB: {
 		}
 		}
 		msgq_pop(r->qcontrol, e);
@@ -51,15 +61,14 @@ static int run_remote(void *udata)
 		goto cleanup;
 	}
 
-	struct msg_remote ready = { .remote = r };
-	msgq_send(r->busq, MSG_AUTHENTICATED, &ready, sizeof(ready), NULL);
+	r->can_write = true;
 
 	for (;;) {
 		if (process_controlq(r)) {
 			goto cleanup;
 		}
 
-		if (!r->send_stalled && process_dataq(r)) {
+		if (r->can_write && process_dataq(r)) {
 			goto cleanup;
 		}
 
@@ -67,14 +76,16 @@ static int run_remote(void *udata)
 			goto cleanup;
 		}
 
-		if (poll_remote(r) < 0) {
+		if (poll_socket(r->sock, &r->can_write)) {
 			goto cleanup;
 		}
 	}
 
 cleanup:
-	struct msg_remote closing = { .remote = r };
-	msgq_send(r->busq, MSG_DISCONNECTED, &closing, sizeof(closing), NULL);
+	remove_all_matches(r);
+
+	struct cmd_remote c = { .remote = r };
+	msgq_send(r->busq, MSG_DISCONNECTED, &c, sizeof(c), NULL);
 	return 0;
 }
 
@@ -86,7 +97,7 @@ int start_remote(struct remote *r)
 	init_unix_oob(&r->send_oob);
 	init_unix_oob(&r->recv_oob);
 
-	str_t s = MAKE_STR(r->addr_buf);
+	buf_t s = MAKE_BUF(r->addr_buf);
 	id_to_string(&s, r->id);
 	r->addr = to_slice(s);
 

@@ -1,16 +1,15 @@
 #pragma once
 
 #define _GNU_SOURCE
-// enough space to copy a field 256, field length/headers 8 and 8 byte padding 8
-#define MULTIPART_WORKING_SPACE (256 + 8 + 8)
 
+#define MAX_NAME_NUM 4
+#define MAX_MATCH_NUM 16
 #define CACHE_LINE_SIZE 64
 #define MSGQ_SIZE 256
 #define PAGE_SIZE (64 * 1024)
 // #define PAGE_SIZE 512
 #define BUS_MAX_MSG_SIZE (256 * 1024)
-#define MAX_NUM_PAGES \
-	(1 + (BUS_MAX_MSG_SIZE / (PAGE_SIZE - MULTIPART_WORKING_SPACE)))
+#define MAX_NUM_PAGES ((BUS_MAX_MSG_SIZE / PAGE_SIZE) + 1)
 
 #define container_of(ptr, type, member)                            \
 	({                                                         \
