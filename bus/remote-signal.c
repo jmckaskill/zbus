@@ -13,46 +13,49 @@
 static int update_name_changed_match(struct remote *r, struct match *m,
 				     uint32_t serial, bool add)
 {
-	struct cmd_name_sub cn;
-	cn.add = add;
-	cn.serial = serial;
-	cn.q = r->qdata;
-	if (!slice_eq(match_interface(m), BUS_INTERFACE) ||
-	    !path_matches(m, BUS_PATH) ||
-	    !member_matches(m, NAME_OWNER_CHANGED)) {
-		return STS_NOT_SUPPORTED;
-	} else {
-		msgq_send(r->busq, CMD_UPDATE_NAME_SUB, &cn, sizeof(cn), NULL);
-		return 0;
+	int cnt = add ? r->name_sub_num++ : --r->name_sub_num;
+	if (!cnt) {
+		int idx = msg_allocate(r->busq, &r->waiter, 1);
+		struct cmd_update_name_sub *c = msg_get(r->busq, idx);
+		c->add = add;
+		c->remote = r;
+		c->serial = serial;
+		msg_release(r->busq, idx, &cmd_update_name_sub_vt);
 	}
+	return 0;
 }
 
-static int send_match_update(struct remote *r, struct msgq *to, struct match *m,
-			     uint32_t serial, bool add)
+static int send_broadcast_match(struct remote *r, struct match *m,
+				uint32_t serial, bool add)
 {
-	struct cmd_update_sub c;
-	c.add = add;
-	c.serial = serial;
-	c.remote = r;
-	c.s.m = *m;
-	c.s.remote_id = r->id;
-	if (msgq_send(to, CMD_UPDATE_SUB, &c, sizeof(c), &gc_update_sub)) {
-		return STS_REMOTE_FAILED;
-	}
-	ref_paged_data(c.s.m.base);
-	return 0;
+	int idx = msg_allocate(r->busq, &r->waiter, 1);
+	struct cmd_update_bcast_sub *c = msg_get(r->busq, idx);
+	c->add = add;
+	c->serial = serial;
+	c->sub.target = r;
+	c->sub.match = *m;
+	msg_release(r->busq, idx, &cmd_update_bcast_sub_vt);
+	return STS_OK;
 }
 
 static int update_unique_match(struct remote *r, struct match *m,
 			       uint32_t serial, bool add)
 {
-	int err;
+	int err = STS_OK;
 	struct rcu *d = rcu_lock(r->handle);
 	struct remote *to = lookup_unique_name(d, match_sender(m));
+	int idx;
 	if (!to) {
 		err = STS_NO_REMOTE;
+	} else if ((idx = msg_allocate(to->qcontrol, NULL, 1)) < 0) {
+		err = STS_REMOTE_FAILED;
 	} else {
-		err = send_match_update(r, to->qcontrol, m, serial, add);
+		struct cmd_update_ucast_sub *c = msg_get(to->qcontrol, idx);
+		c->add = add;
+		c->serial = serial;
+		c->sub.m = *m;
+		c->sub.remote_id = r->id;
+		msg_release(to->qcontrol, idx, &cmd_update_ucast_sub_vt);
 	}
 	rcu_unlock(r->handle);
 	return err;
@@ -69,22 +72,22 @@ static int update_bus_match(struct remote *r, struct match *m, uint32_t serial,
 	}
 
 	// send to the current owner if we can
-	if (n->owner) {
-		send_match_update(r, n->owner->qcontrol, m, serial, add);
-	}
-
-	// and register for name change events so we can track the name
-	int cnt = add ? r->bus_name_match_num++ : --r->bus_name_match_num;
-	if (cnt == 0) {
-		struct cmd_name_sub cn;
-		cn.add = add;
-		cn.q = r->qcontrol;
-		cn.serial = 0;
-		msgq_send(r->busq, CMD_UPDATE_NAME_SUB, &cn, sizeof(cn), NULL);
+	struct cmd_update_sub *c;
+	struct remote *o = n->owner;
+	int idx;
+	if (o && (idx = msg_allocate(o->qcontrol, NULL, 1)) >= 0) {
+		struct cmd_update_ucast_sub *c = msg_get(o->qcontrol, idx);
+		c->serial = serial;
+		c->add = add;
+		c->sub.remote_id = r->id;
+		c->sub.m = *m;
+		msg_release(o->qcontrol, idx, &cmd_update_ucast_sub_vt);
 	}
 
 	rcu_unlock(r->handle);
-	return 0;
+
+	// and register for name change events so we can track the name
+	return update_name_changed_match(r, m, serial, add);
 }
 
 void update_bus_matches(struct remote *r, slice_t sender)
@@ -96,7 +99,7 @@ void update_bus_matches(struct remote *r, slice_t sender)
 		goto end;
 	}
 
-	struct msgq *q = n->owner->qcontrol;
+	struct msg_queue *q = n->owner->qcontrol;
 
 	for (int i = 0; i < r->match_num; i++) {
 		struct match *m = &r->matches[i];
@@ -116,10 +119,15 @@ static int update_match(struct remote *r, struct match *m, uint32_t serial,
 
 	if (!sender.len) {
 		// broadcast
-		return send_match_update(r, r->busq, m, serial, add);
+		return send_broadcast_match(r, m, serial, add);
 
 	} else if (slice_eq(sender, BUS_DESTINATION)) {
 		// name owner changed
+		if (!slice_eq(match_interface(m), BUS_INTERFACE) ||
+		    !path_matches(m, BUS_PATH) ||
+		    !member_matches(m, NAME_OWNER_CHANGED)) {
+			return STS_NOT_SUPPORTED;
+		}
 		return update_name_changed_match(r, m, serial, add);
 
 	} else if (has_prefix(sender, UNIQUE_ADDR_PREFIX)) {
@@ -134,7 +142,7 @@ static int update_match(struct remote *r, struct match *m, uint32_t serial,
 
 int add_match(struct remote *r, struct message *msg, struct body b)
 {
-	if (r->bus_name_match_num == MAX_MATCH_NUM) {
+	if (r->name_sub_num == MAX_MATCH_NUM) {
 		return STS_OOM;
 	}
 
@@ -174,7 +182,7 @@ int add_match(struct remote *r, struct message *msg, struct body b)
 
 static struct match *find_match(struct remote *r, slice_t str)
 {
-	for (int i = 0; i < r->bus_name_match_num; i++) {
+	for (int i = 0; i < r->name_sub_num; i++) {
 		if (slice_eq(match_string(&r->matches[i]), str)) {
 			return &r->matches[i];
 		}
@@ -223,7 +231,7 @@ void remove_all_matches(struct remote *r)
 	r->match_num = 0;
 }
 
-int add_subscription(struct remote *r, struct subscription *s)
+int add_subscription(struct remote *r, struct ucast_sub *s)
 {
 	if (r->sub_num == MAX_MATCH_NUM) {
 		return STS_OOM;
@@ -243,7 +251,7 @@ int add_subscription(struct remote *r, struct subscription *s)
 	return 0;
 }
 
-int rm_subscription(struct remote *r, struct subscription *s)
+int rm_subscription(struct remote *r, struct ucast_sub *s)
 {
 	int idx = find_sub(r->subs, r->sub_num, s);
 	if (idx < 0) {
@@ -255,13 +263,13 @@ int rm_subscription(struct remote *r, struct subscription *s)
 	return 0;
 }
 
-void broadcast_subs(struct remote *r, struct rcu *d, struct subscription *subs,
+void broadcast_subs(struct remote *r, struct rcu *d, struct ucast_sub *subs,
 		    int n, struct message *m, struct body b)
 {
 	subs_for_interface(&subs, &n, m->interface);
 
 	for (int i = 0; i < n; i++) {
-		struct subscription *s = &subs[i];
+		struct ucast_sub *s = &subs[i];
 		// interface & sender have already been checked
 		if (member_matches(&s->m, m->member) &&
 		    path_matches(&s->m, m->path)) {

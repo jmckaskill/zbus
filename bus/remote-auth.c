@@ -31,12 +31,12 @@ static int auth_locked(struct remote *r, buf_t *in, buf_t *out,
 		// Process any messages from the bus. Only allow the close
 		// request while we are authenticating. All other messages are
 		// ignored.
-		struct msgq_entry *e;
-		while ((e = msgq_acquire(r->qcontrol)) != NULL) {
+		struct msg_header *e;
+		while ((e = msg_acquire(r->qcontrol)) != NULL) {
 			if (e->cmd == MSG_SHUTDOWN) {
 				return -1;
 			}
-			msgq_pop(r->qcontrol, e);
+			msg_pop(r->qcontrol, e);
 		}
 
 		// Read as much as we can. We shouldn't be reading enough to run
@@ -107,13 +107,20 @@ int authenticate(struct remote *r)
 	// That way the client doesn't try and send messages before other
 	// clients can look them up.
 
-	struct cmd_remote c;
-	c.remote = r;
-	msgq_send(r->busq, CMD_REGISTER, &c, sizeof(c), NULL);
+	struct cmd_remote *c = msg_allocate(r->busq);
+	if (!c) {
+		return -1;
+	}
+	c->remote = r;
+	msg_release(r->busq, CMD_REGISTER, c);
 
 	for (;;) {
-		struct msgq_entry *e;
-		while ((e = msgq_acquire(r->qcontrol)) != NULL) {
+		if (msg_has_overrun(r->qcontrol)) {
+			return -1;
+		}
+
+		struct msg_header *e;
+		while ((e = msg_acquire(r->qcontrol)) != NULL) {
 			switch (e->cmd) {
 			case MSG_SHUTDOWN:
 				return -1;
@@ -131,7 +138,7 @@ int authenticate(struct remote *r)
 
 send_hello_reply:
 	struct message msg;
-	init_message(&msg, MSG_REPLY, r->next_serial++);
+	init_message(&msg, MSG_REPLY, next_serial());
 	msg.sender = BUS_DESTINATION;
 	msg.reply_serial = auth_serial;
 	msg.signature = "s";

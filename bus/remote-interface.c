@@ -47,18 +47,18 @@ static int request_name(struct remote *r, struct message *m, struct body b,
 	DLOG("remote requesting %.*s", name.len, name.p);
 
 	// send the request off and wait for the response
-	struct cmd_name c;
-	c.add = add;
-	c.name = name;
-	c.remote = r;
-	c.serial = m->serial;
-	if (msgq_send(r->busq, CMD_UPDATE_NAME, &c, sizeof(c), &gc_cmd_name)) {
-		unlock_buffer(&r->out, 0);
-		return STS_REMOTE_FAILED;
-	} else {
-		ref_paged_data(name.p);
+	struct cmd_name *c = msg_allocate(r->busq);
+	if (c) {
+		c->hdr.data = name;
+		c->add = add;
+		c->remote = r;
+		c->serial = m->serial;
+		msg_release(r->busq, CMD_UPDATE_NAME, c);
 		unlock_buffer(&r->out, name.len);
 		return 0;
+	} else {
+		unlock_buffer(&r->out, 0);
+		return STS_REMOTE_FAILED;
 	}
 }
 
@@ -116,7 +116,7 @@ static int encode_list_names(buf_t *buf, struct message *m, struct rcu *d)
 static int list_names(struct remote *r, struct message *m)
 {
 	struct message o;
-	init_message(&o, MSG_REPLY, r->next_serial++);
+	init_message(&o, MSG_REPLY, next_serial());
 	o.reply_serial = m->serial;
 	o.sender = BUS_DESTINATION;
 	o.signature = "as";

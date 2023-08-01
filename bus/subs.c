@@ -9,7 +9,7 @@ struct subkey {
 static int compare_sub(const void *key, const void *element)
 {
 	const struct subkey *k = key;
-	const struct subscription *s = element;
+	const struct ucast_sub *s = element;
 	int dsz = k->interface.len - s->m.interface_len;
 	if (dsz) {
 		return dsz;
@@ -41,7 +41,7 @@ int lower_bound(const void *key, const void *base, int nel, size_t width,
 	return -(low + 1);
 }
 
-int find_sub(struct subscription *subs, int num, struct subscription *s)
+int find_sub(struct ucast_sub *subs, int num, struct ucast_sub *s)
 {
 	struct subkey key;
 	key.interface = match_interface(&s->m);
@@ -49,10 +49,9 @@ int find_sub(struct subscription *subs, int num, struct subscription *s)
 	return lower_bound(&key, subs, num, sizeof(*subs), &compare_sub);
 }
 
-void subs_for_interface(struct subscription **psubs, int *pnum,
-			slice_t interface)
+void subs_for_interface(struct ucast_sub **psubs, int *pnum, slice_t interface)
 {
-	struct subscription *v = *psubs;
+	struct ucast_sub *v = *psubs;
 	int n = *pnum;
 
 	// subscriptions are sorted by (interface,base)

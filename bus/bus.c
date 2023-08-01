@@ -28,8 +28,8 @@ int setup_signals()
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = &signal_wakeup;
 	sigemptyset(&sa.sa_mask);
-	sigaddset(&sa.sa_mask, SIGMSGQ);
-	if (sigaction(SIGMSGQ, &sa, NULL)) {
+	sigaddset(&sa.sa_mask, msg_event(NULL));
+	if (sigaction(msg_event(NULL), &sa, NULL)) {
 		perror("sigaction");
 		return -1;
 	}
@@ -169,10 +169,12 @@ error:
 	return -1;
 }
 
-DVECTOR_INIT(msgq, struct msgq *);
+DVECTOR_INIT(msgq, struct msg_queue *);
 
 struct bus {
-	struct msgq *q;
+	struct msg_queue *q;
+	struct msg_waiter waiter;
+	int qidx;
 	int next_remote_id;
 	struct gc *gc;
 	struct rcu *rcu;
@@ -189,12 +191,13 @@ static int init_bus(struct bus *b)
 		return -1;
 	}
 
-	b->q = msgq_new();
+	b->q = msg_new_queue();
 	b->gc = new_gc();
 	b->next_remote_id = 1;
 	dv_init(&b->remotes);
 	dv_init(&b->on_name_changed);
 	init_buffer(&b->cfg);
+	msg_start_producer(&b->waiter);
 
 	// set an initial rcu data
 	struct rcu *d = gc_alloc(1, sizeof(*d));
@@ -237,7 +240,8 @@ static void destroy_bus(struct bus *b)
 
 	dv_free(b->remotes);
 	dv_free(b->on_name_changed);
-	msgq_free(b->q);
+	msg_stop_producer(&b->waiter);
+	msg_free_queue(b->q);
 }
 
 static struct rcu *start_rcu(struct bus *b)
@@ -258,29 +262,26 @@ static void finish_rcu(struct bus *b, struct rcu *d)
 ///////////////////
 // name handling
 
-static void sub_name_changed(struct bus *b, struct msgq *q, bool add)
+static void sub_name_changed(struct bus *b, struct remote *r, bool add)
 {
 	if (add) {
-		dv_append1(&b->on_name_changed, q);
+		dv_append1(&b->on_name_changed, r->qcontrol);
 	} else {
-		dv_remove(&b->on_name_changed, q);
+		dv_remove(&b->on_name_changed, r->qcontrol);
 	}
 }
 
 static void on_name_changed(struct bus *b, slice_t name, int old_owner,
 			    int new_owner)
 {
-	struct msg_name m;
-	m.name = name;
-	m.old_owner = old_owner;
-	m.new_owner = new_owner;
-
 	for (int i = 0; i < b->on_name_changed.size; i++) {
-		struct msgq *q = b->on_name_changed.data[i];
-		if (!msgq_send(q, MSG_NAME, &m, sizeof(m), &gc_name) &&
-		    m.name.p) {
-			ref_paged_data(m.name.p);
-		}
+		struct msg_queue *q = b->on_name_changed.data[i];
+		int idx = msg_allocate(q, &b->waiter, 1);
+		struct msg_name *m = msg_get(q, idx);
+		m->name = name;
+		m->old_owner = old_owner;
+		m->new_owner = new_owner;
+		msg_release(q, idx, &msg_name_vt);
 	}
 }
 
@@ -426,14 +427,9 @@ static void activate_remote(struct bus *b, struct remote *r)
 	// other remote tries to send messages before the registration reply is
 	// processed and this remote can't send any messages to anyone else
 	// before it's been registered in the RCU data.
-	unsigned ei;
-	int err = msgq_allocate(r->qcontrol, 1, &ei);
-	assert(!err); // this shouldn't fail as the queue should be empty
+	int idx = msg_allocate(r->qcontrol, &b->waiter, 1);
 	finish_rcu(b, d);
-
-	struct msgq_entry *e = msgq_get(r->qcontrol, ei);
-	e->cmd = REP_REGISTER;
-	msgq_release(r->qcontrol, ei, 1);
+	msg_release(r->qcontrol, idx, &rep_register_vt);
 
 	on_name_changed(b, make_slice(NULL, 0), -1, r->id);
 }
@@ -465,30 +461,41 @@ static void remove_remote(struct bus *b, struct remote *r)
 //////////////////////////////////
 // broadcast handling
 
-static int update_broadcast(struct bus *b, struct subscription *s, bool add)
+static int compare_broadcast(const void *key, const void *element)
 {
-	int idx = find_sub(b->rcu->bcast_v, b->rcu->bcast_n, s);
+	const struct bcast_sub *k = key;
+	const struct bcast_sub *e = element;
+	int c = cmp_slice(match_interface(&k->match),
+			  match_interface(&e->match));
+	return c ? c : (int)(k->match.base - e->match.base);
+}
+
+static int update_broadcast(struct bus *b, const struct bcast_sub *sub,
+			    bool add)
+{
+	int idx = lower_bound(sub, b->rcu->bcast_v, b->rcu->bcast_n,
+			      sizeof(*b->rcu->bcast_v), &compare_broadcast);
 	if ((add && idx >= 0) || (!add && idx < 0)) {
 		// already added or removed
 		return 0;
 	}
 
 	struct rcu *d = start_rcu(b);
-	struct subscription *v = d->bcast_v;
+	struct bcast_sub *o = d->bcast_v;
 	int n = d->bcast_n;
 	if (add) {
 		idx = -(idx + 1);
-		struct subscription *subs = gc_alloc(n + 1, sizeof(*s));
-		memcpy(subs, v, idx * sizeof(*s));
-		memcpy(subs + idx, s, sizeof(*s));
-		memcpy(subs + idx + 1, v + idx, (n - idx) * sizeof(*s));
-		d->bcast_v = v;
+		struct bcast_sub *v = gc_alloc(n + 1, sizeof(*v));
+		memcpy(v, o, idx * sizeof(*v));
+		v[idx] = *sub;
+		memcpy(v + idx + 1, o + idx, (n - idx) * sizeof(*v));
+		d->bcast_v = o;
 		d->bcast_n = n + 1;
 	} else {
-		struct subscription *subs = gc_alloc(n - 1, sizeof(*s));
-		memcpy(subs, v, idx * sizeof(*s));
-		memcpy(subs + idx, v + idx + 1, (n - idx - 1) * sizeof(*s));
-		d->bcast_v = v;
+		struct bcast_sub *v = gc_alloc(n - 1, sizeof(*v));
+		memcpy(v, o, idx * sizeof(*v));
+		memcpy(v + idx, o + idx + 1, (n - idx - 1) * sizeof(*v));
+		d->bcast_v = o;
 		d->bcast_n = n - 1;
 	}
 	finish_rcu(b, d);
@@ -498,15 +505,62 @@ static int update_broadcast(struct bus *b, struct subscription *s, bool add)
 /////////////////////////////////
 // Main loop
 
-static void _reply_errcode(struct msgq *q, uint16_t cmd, int errcode,
-			   uint32_t serial)
+static void send_errcode(struct bus *b, struct remote *r, msg_type_t *type,
+			 int errcode, uint32_t serial)
 {
 	if (serial) {
-		struct rep_errcode m;
-		m.errcode = errcode;
-		m.serial = serial;
-		msgq_send(q, cmd, &m, sizeof(m), NULL);
+		int idx = msg_allocate(&b->waiter, r->qcontrol, true, 1);
+		struct rep_errcode *m = msg_get(r->qcontrol, idx);
+		m->errcode = errcode;
+		m->serial = serial;
+		msg_release(r->qcontrol, idx, type);
 	}
+}
+static void process_busq(struct bus *b)
+{
+	int idx = b->qidx;
+	msg_type_t *type;
+	while ((type = msg_acquire(b->q, idx)) != NULL) {
+		switch (type->code) {
+		case MSG_DISCONNECTED: {
+			struct msg_disconnected *c = msg_get(b->q, idx);
+			remove_remote(b, c->remote);
+			break;
+		}
+
+		case CMD_REGISTER: {
+			struct cmd_register *c = msg_get(b->q, idx);
+			activate_remote(b, c->remote);
+			break;
+		}
+
+		case CMD_UPDATE_NAME: {
+			struct cmd_update_name *c = msg_get(b->q, idx);
+			int err = update_name(&b, c->remote, c->name, c->add);
+			send_errcode(b, c->remote->qcontrol, REP_UPDATE_NAME,
+				     err, c->serial);
+			break;
+		}
+
+		case CMD_UPDATE_NAME_SUB: {
+			struct cmd_update_name_sub *c = msg_get(b->q, idx);
+			sub_name_changed(&b, c->remote, c->add);
+			send_errcode(b, c->remote, REP_UPDATE_NAME_SUB, 0,
+				     c->serial);
+			break;
+		}
+
+		case CMD_UPDATE_BCAST_SUB: {
+			struct cmd_update_bcast_sub *c = msg_get(b->q, idx);
+			int err = update_broadcast(&b, &c->sub, c->add);
+			send_errcode(b, c->sub.target, REP_UPDATE_BCAST_SUB,
+				     err, c->serial);
+			break;
+		}
+		}
+		idx = msg_pop(b->q, idx);
+	}
+	b->qidx = idx;
 }
 
 int run_bus(int lfd)
@@ -517,48 +571,7 @@ int run_bus(int lfd)
 	}
 
 	for (;;) {
-		struct msgq_entry *e;
-		while ((e = msgq_acquire(b.q)) != NULL) {
-			switch (e->cmd) {
-			case MSG_DISCONNECTED: {
-				struct cmd_remote *c = (void *)e->data;
-				remove_remote(&b, c->remote);
-				break;
-			}
-
-			case CMD_REGISTER: {
-				struct cmd_remote *c = (void *)e->data;
-				activate_remote(&b, c->remote);
-				break;
-			}
-
-			case CMD_UPDATE_NAME: {
-				struct cmd_name *c = (void *)e->data;
-				int err = update_name(&b, c->remote, c->name,
-						      c->add);
-				_reply_errcode(c->remote->qcontrol,
-					       REP_UPDATE_NAME, err, c->serial);
-				break;
-			}
-
-			case CMD_UPDATE_NAME_SUB: {
-				struct cmd_name_sub *c = (void *)e->data;
-				sub_name_changed(&b, c->q, c->add);
-				_reply_errcode(c->q, REP_UPDATE_NAME_SUB, 0,
-					       c->serial);
-				break;
-			}
-
-			case CMD_UPDATE_SUB: {
-				struct cmd_update_sub *c = (void *)e->data;
-				int err = update_broadcast(&b, &c->s, c->add);
-				_reply_errcode(c->remote->qcontrol,
-					       REP_UPDATE_SUB, err, c->serial);
-				break;
-			}
-			}
-			msgq_pop(b.q, e);
-		}
+		process_busq(&b);
 
 		if (poll_socket(lfd, NULL)) {
 			break;

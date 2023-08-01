@@ -1,45 +1,49 @@
 include config.ninja
 
 rule test
-    command = $in -z $out || cat $out
+        command = $in -z $out || cat $out
 
 # common simple rules
 # create custom rules if you need different flags for a target
 
 rule cc
-    depfile = $out.d
-    deps = gcc
-    command = $cc -c $in -o $out -MD -MF $out.d $cflags
-    description = CC $out
+        depfile = $out.d
+        deps = gcc
+        command = $cc -c $in -o $out -MD -MF $out.d $cflags
+        description = CC $out
 
 rule ld
-    command = $ld $ldflags -o $out $in
-    description = LD $out
+        command = $ld $ldflags -o $out $in
+        description = LD $out
 
 rule ar
-    command = rm -f $out && $ar $out $in
-    description = AR $out
+        command = rm -f $out && $ar $out $in
+        description = AR $out
 
 # dmem
 build obj/dmem/vector.o: cc dmem/vector.c
-build obj/dmem.a: ar obj/dmem/vector.o
+build obj/dmem/log.o: cc dmem/log.c
+build obj/dmem.a: ar $
+        obj/dmem/vector.o $
+        obj/dmem/log.o $
+
 
 # lib
 
-build obj/lib/auth.o:       cc lib/auth.c
-build obj/lib/decode.o:     cc lib/decode.c
-build obj/lib/encode.o:     cc lib/encode.c
-build obj/lib/log.o:        cc lib/log.c
-build obj/lib/match.o:      cc lib/match.c
-build obj/lib/str.o:        cc lib/str.c
+build obj/lib/auth.o: cc lib/auth.c
+build obj/lib/decode.o: cc lib/decode.c
+build obj/lib/encode.o: cc lib/encode.c
+build obj/lib/match.o: cc lib/match.c
+build obj/lib/slice.o: cc lib/slice.c
+build obj/lib/stream.o: cc lib/stream.c
 
 build obj/lib.a: ar $
         obj/lib/auth.o $
         obj/lib/decode.o $
         obj/lib/encode.o $
-        obj/lib/log.o $
         obj/lib/match.o $
-        obj/lib/str.o $
+        obj/lib/slice.o $
+        obj/lib/stream.o $
 
 # bus
 
@@ -78,19 +82,48 @@ build bin/bus: ld $
 
 # tester
 
+build obj/tester/client.o: cc tester/client.c
 build obj/tester/tester.o: cc tester/tester.c
 
 build bin/tester: ld $
+        obj/tester/client.o $
         obj/tester/tester.o $
+        obj/dmem.a $
         obj/lib.a $
 
 
+build obj/zbus/addr.o:      cc zbus/addr.c
+build obj/zbus/algo.o:      cc zbus/algo.c
+build obj/zbus/bus.o:       cc zbus/bus.c
+build obj/zbus/busmsg.o:    cc zbus/busmsg.c
+build obj/zbus/config.o: cc zbus/config.c
+build obj/zbus/dispatch.o:  cc zbus/dispatch.c
+build obj/zbus/rcu.o:       cc zbus/rcu.c
+build obj/zbus/rx.o:        cc zbus/rx.c
+build obj/zbus/sub.o:       cc zbus/sub.c
+build obj/zbus/sys.o:       cc zbus/sys.c
+build obj/zbus/tx.o:        cc zbus/tx.c
+build obj/zbus/zbus.o:      cc zbus/zbus.c
+
+build bin/zbus: ld $
+        obj/zbus/addr.o $
+        obj/zbus/algo.o $
+        obj/zbus/bus.o $
+        obj/zbus/busmsg.o $
+        obj/zbus/dispatch.o $
+        obj/zbus/rcu.o $
+        obj/zbus/rx.o $
+        obj/zbus/sub.o $
+        obj/zbus/sys.o $
+        obj/zbus/tx.o $
+        obj/zbus/zbus.o $
+        obj/dmem.a $
+        obj/lib.a $
 
 
 # default targets
 
-default bin/bus bin/tester
-build test: phony $
+default bin/zbus bin/tester
 
 
 

@@ -23,8 +23,6 @@ static_assert(sizeof(struct page) == PAGE_SIZE, "padding");
 #define ALIGN_PTR_DOWN(TYPE, PTR, BOUNDARY) \
 	((TYPE)(((uintptr_t)(PTR)) & (~((((uintptr_t)(BOUNDARY)) - 1)))))
 
-#define GET_PAGE(P) ALIGN_PTR_DOWN(struct page *, P, PAGE_SIZE)
-
 // create a new page with an initial ref count
 struct page *new_page(int refcnt);
 
@@ -32,14 +30,19 @@ struct page *new_page(int refcnt);
 void ref_page(struct page *pg, int num);
 void deref_page(struct page *pg, int num);
 
+static inline struct page *get_page(const char *s)
+{
+	return (struct page *)((uintptr_t)s & ((PAGE_SIZE)-1U));
+}
+
 // ref or deref the page via pointers into data in the page
 static inline void ref_paged_data(const char *s)
 {
-	ref_page(GET_PAGE(s), 1);
+	ref_page(get_page(s), 1);
 }
 static inline void deref_paged_data(const char *s)
 {
-	deref_page(GET_PAGE(s), 1);
+	deref_page(get_page(s), 1);
 }
 
 //////////////////////////////////

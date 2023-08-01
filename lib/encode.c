@@ -7,76 +7,65 @@
 /////////////////////////////////
 // alignment
 
-// a surprising amount of the time the data is already aligned
-// e.g. string within struct
-// outside of that, the alignment is unpredictable so use bitops
-// pulling the already aligned case out also makes the bitops a bit simpler
-
-static char *align2(char *n)
+static uint32_t align2(char *base, uint32_t off)
 {
-	unsigned mod = ((unsigned)(uintptr_t)n) & 1U;
+	uint32_t mod = off & 1U;
 	if (!mod) {
-		return n;
+		return off;
 	}
-	*n = 0;
-	return n + 1;
+	base[off] = 0;
+	return off + 1;
 }
 
-static char *align4(char *n)
+static uint32_t align4(char *base, uint32_t off)
 {
-	unsigned mod = ((unsigned)(uintptr_t)n) & 3U;
-	if (!mod) {
-		return n;
+	uint32_t aligned = ALIGN_UINT_UP(off, 4);
+	while (off < aligned) {
+		base[off++] = 0;
 	}
-	char *pfloor = n - mod;
-	uint32_t mask = (UINT32_C(1) << (mod * 8U)) - UINT32_C(1);
-	*(uint32_t *)pfloor &= mask;
-	return pfloor + 4;
+	return off;
 }
 
-static char *align8(char *n)
+static uint32_t align8(char *base, uint32_t off)
 {
-	unsigned mod = ((unsigned)(uintptr_t)n) & 7U;
-	if (!mod) {
-		return n;
+	uint32_t aligned = ALIGN_UINT_UP(off, 8);
+	while (off < aligned) {
+		base[off++] = 0;
 	}
-	char *pfloor = n - mod;
-	uint64_t mask = (UINT64_C(1) << (mod * 8U)) - UINT64_C(1);
-	*(uint64_t *)pfloor &= mask;
-	return pfloor + 8;
+	return off;
 }
 
 void align_buffer_8(struct builder *b)
 {
 	// buffer is guarenteed to have 8 byte alignment so this should never
 	// fail
-	b->next = align8(b->next);
+	b->next = align8(b->base, b->next);
 }
 
-static char *alignx(char *next, char type)
+static uint32_t alignx(char *base, uint32_t off, char type)
 {
 	switch (type) {
 	case TYPE_INT16:
 	case TYPE_UINT16:
-		return align2(next);
+		return align2(base, off);
 	case TYPE_BOOL:
 	case TYPE_INT32:
 	case TYPE_UINT32:
 	case TYPE_STRING:
 	case TYPE_PATH:
 	case TYPE_ARRAY:
-		return align4(next);
+		return align4(base, off);
 	case TYPE_INT64:
 	case TYPE_UINT64:
 	case TYPE_DOUBLE:
 	case TYPE_DICT_BEGIN:
 	case TYPE_STRUCT_BEGIN:
-		return align8(next);
+		return align8(base, off);
 	case TYPE_BYTE:
 	case TYPE_SIGNATURE:
 	case TYPE_VARIANT:
 	default:
-		return next;
+		return off;
 	}
 }
 
@@ -85,13 +74,12 @@ static char *alignx(char *next, char type)
 
 void append_raw(struct builder *b, const char *sig, const void *p, size_t len)
 {
-	char *base = alignx(b->next, *sig);
-	char *end = base + len;
-	if (end > b->end || !is_signature(b->sig, sig)) {
+	uint32_t off = alignx(b->base, b->next, *sig);
+	b->next = off + len;
+	if (!is_signature(b->sig, sig)) {
 		b->next = b->end + 1;
-	} else {
-		memcpy(base, p, len);
-		b->next = end;
+	} else if (!len && b->next <= b->end) {
+		memcpy(b->base + off, p, len);
 		b->sig += strlen(sig);
 	}
 }
@@ -101,59 +89,61 @@ void append_byte(struct builder *b, uint8_t v)
 	if (*b->sig != TYPE_BYTE) {
 		b->next = b->end + 1;
 	} else if (b->next < b->end) {
-		*(uint8_t *)(b->next++) = v;
+		*(uint8_t *)(b->base + b->next) = v;
+		b->next++;
 		b->sig++;
 	}
 }
 
 void _append2(struct builder *b, uint16_t u, char type)
 {
-	char *base = align2(b->next);
-	b->next = base + 2;
+	uint32_t off = align2(b->base, b->next);
+	b->next = off + 2;
 	if (*b->sig != type) {
 		b->next = b->end + 1;
 	} else if (b->next <= b->end) {
-		*(uint16_t *)base = u;
+		memcpy(b->base + off, &u, 2);
 		b->sig++;
 	}
 }
 
 void _append4(struct builder *b, uint32_t u, char type)
 {
-	char *base = align4(b->next);
-	b->next = base + 4;
+	uint32_t off = align4(b->base, b->next);
+	b->next = off + 4;
 	if (*b->sig != type) {
 		b->next = b->end + 1;
 	} else if (b->next <= b->end) {
-		*(uint32_t *)base = u;
+		memcpy(b->base + off, &u, 4);
 		b->sig++;
 	}
 }
 
 void _append8(struct builder *b, uint64_t u, char type)
 {
-	char *base = align8(b->next);
-	b->next = base + 8;
+	uint32_t off = align8(b->base, b->next);
+	b->next = off + 8;
 	if (*b->sig != type) {
 		b->next = b->end + 1;
 	} else if (b->next <= b->end) {
-		*(uint64_t *)base = u;
+		memcpy(b->base + off, &u, 8);
 		b->sig++;
 	}
 }
 
 void _append_string(struct builder *b, slice_t str, char type)
 {
-	char *plen = align4(b->next);
-	char *pstr = plen + 4;
-	char *pnul = pstr + str.len;
-	b->next = pnul + 1;
-	if (*b->sig != type) {
+	uint32_t lenoff = align4(b->base, b->next);
+	uint32_t stroff = lenoff + 4;
+	uint32_t nuloff = stroff + str.len;
+	b->next = nuloff + 1;
+	if (*b->sig != type || str.len > DBUS_MAX_VALUE_SIZE) {
 		b->next = b->end + 1;
 	} else if (b->next <= b->end) {
-		*(uint32_t *)plen = str.len;
-		memcpy(pstr, str.p, str.len);
-		*pnul = 0;
+		uint32_t len32 = str.len;
+		memcpy(b->base + lenoff, &len32, 4);
+		memcpy(b->base + stroff, str.p, str.len);
+		b->base[nuloff] = 0;
 		b->sig++;
 	}
 }
@@ -161,46 +151,39 @@ void _append_string(struct builder *b, slice_t str, char type)
 void _append_signature(struct builder *b, const char *sig, char type)
 {
 	size_t len = strlen(sig);
-	char *plen = b->next;
-	char *pstr = plen + 1;
-	b->next = pstr + len + 1;
+	uint32_t lenoff = b->next;
+	uint32_t stroff = lenoff + 1;
+	b->next = stroff + len + 1;
 	if (len > 255 || *b->sig != type) {
 		b->next = b->end + 1;
 	} else if (b->next <= b->end) {
-		*(uint8_t *)plen = (uint8_t)len;
-		memcpy(pstr, sig, len + 1);
+		*(uint8_t *)(b->base + lenoff) = len;
+		memcpy(b->base + stroff, sig, len + 1);
 		b->sig++;
 	}
 }
 
-void append_vformat(struct builder *b, const char *fmt, va_list ap)
+char *start_string(struct builder *b, size_t *psz)
 {
-	char *plen = align4(b->next);
-	char *pstr = plen + 4;
-	if (pstr + 1 > b->end || *b->sig != TYPE_STRING) {
-		goto error;
+	uint32_t lenoff = align4(b->base, b->next);
+	uint32_t stroff = lenoff + 4;
+	b->next = stroff + 1;
+	if (b->next > b->end || *b->sig != TYPE_STRING) {
+		b->next = b->end + 1;
+		*psz = 0;
+		return NULL;
+	} else {
+		*psz = b->end - b->next;
+		return b->base + stroff;
 	}
-	// snprintf takes max number of bytes include nul
-	// snprintf returns number of bytes excluding the nul
-	size_t maxsz = b->end - pstr;
-	int n = vsnprintf(pstr, maxsz, fmt, ap);
-	if (n < 0 || n >= maxsz) {
-		goto error;
-	}
-	*(uint32_t *)plen = (uint32_t)n;
-	b->next = pstr + n + 1;
-	b->sig++;
-	return;
-error:
-	b->next = b->end + 1;
 }
 
-void append_format(struct builder *b, const char *fmt, ...)
+void finish_string(struct builder *b, size_t sz)
 {
-	va_list ap;
-	va_start(ap, fmt);
-	append_vformat(b, fmt, ap);
-	va_end(ap);
+	b->next += sz;
+	if (b->next <= b->end) {
+		b->base[b->next - 1] = 0;
+	}
 }
 
 struct variant_data start_variant(struct builder *b, const char *sig)
@@ -220,8 +203,65 @@ void end_variant(struct builder *b, struct variant_data vd)
 	b->sig = vd.nextsig;
 }
 
-void append_variant(struct builder *b, const char *sig, const void *raw,
-		    size_t len)
+void append_variant(struct builder *b, const struct variant *v)
+{
+	struct variant_data vd = start_variant(b, v->sig);
+	const char *sig = v->sig;
+	char type = *sig++;
+	switch (type) {
+	case TYPE_BOOL:
+		append_bool(b, v->u.b);
+		break;
+	case TYPE_BYTE:
+		append_byte(b, v->u.u8);
+		break;
+	case TYPE_INT16:
+	case TYPE_UINT16:
+		_append2(b, v->u.u16, type);
+		break;
+	case TYPE_INT32:
+	case TYPE_UINT32:
+		_append4(b, v->u.u32, type);
+		break;
+	case TYPE_INT64:
+	case TYPE_UINT64:
+	case TYPE_DOUBLE:
+		_append8(b, v->u.u64, type);
+		break;
+	case TYPE_STRING:
+	case TYPE_PATH:
+		_append_string(b, v->u.str, type);
+		break;
+	case TYPE_SIGNATURE:
+		append_signature(b, v->u.sig);
+		break;
+	case TYPE_ARRAY: {
+		struct iterator ii = v->u.array;
+		struct array_data ad = start_array(b);
+		append_raw(b, ii.sig, ii.base + ii.next, ii.end - ii.next);
+		end_array(b, ad);
+		break;
+	}
+	case TYPE_STRUCT_BEGIN: {
+		struct iterator ii = v->u.record;
+		append_raw(b, ii.sig, ii.base + ii.next, ii.end - ii.next);
+		break;
+	}
+	case TYPE_VARIANT: {
+		struct iterator ii = v->u.variant;
+		append_raw_variant(b, ii.sig, ii.base + ii.next,
+				   ii.end - ii.next);
+		break;
+	}
+	default:
+		b->next = b->end + 1;
+		break;
+	}
+	end_variant(b, vd);
+}
+
+void append_raw_variant(struct builder *b, const char *sig, const void *raw,
+			size_t len)
 {
 	struct variant_data vd = start_variant(b, sig);
 	append_raw(b, sig, raw, len);
@@ -232,7 +272,7 @@ void start_struct(struct builder *b)
 {
 	// alignment can't fail
 	if (*b->sig == TYPE_STRUCT_BEGIN) {
-		b->next = align8(b->next);
+		b->next = align8(b->base, b->next);
 		b->sig++;
 	} else {
 		b->next = b->end + 1;
@@ -254,49 +294,47 @@ struct array_data start_array(struct builder *b)
 	if (*b->sig != TYPE_ARRAY) {
 		goto error;
 	}
-	const char *nextsig = b->sig + 1;
-	char *start = align4(b->next);
-	b->next = alignx(start + 4, b->sig[1]);
-	if (b->next > b->end || skip_signature(&nextsig, true)) {
+	const char *sig = b->sig++;
+	uint32_t lenoff = align4(b->base, b->next);
+	b->next = alignx(b->base, lenoff + 4, sig[1]);
+	if (b->next > b->end || skip_signature(&sig)) {
 		goto error;
 	}
-	a.sig = ++b->sig;
-	a.siglen = (uint8_t)(nextsig - b->sig);
-	a.data = start;
-	a.datalen = (uint8_t)(b->next - start);
+	a.sig = b->sig;
+	a.siglen = (uint8_t)(sig - b->sig);
+	a.off = b->next;
+	a.hdr = (uint8_t)(b->next - lenoff);
 	return a;
 error:
 	// setup an error state such that start_array_entry and end_array don't
 	// crash
-	static uint32_t dummy;
 	a.sig = "";
 	a.siglen = 0;
-	a.data = (char *)&dummy;
-	a.datalen = 0;
+	a.off = 0;
+	a.hdr = 0;
 	b->next = b->end + 1;
 	return a;
 }
 
-void start_array_entry(struct builder *b, struct array_data *a)
+void start_array_entry(struct builder *b, struct array_data a)
 {
-	// second or more array element, sig should be at the end
-	if (b->next != a->data + a->datalen && b->sig != a->sig + a->siglen) {
+	// check that the signature is where we expect
+	if (b->sig != ((b->next != a.off) ? (a.sig + a.siglen) : a.sig)) {
 		b->next = b->end + 1;
 	}
-	b->sig = a->sig;
+	b->sig = a.sig;
 }
 
 void end_array(struct builder *b, struct array_data a)
 {
-	size_t len = b->next - a.data - a.datalen;
-	*(uint32_t *)a.data = (uint32_t)len;
-	if (!len) {
-		// no elements added, so need to move forward sig manually
-		b->sig = a.sig + a.siglen;
-	} else if (b->sig != a.sig + a.siglen) {
-		// elements added, sig should be at the end
+	uint32_t len = b->next - a.off;
+	memcpy(b->base + a.off - a.hdr, &len, 4);
+
+	// check that the signature is where we expect
+	if (b->sig != (len ? (a.sig + a.siglen) : a.sig)) {
 		b->next = b->end + 1;
 	}
+	b->sig = a.sig + a.siglen;
 }
 
 struct dict_data start_dict(struct builder *b)
@@ -305,35 +343,35 @@ struct dict_data start_dict(struct builder *b)
 	if (b->sig[0] != TYPE_ARRAY || b->sig[1] != TYPE_DICT_BEGIN) {
 		goto error;
 	}
-	const char *nextsig = b->sig + 2 /*a{*/;
-	char *start = align4(b->next);
-	char *data = start + 4;
+
+	uint32_t lenoff = align4(b->base, b->next);
+	uint32_t dataoff = lenoff + 4;
 	// data is 0 or 4 (mod 8)
-	if (((unsigned)(uintptr_t)data) & 7U) {
-		*(uint32_t *)data = 0;
-		data += 4;
+	if (dataoff & 7U) {
+		memset(b->base, 0, 4);
+		dataoff += 4;
 	}
 
-	b->next = data;
-	if (b->next > b->end || skip_signature(&nextsig, false) ||
-	    skip_signature(&nextsig, false) || *nextsig != TYPE_DICT_END) {
+	const char *nextsig = b->sig;
+	b->sig += 2; // want to point to key signature
+	b->next = dataoff;
+	if (b->next > b->end || skip_signature(&nextsig)) {
 		goto error;
 	}
+	nextsig -= 1; // want to point to ending }
 
-	b->sig += 2; // a{
 	d.a.sig = b->sig;
 	d.a.siglen = (uint8_t)(nextsig - b->sig);
-	d.a.data = start;
-	d.a.datalen = (uint8_t)(data - start);
+	d.a.off = b->next;
+	d.a.hdr = (uint8_t)(b->next - lenoff);
 	return d;
 error:
 	// setup an error state with siglen = 0 and hdrlen = 0
 	// so that start_dict_entry and end_dict don't crash
-	static uint32_t dummy;
 	d.a.sig = "}";
 	d.a.siglen = 0;
-	d.a.data = (char *)&dummy;
-	d.a.datalen = 0;
+	d.a.off = 0;
+	d.a.hdr = 0;
 	b->next = b->end + 1;
 	return d;
 }
@@ -341,12 +379,86 @@ error:
 void end_dict(struct builder *b, struct dict_data d)
 {
 	end_array(b, d.a);
+	b->sig++; // }
+}
 
-	// b->sig may be "" in case of an error. Don't want to run the pointer
-	// off the end of the string
-	if (*b->sig) {
-		b->sig++; // }
+void append_multiv(struct builder *b, const char *sig, va_list ap)
+{
+	while (*sig) {
+		char type = *sig++;
+		switch (type) {
+		case TYPE_BYTE:
+			append_byte(b, (uint8_t)va_arg(ap, int));
+			break;
+		case TYPE_BOOL:
+			append_bool(b, (bool)va_arg(ap, int));
+			break;
+		case TYPE_INT16:
+		case TYPE_UINT16:
+			_append2(b, (uint16_t)va_arg(ap, int), type);
+			break;
+		case TYPE_INT32:
+		case TYPE_UINT32:
+			_append4(b, va_arg(ap, uint32_t), type);
+			break;
+		case TYPE_INT64:
+		case TYPE_UINT64:
+			_append8(b, va_arg(ap, uint64_t), type);
+			break;
+		case TYPE_DOUBLE:
+			append_double(b, va_arg(ap, double));
+			break;
+		case TYPE_PATH:
+		case TYPE_STRING:
+			_append_string(b, va_arg(ap, slice_t), type);
+			break;
+		case TYPE_SIGNATURE:
+			append_signature(b, va_arg(ap, const char *));
+			break;
+		case TYPE_VARIANT:
+			append_variant(b, va_arg(ap, struct variant *));
+			break;
+		case TYPE_STRUCT_BEGIN: {
+			struct iterator *ii = va_arg(ap, struct iterator *);
+			append_raw(b, ii->sig, ii->base + ii->next,
+				   ii->end - ii->next);
+			// step back one so skip_signature can pick up that
+			// we're in a struct
+			sig--;
+			if (skip_signature(&sig)) {
+				goto error;
+			}
+			break;
+		}
+		case TYPE_ARRAY: {
+			struct iterator *ii = va_arg(ap, struct iterator *);
+			struct array_data ad = start_array(b);
+			append_raw(b, ii->sig, ii->base + ii->next,
+				   ii->end - ii->next);
+			end_array(b, ad);
+			// step back one so skip_signature can pick up that
+			// we're in an array
+			sig--;
+			if (skip_signature(&sig)) {
+				goto error;
+			}
+			break;
+		}
+		default:
+			goto error;
+		}
 	}
+	return;
+error:
+	b->next = b->next + 1;
+}
+
+void append_multi(struct builder *b, const char *sig, ...)
+{
+	va_list ap;
+	va_start(ap, sig);
+	append_multiv(b, sig, ap);
+	va_end(ap);
 }
 
 //////////////////////////////
@@ -367,29 +479,30 @@ static inline void write_little_4(char *p, uint32_t v)
 static void append_uint32_field(struct builder *b, uint32_t tag, uint32_t v)
 {
 	// should be called first so that we are still aligned
-	assert(!((uintptr_t)b->next & 3U));
-	char *ptag = b->next;
-	char *pval = ptag + 4;
-	b->next = pval + 4;
+	assert(!(b->next & 3U));
+	uint32_t tagoff = b->next;
+	uint32_t valoff = tagoff + 4;
+	b->next = valoff + 4;
 	if (b->next <= b->end) {
-		write_little_4(ptag, tag);
-		*(uint32_t *)pval = v;
+		write_little_4(b->base + tagoff, tag);
+		memcpy(b->base + valoff, &v, 4);
 	}
 }
 
 static void append_string_field(struct builder *b, uint32_t tag, slice_t str)
 {
 	align_buffer_8(b);
-	char *ptag = b->next;
-	char *plen = ptag + 4;
-	char *pstr = plen + 4;
-	char *pnul = pstr + str.len;
-	b->next = pnul + 1;
+	uint32_t tagoff = b->next;
+	uint32_t lenoff = tagoff + 4;
+	uint32_t stroff = lenoff + 4;
+	uint32_t nuloff = stroff + str.len;
+	b->next = nuloff + 1;
 	if (b->next <= b->end) {
-		write_little_4(ptag, tag);
-		*(uint32_t *)plen = str.len;
-		memcpy(pstr, str.p, str.len);
-		pnul[0] = 0;
+		uint32_t len32 = str.len;
+		write_little_4(b->base + tagoff, tag);
+		memcpy(b->base + lenoff, &len32, 4);
+		memcpy(b->base + stroff, str.p, str.len);
+		b->base[nuloff] = 0;
 	}
 }
 
@@ -402,37 +515,52 @@ static void append_signature_field(struct builder *b, uint32_t tag,
 		b->next = b->end + 1;
 		return;
 	}
-	char *ptag = b->next;
-	char *plen = ptag + 4;
-	char *pstr = plen + 1;
-	b->next = pstr + len + 1;
+	uint32_t tagoff = b->next;
+	uint32_t lenoff = tagoff + 4;
+	uint32_t stroff = lenoff + 1;
+	b->next = stroff + len + 1;
 	if (b->next <= b->end) {
-		write_little_4(ptag, tag);
-		*(uint8_t *)plen = (uint8_t)len;
-		memcpy(pstr, sig, len + 1);
+		write_little_4(b->base + tagoff, tag);
+		*(uint8_t *)(b->base + lenoff) = len;
+		memcpy(b->base + stroff, sig, len + 1);
 	}
 }
 
-static inline void init_builder(struct builder *b, buf_t *buf, const char *sig)
+static inline void init_builder(struct builder *b, char *buf, size_t bufsz,
+				const char *sig)
 {
-	char *p = buf->p + buf->len;
-	int cap = (buf->cap - buf->len) & ~7U;
+	// align the capacity down. This makes alignment calls not fail.
+	size_t cap = bufsz & ~(size_t)7U;
 	if (cap > DBUS_MAX_MSG_SIZE) {
 		cap = DBUS_MAX_MSG_SIZE;
 	}
-	// p must be 8 byte aligned as the builder uses aligned stores
-	assert(!((uintptr_t)p & 7));
 #ifndef NDEBUG
-	memset(p, 0xBD, cap);
+	memset(buf, 0xBD, cap);
 #endif
-	b->next = p;
-	b->end = p + cap;
+	b->base = buf;
 	b->sig = sig;
+	b->next = 0;
+	b->end = (uint32_t)cap;
+
+	// Put in a dummy buffer in an error state if the supplied buffer is
+	// stupid small. This stops array encoding from crashing
+	if (bufsz < 8) {
+		static char dummy[8];
+		b->base = dummy;
+		b->next = b->end + 1;
+	}
 }
 
-static int do_append_header(struct builder *b, const struct message *m)
+void set_serial(char *buf, uint32_t serial)
 {
-	struct raw_header *h = (struct raw_header *)b->next;
+	struct raw_header *h = (struct raw_header *)buf;
+	memcpy(h->serial, &serial, 4);
+}
+
+static int append_header(struct builder *b, const struct message *m,
+			 uint32_t blen)
+{
+	uint32_t start = b->next;
 	b->next += sizeof(struct raw_header);
 	if (b->next > b->end) {
 		return -1;
@@ -470,13 +598,16 @@ static int do_append_header(struct builder *b, const struct message *m)
 		append_string_field(b, FTAG_SENDER, m->sender);
 	}
 
+	struct raw_header *h = (struct raw_header *)(b->base + start);
 	h->endian = native_endian();
 	h->type = m->type;
 	h->flags = m->flags;
 	h->version = DBUS_VERSION;
-	h->body_len = m->body_len;
-	h->serial = m->serial;
-	h->field_len = b->next - (char *)(h + 1);
+	uint32_t serial = m->serial;
+	uint32_t flen = b->next - start - sizeof(*h);
+	memcpy(h->serial, &serial, 4);
+	memcpy(h->body_len, &blen, 4);
+	memcpy(h->field_len, &flen, 4);
 
 	// align the end of the fields
 	align_buffer_8(b);
@@ -484,34 +615,36 @@ static int do_append_header(struct builder *b, const struct message *m)
 	return (b->next > b->end);
 }
 
-int append_header(buf_t *buf, const struct message *msg)
+int write_header(char *buf, size_t bufsz, const struct message *msg,
+		 size_t bodysz)
 {
 	struct builder b;
-	init_builder(&b, buf, NULL);
-	if (do_append_header(&b, msg)) {
+	init_builder(&b, buf, bufsz, NULL);
+	if (append_header(&b, msg, bodysz)) {
 		return -1;
 	}
-	buf->len = b.next - buf->p;
-	return 0;
+	return (int)b.next;
 }
 
-struct builder start_message(buf_t *buf, const struct message *msg)
+struct builder start_message(char *buf, size_t bufsz, const struct message *msg)
 {
 	struct builder b;
-	init_builder(&b, buf, msg->signature);
-	// do_append_header leaves b in an error state if there was an error
-	do_append_header(&b, msg);
+	init_builder(&b, buf, bufsz, msg->signature);
+	// append_header leaves b in an error state if there was an error
+	append_header(&b, msg, 0);
 	return b;
 }
 
-int end_message(buf_t *buf, struct builder b)
+int end_message(struct builder b)
 {
 	if (builder_error(b) || *b.sig) {
 		// error during marshalling or missing arguments
 		return -1;
 	}
-	struct raw_header *h = (struct raw_header *)(buf->p + buf->len);
-	h->body_len = b.next - ALIGN_UINT_UP(h->field_len, 8) - (char *)(h + 1);
-	buf->len = b.next - buf->p;
-	return 0;
+	struct raw_header *h = (struct raw_header *)b.base;
+	uint32_t fsz;
+	memcpy(&fsz, h->field_len, 4);
+	uint32_t bsz = b.next - ALIGN_UINT_UP(fsz, 8) - sizeof(*h);
+	memcpy(h->body_len, &bsz, 4);
+	return (int)b.next;
 }

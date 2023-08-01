@@ -3,8 +3,7 @@
 
 struct match {
 	const char *base;
-	// use offsets to keep size of structure down
-	uint16_t string_len;
+	uint16_t str_len;
 	uint16_t sender_off;
 	uint16_t interface_off;
 	uint16_t member_off;
@@ -23,22 +22,17 @@ void gc_match(void *);
 // standard requires. No backslashes or escaping is allowed. Type must be
 // 'signal'. Destination, args, etc can not be filtered on. Returns non-zero on
 // error, zero on success.
-int decode_match(struct match *m, slice_t str);
+int decode_match(struct match *m, const char *p, size_t sz);
 
-bool path_matches(struct match *m, slice_t path);
-bool member_matches(struct match *m, slice_t member);
+bool path_matches(const struct match *m, slice_t path);
+bool member_matches(const struct match *m, slice_t member);
 
-static inline slice_t match_string(struct match *m)
-{
-	return make_slice(m->base, m->string_len);
-}
-
-static inline slice_t match_sender(struct match *m)
+static inline slice_t match_sender(const struct match *m)
 {
 	return make_slice(m->base + m->sender_off, m->sender_len);
 }
 
-static inline slice_t match_interface(struct match *m)
+static inline slice_t match_interface(const struct match *m)
 {
 	return make_slice(m->base + m->interface_off, m->interface_len);
 }

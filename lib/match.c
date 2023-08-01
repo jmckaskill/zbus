@@ -1,8 +1,8 @@
 #include "match.h"
 #include "decode.h"
+#include <assert.h>
 
-static int add_match_field(struct match *m, const char *base, slice_t key,
-			   slice_t val)
+static int add_match_field(struct match *m, slice_t key, slice_t val)
 {
 	switch (key.len) {
 	case 4:
@@ -15,7 +15,7 @@ static int add_match_field(struct match *m, const char *base, slice_t key,
 			}
 			assert(!check_path(val));
 			m->path_len = (uint8_t)val.len;
-			m->path_off = (uint16_t)(val.p - base);
+			m->path_off = (uint16_t)(val.p - m->base);
 			m->include_children = false;
 			return 0;
 		} else {
@@ -28,7 +28,7 @@ static int add_match_field(struct match *m, const char *base, slice_t key,
 			}
 			assert(!check_address(val));
 			m->sender_len = (uint8_t)val.len;
-			m->sender_off = (uint16_t)(val.p - base);
+			m->sender_off = (uint16_t)(val.p - m->base);
 			return 0;
 		} else if (slice_eq(key, S("member"))) {
 			if (m->member_len) {
@@ -36,7 +36,7 @@ static int add_match_field(struct match *m, const char *base, slice_t key,
 			}
 			assert(!check_member(val));
 			m->member_len = (uint8_t)val.len;
-			m->member_off = (uint16_t)(val.p - base);
+			m->member_off = (uint16_t)(val.p - m->base);
 			return 0;
 		} else {
 			return 0;
@@ -48,7 +48,7 @@ static int add_match_field(struct match *m, const char *base, slice_t key,
 			}
 			assert(!check_interface(val));
 			m->interface_len = (uint8_t)val.len;
-			m->interface_off = (uint16_t)(val.p - base);
+			m->interface_off = (uint16_t)(val.p - m->base);
 			return 0;
 		} else {
 			// eavesdrop through matches is not supported.
@@ -73,7 +73,7 @@ static int add_match_field(struct match *m, const char *base, slice_t key,
 				val.len--;
 			}
 			m->path_len = (uint8_t)val.len;
-			m->path_off = (uint16_t)(val.p - base);
+			m->path_off = (uint16_t)(val.p - m->base);
 			m->include_children = true;
 			return 0;
 		} else {
@@ -84,14 +84,14 @@ static int add_match_field(struct match *m, const char *base, slice_t key,
 	}
 }
 
-int decode_match(struct match *m, slice_t str)
+int decode_match(struct match *m, const char *s, size_t len)
 {
-	if (str.len > UINT16_MAX) {
+	if (len > UINT16_MAX) {
 		return -1;
 	}
 
-	const char *s = str.p;
-	const char *end = str.p + str.len;
+	m->base = s;
+	const char *end = s + len;
 	while (s < end) {
 		// check for a range that does not include backslashes or
 		// spaces, terminating at an equals sign
@@ -130,7 +130,7 @@ int decode_match(struct match *m, slice_t str)
 			return -1;
 		}
 
-		if (add_match_field(m, str.p, key, val)) {
+		if (add_match_field(m, key, val)) {
 			return -1;
 		}
 
@@ -143,24 +143,10 @@ int decode_match(struct match *m, slice_t str)
 		s++;
 	}
 
-	// allowed signal matches are:
-	// 1. any signals from a given interface - optional path & member
-	// 2. a signal from a given interface and sender - optional path &
-	// member
-	// This allows us to use interface and sender as the primary keys for
-	// match lookups.
-
-	// must specify an interface
-	if (!m->interface_len) {
-		return -1;
-	}
-
-	m->base = str.p;
-	m->string_len = (uint16_t)str.len;
 	return 0;
 }
 
-bool path_matches(struct match *m, slice_t path)
+bool path_matches(const struct match *m, slice_t path)
 {
 	if (m->include_children ? (path.len < m->path_len) :
 				  (path.len != m->path_len)) {
@@ -173,7 +159,7 @@ bool path_matches(struct match *m, slice_t path)
 	       (m->include_children && path.p[m->path_len] == '/');
 }
 
-bool member_matches(struct match *m, slice_t member)
+bool member_matches(const struct match *m, slice_t member)
 {
 	return !m->member_len ||
 	       (m->member_len == member.len &&

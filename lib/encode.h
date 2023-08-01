@@ -4,12 +4,6 @@
 #include <assert.h>
 #include <stdarg.h>
 
-struct builder {
-	char *next;
-	char *end;
-	const char *sig;
-};
-
 /////////////////////////////
 // raw encoded data handling
 
@@ -28,27 +22,35 @@ static void append_uint64(struct builder *b, uint64_t v);
 static void append_int64(struct builder *b, int64_t v);
 static void append_double(struct builder *b, double v);
 static void append_string(struct builder *b, slice_t v);
-extern void append_format(struct builder *b, const char *fmt, ...);
-extern void append_vformat(struct builder *b, const char *fmt, va_list ap);
 static void append_path(struct builder *b, slice_t v);
 static void append_signature(struct builder *b, const char *sig);
+extern void append_multiv(struct builder *b, const char *sig, va_list ap);
+extern void append_multi(struct builder *b, const char *sig, ...);
+
+// Create a string directly in the message buffer.
+// Returned buffer can be written to up to *psz bytes. Nul terminator does not
+// (and generally should not) be written. Then call finish_string to complete
+// the string with the actual number of bytes written.
+extern char *start_string(struct builder *b, size_t *psz);
+extern void finish_string(struct builder *b, size_t size);
 
 extern struct variant_data start_variant(struct builder *b, const char *sig);
 extern void end_variant(struct builder *b, struct variant_data);
-extern void append_variant(struct builder *b, const char *sig, const void *raw,
-			   size_t len);
+extern void append_variant(struct builder *b, const struct variant *v);
+extern void append_raw_variant(struct builder *b, const char *sig,
+			       const void *raw, size_t len);
 
 extern void start_struct(struct builder *b);
 extern void end_struct(struct builder *b);
 
 extern struct array_data start_array(struct builder *b);
-extern void end_array(struct builder *b, struct array_data data);
+extern void end_array(struct builder *b, struct array_data a);
 // should be called before adding each array element
-extern void start_array_entry(struct builder *b, struct array_data *pdata);
+extern void start_array_entry(struct builder *b, struct array_data a);
 
 extern struct dict_data start_dict(struct builder *b);
-extern void end_dict(struct builder *b, struct dict_data a);
-static void start_dict_entry(struct builder *b, struct dict_data *a);
+extern void end_dict(struct builder *b, struct dict_data d);
+static void start_dict_entry(struct builder *b, struct dict_data d);
 
 extern void align_buffer_8(struct builder *b);
 
@@ -57,14 +59,20 @@ extern void align_buffer_8(struct builder *b);
 
 void init_message(struct message *m, enum msg_type type, uint32_t serial);
 
-// Appends a message header to the supplied buffer.
-// returns non-zero on error
-int append_header(buf_t *buf, const struct message *m);
+// Writes a message header to the supplied buffer.
+// Supplied buffer must be 8 byte aligned
+// returns -ve on error
+// returns number of bytes consumed on success
+int write_header(char *buf, size_t bufsz, const struct message *m,
+		 size_t bodysz);
 
-// appends a message to the supplied buffer. The same buffer must be provided to
-// both calls. Returns non-zero on error
-struct builder start_message(buf_t *buf, const struct message *m);
-int end_message(buf_t *buf, struct builder b);
+// appends a message to the supplied buffer. Returns -ve on error
+// Returns number of bytes consumed on success
+struct builder start_message(char *buf, size_t bufsz, const struct message *m);
+int end_message(struct builder b);
+
+// These functions let you modify a written header buffer in place
+void set_serial(char *buf, uint32_t serial);
 
 ///////////////////////////////////////////////////////
 // Inline implementationns
@@ -165,7 +173,7 @@ static inline void append_signature(struct builder *b, const char *sig)
 	_append_signature(b, sig, TYPE_SIGNATURE);
 }
 
-static inline void start_dict_entry(struct builder *b, struct dict_data *d)
+static inline void start_dict_entry(struct builder *b, struct dict_data d)
 {
-	start_array_entry(b, &d->a);
+	start_array_entry(b, d.a);
 }

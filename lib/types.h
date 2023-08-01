@@ -1,6 +1,6 @@
 #pragma once
 #define _GNU_SOURCE
-#include "str.h"
+#include "slice.h"
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -47,6 +47,7 @@ struct dict_data;
 #define TYPE_DICT_BEGIN '{'
 #define TYPE_DICT_END '}'
 
+#define DBUS_MIN_MSG_SIZE 16
 #define DBUS_MAX_MSG_SIZE 0x8000000U
 #define DBUS_MAX_VALUE_SIZE 0x4000000U
 #define MAX_UNIX_FDS 16
@@ -83,7 +84,6 @@ struct dict_data;
 #define FLAG_ALLOW_INTERACTIVE_AUTHORIZATION 4
 
 enum msg_type {
-	MSG_INVALID = 0,
 	MSG_METHOD = 1,
 	MSG_REPLY = 2,
 	MSG_ERROR = 3,
@@ -101,10 +101,8 @@ struct message {
 	uint32_t fdnum;
 	uint32_t serial;
 	uint32_t reply_serial;
-	enum msg_type type;
+	uint8_t type;
 	uint8_t flags;
-	int header_len;
-	int body_len;
 };
 
 struct raw_header {
@@ -112,14 +110,49 @@ struct raw_header {
 	uint8_t type;
 	uint8_t flags;
 	uint8_t version;
-	uint32_t body_len;
-	uint32_t serial;
-	uint32_t field_len;
+	uint8_t body_len[4];
+	uint8_t serial[4];
+	uint8_t field_len[4];
 };
 
 struct array_data {
 	const char *sig;
-	const char *data;
+	uint32_t off;
 	uint8_t siglen;
-	uint8_t datalen;
+	uint8_t hdr;
+};
+
+struct iterator {
+	const char *base;
+	const char *sig;
+	uint32_t next;
+	uint32_t end;
+};
+
+struct builder {
+	char *base;
+	const char *sig;
+	uint32_t next;
+	uint32_t end;
+};
+
+struct variant {
+	const char *sig;
+	union {
+		bool b;
+		uint8_t u8;
+		int16_t i16;
+		uint16_t u16;
+		int32_t i32;
+		uint32_t u32;
+		int64_t i64;
+		uint64_t u64;
+		double d;
+		slice_t str;
+		slice_t path;
+		const char *sig;
+		struct iterator record;
+		struct iterator array;
+		struct iterator variant;
+	} u;
 };

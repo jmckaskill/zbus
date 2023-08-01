@@ -9,7 +9,7 @@
 ////////////////////////////
 // Functions to send out the socket
 
-static int send_file(struct remote *r, struct msgq_entry *e)
+static int send_file(struct remote *r, struct msg_header *e)
 {
 	if (r->send_oob.fdn == MAX_UNIX_FDS) {
 		return -1;
@@ -69,8 +69,8 @@ try_again:
 
 int process_dataq(struct remote *r)
 {
-	struct msgq_entry *e;
-	while ((e = msgq_acquire(r->qdata)) != NULL) {
+	struct msg_header *e;
+	while ((e = msg_acquire(r->qdata)) != NULL) {
 		switch (e->cmd) {
 		case MSG_DATA: {
 			struct msg_data *m = (void *)e->data;
@@ -89,7 +89,7 @@ int process_dataq(struct remote *r)
 			}
 			break;
 		}
-		msgq_pop(r->qdata, e);
+		msg_pop(r->qdata, e);
 	}
 	return 0;
 }
@@ -99,12 +99,12 @@ int process_dataq(struct remote *r)
 
 int send_loopback(struct remote *r, slice_t data)
 {
-	struct msg_data m;
-	m.data = data;
-	if (msgq_send(r->qdata, MSG_DATA, &m, sizeof(m), &gc_msg_data)) {
+	struct msg_header *e = msg_allocate(r->qdata);
+	if (!e) {
 		return STS_SEND_FAILED;
 	}
-	ref_paged_data(data.p);
+	e->data = data;
+	msg_release(r->qdata, MSG_DATA, e);
 	return STS_OK;
 }
 
@@ -131,12 +131,12 @@ int send_to(struct remote *r, struct remote *to, struct message *m,
 	}
 
 	unsigned msgidx;
-	if (msgq_allocate(to->qdata, msgs, &msgidx)) {
+	if (msg_allocate(to->qdata, msgs, &msgidx)) {
 		goto unlock;
 	}
 
 	// setup the header
-	struct msgq_entry *e = msgq_get(to->qdata, msgidx);
+	struct msg_header *e = msg_get(to->qdata, msgidx);
 	e->cmd = MSG_DATA;
 	e->cleanup = &gc_msg_data;
 
@@ -146,7 +146,7 @@ int send_to(struct remote *r, struct remote *to, struct message *m,
 
 	// setup the body
 	for (int i = 1; i < msgs; i++) {
-		e = msgq_get(to->qdata, msgidx + i);
+		e = msg_get(to->qdata, msgidx + i);
 		e->cmd = MSG_DATA;
 		e->cleanup = &gc_msg_data;
 
@@ -156,7 +156,7 @@ int send_to(struct remote *r, struct remote *to, struct message *m,
 	}
 
 	// and send it off
-	msgq_release(to->qdata, msgidx, msgs);
+	msg_release(to->qdata, msgidx, msgs);
 	unlock_buffer(&r->out, hdr.len);
 	return 0;
 unlock:
@@ -186,7 +186,7 @@ int loopback_error(struct remote *r, uint32_t serial, int errcode)
 	slice_t error_name = error_names[-(errcode + 1)];
 
 	struct message rep;
-	init_message(&rep, MSG_ERROR, r->next_serial++);
+	init_message(&rep, MSG_ERROR, next_serial());
 	rep.reply_serial = serial;
 	rep.sender = BUS_DESTINATION;
 	rep.error = error_name;
@@ -204,7 +204,7 @@ static int _loopback_uint32(struct remote *r, uint32_t serial, const char *sig,
 			    uint32_t value)
 {
 	struct message m;
-	init_message(&m, MSG_REPLY, r->next_serial++);
+	init_message(&m, MSG_REPLY, next_serial());
 	m.reply_serial = serial;
 	m.sender = BUS_DESTINATION;
 	m.signature = sig;
@@ -233,7 +233,7 @@ int loopback_bool(struct remote *r, uint32_t serial, bool value)
 int loopback_string(struct remote *r, uint32_t serial, slice_t str)
 {
 	struct message rep;
-	init_message(&rep, MSG_REPLY, r->next_serial++);
+	init_message(&rep, MSG_REPLY, next_serial());
 	rep.reply_serial = serial;
 	rep.sender = BUS_DESTINATION;
 	rep.signature = "s";
@@ -250,7 +250,7 @@ int loopback_string(struct remote *r, uint32_t serial, slice_t str)
 int loopback_empty(struct remote *r, uint32_t serial)
 {
 	struct message rep;
-	init_message(&rep, MSG_REPLY, r->next_serial++);
+	init_message(&rep, MSG_REPLY, next_serial());
 	rep.reply_serial = serial;
 	rep.sender = BUS_DESTINATION;
 

@@ -5,51 +5,101 @@
 struct remote;
 struct bus;
 
-enum msgq_type {
-	MSG_DATA, // remote to remote data, struct msg_data
-	MSG_FILE, // remote to remote data, struct msg_file
-	MSG_SHUTDOWN, // bus to remote control, no data
-	MSG_DISCONNECTED, // remote to bus, struct cmd_remote
-	CMD_REGISTER, // remote to bus, struct cmd_remote
-	REP_REGISTER, // bus to remote control, no data
-	CMD_UPDATE_NAME, // remote to bus, struct cmd_name
-	REP_UPDATE_NAME, // bus to remote control, struct rep_errcode
-	CMD_UPDATE_NAME_SUB, // remote to bus, struct cmd_name_sub
-	REP_UPDATE_NAME_SUB, // bus to remote control/data, struct rep_errcode
-	MSG_NAME, // bus to remote(s) control/data, struct msg_name
-	CMD_UPDATE_SUB, // remote to bus/remote control, struct cmd_update_sub
-	REP_UPDATE_SUB, // bus/remote to remote control, struct rep_errcode
+enum {
+	MSG_INVALID = 0,
+	MSG_DATA,
+	MSG_FILE,
+	MSG_DISCONNECTED,
+	CMD_REGISTER,
+	REP_REGISTER,
+	CMD_UPDATE_NAME,
+	REP_UPDATE_NAME,
+	MSG_NAME,
+	CMD_UPDATE_NAME_SUB,
+	REP_UPDATE_NAME_SUB,
+	CMD_UPDATE_UCAST_SUB,
+	REP_UPDATE_UCAST_SUB,
+	CMD_UPDATE_BCAST_SUB,
+	REP_UPDATE_BCAST_SUB,
 };
 
+extern msg_type_t msg_data_vt;
 struct msg_data {
+	struct msg_header hdr;
 	slice_t data;
 };
 
-void gc_msg_data(void *);
-static_assert(sizeof(struct msg_data) <= MSGQ_DATA_SIZE, "");
-
+extern msg_type_t msg_file_vt;
 struct msg_file {
-	intptr_t file;
+	struct msg_header hdr;
+	intptr_t fd;
 };
 
-void gc_msg_file(void *);
-static_assert(sizeof(struct msg_file) <= MSGQ_DATA_SIZE, "");
-
-struct cmd_remote {
+extern msg_type_t msg_disconnected_vt;
+struct msg_disconnected {
+	struct msg_header hdr;
 	struct remote *remote;
 };
 
-static_assert(sizeof(struct cmd_remote) <= MSGQ_DATA_SIZE, "");
-
-struct cmd_name {
+extern msg_type_t cmd_register_vt;
+struct cmd_register {
+	struct msg_header hdr;
 	struct remote *remote;
+};
+
+extern msg_type_t rep_register_vt;
+// no data
+
+extern msg_type_t cmd_update_name_vt;
+struct cmd_update_name {
+	struct msg_header hdr;
 	slice_t name;
+	struct remote *remote;
 	uint32_t serial;
 	bool add;
 };
 
-void gc_cmd_name(void *);
-static_assert(sizeof(struct cmd_name) <= MSGQ_DATA_SIZE, "");
+extern msg_type_t cmd_update_name_sub_vt;
+struct cmd_update_name_sub {
+	struct msg_header hdr;
+	struct remote *remote;
+	uint32_t serial;
+	bool add;
+};
+
+extern msg_type_t cmd_update_ucast_sub_vt;
+struct cmd_update_ucast_sub {
+	struct msg_header hdr;
+	struct ucast_sub sub;
+	uint32_t serial;
+	bool add;
+};
+
+extern msg_type_t cmd_update_bcast_sub_vt;
+struct cmd_update_bcast_sub {
+	struct msg_header hdr;
+	struct bcast_sub sub;
+	uint32_t serial;
+	bool add;
+};
+
+extern msg_type_t msg_name_vt;
+struct msg_name {
+	struct msg_header hdr;
+	slice_t name;
+	int old_owner;
+	int new_owner;
+};
+
+extern msg_type_t rep_update_name_vt;
+extern msg_type_t rep_update_name_sub_vt;
+extern msg_type_t rep_update_ucast_sub_vt;
+extern msg_type_t rep_update_bcast_sub_vt;
+struct rep_errcode {
+	struct msg_header hdr;
+	uint32_t serial;
+	int errcode;
+};
 
 #define DBUS_REQUEST_NAME_NOT_ALLOWED -1
 #define DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER 1
@@ -59,41 +109,3 @@ static_assert(sizeof(struct cmd_name) <= MSGQ_DATA_SIZE, "");
 #define DBUS_RELEASE_NAME_REPLY_RELEASED 1
 #define DBUS_RELEASE_NAME_REPLY_NON_EXISTENT 2
 #define DBUS_RELEASE_NAME_REPLY_NOT_OWNER 3
-
-struct rep_errcode {
-	uint32_t serial;
-	int errcode;
-};
-
-static_assert(sizeof(struct rep_errcode) <= MSGQ_DATA_SIZE, "");
-
-struct cmd_update_sub {
-	struct subscription s;
-	uint32_t serial;
-	bool add;
-
-	// Only for use by the bus thread. Other remotes should lookup the
-	// remote using the remote_id as the remote may have disconnected in the
-	// interim.
-	struct remote *remote;
-};
-
-static_assert(sizeof(struct cmd_update_sub) <= MSGQ_DATA_SIZE, "");
-void gc_update_sub(void *);
-
-struct cmd_name_sub {
-	struct msgq *q;
-	uint32_t serial;
-	bool add;
-};
-
-static_assert(sizeof(struct cmd_name_sub) <= MSGQ_DATA_SIZE, "");
-
-struct msg_name {
-	slice_t name;
-	int old_owner;
-	int new_owner;
-};
-
-void gc_name(void *);
-static_assert(sizeof(struct msg_name) <= MSGQ_DATA_SIZE, "");

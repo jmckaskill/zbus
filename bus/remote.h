@@ -11,14 +11,14 @@ struct bus;
 
 struct remote {
 	// const data used by any thread
-	struct msgq *qcontrol;
-	struct msgq *qdata;
+	struct msg_queue *qcontrol;
+	struct msg_queue *qdata;
 	slice_t addr;
 	int id;
 	char addr_buf[16];
 
 	// const data setup by the bus thread and used by this thread
-	struct msgq *busq;
+	struct msg_queue *busq;
 	struct gc_handle *handle;
 	thrd_t thread;
 	slice_t busid;
@@ -32,6 +32,11 @@ struct remote {
 	struct unix_oob recv_oob;
 	struct page *in;
 
+	// queue data
+	struct msg_waiter waiter;
+	int icontrol;
+	int idata;
+
 	// send data
 	bool can_write;
 	struct unix_oob send_oob;
@@ -40,12 +45,12 @@ struct remote {
 
 	// Matches are those that our client has asked for
 	struct match matches[MAX_MATCH_NUM];
-	int bus_name_match_num;
+	int name_sub_num;
 	int match_num;
 
 	// Subscriptions are those that other clients asked for that we publish
 	// against
-	struct subscription subs[MAX_MATCH_NUM];
+	struct ucast_sub subs[MAX_MATCH_NUM];
 	int sub_num;
 };
 
@@ -116,5 +121,5 @@ void remove_all_matches(struct remote *r);
 void update_bus_matches(struct remote *r, slice_t sender);
 int add_match(struct remote *r, struct message *m, struct body b);
 int rm_match(struct remote *r, struct message *m, struct body b);
-int add_subscription(struct remote *r, struct subscription *s);
-int rm_subscription(struct remote *r, struct subscription *s);
+int add_subscription(struct remote *r, struct ucast_sub *s);
+int rm_subscription(struct remote *r, struct ucast_sub *s);

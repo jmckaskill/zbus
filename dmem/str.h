@@ -11,12 +11,6 @@ struct buf {
 };
 typedef struct buf buf_t;
 
-struct slice {
-	const char *p;
-	int len;
-};
-typedef struct slice slice_t;
-
 static buf_t make_buf(char *buf, int bufsz);
 #define MAKE_BUF(BUF) make_buf((BUF), sizeof(BUF))
 
@@ -33,8 +27,6 @@ static char *buf_next(buf_t *s);
 static slice_t to_slice(buf_t s);
 static slice_t to_right_slice(buf_t s, int len);
 static slice_t right_slice(slice_t s, int len);
-static slice_t cstr_slice(const char *str);
-static slice_t make_slice(const char *str, int len);
 
 #define TO_SLICE(B) make_slice((B).p, (B).len)
 #define STRLEN(x) (sizeof(x) - 1)
@@ -44,7 +36,6 @@ static slice_t make_slice(const char *str, int len);
 		STR, STRLEN(STR) \
 	}
 
-static bool slice_eq(slice_t a, slice_t b);
 static bool has_prefix(slice_t s, slice_t pfx);
 
 /////////////////////////////
@@ -127,12 +118,13 @@ static inline slice_t make_slice(const char *str, int sz)
 	return ret;
 }
 
-static inline bool slice_eq(slice_t a, slice_t b)
-{
-	return a.len == b.len && !memcmp(a.p, b.p, a.len);
-}
-
 static inline bool has_prefix(slice_t s, slice_t pfx)
 {
 	return s.len >= pfx.len && !memcmp(s.p, pfx.p, pfx.len);
+}
+
+static inline int cmp_slice(slice_t a, slice_t b)
+{
+	int dsz = a.len - b.len;
+	return dsz ? dsz : memcmp(a.p, b.p, a.len);
 }

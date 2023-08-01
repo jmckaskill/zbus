@@ -13,6 +13,11 @@ struct unique_name {
 	struct remote *owner;
 };
 
+struct bcast_sub {
+	struct match match;
+	struct remote *target;
+};
+
 struct rcu {
 	uintptr_t version;
 
@@ -24,8 +29,8 @@ struct rcu {
 	struct bus_name *names_v;
 	int names_n;
 
-	// broadcast sorted by interface, use functions in subs.h
-	struct subscription *bcast_v;
+	// broadcast sorted by interface
+	struct bcast_sub *bcast_v;
 	int bcast_n;
 };
 

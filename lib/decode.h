@@ -3,38 +3,11 @@
 #include "types.h"
 #include <stdlib.h>
 
-struct iterator {
-	const char *base;
-	const char *sig;
-	uint32_t next;
-	uint32_t end;
-};
-
-struct variant {
-	const char *sig;
-	union {
-		bool b;
-		uint8_t u8;
-		int16_t i16;
-		uint16_t u16;
-		int32_t i32;
-		uint32_t u32;
-		int64_t i64;
-		uint64_t u64;
-		double d;
-		slice_t str;
-		slice_t path;
-		const char *sig;
-		struct iterator record;
-		struct iterator array;
-		struct iterator variant;
-	} u;
-};
-
 /////////////////////
 // raw data decoding
 
-static void init_iterator(struct iterator *ii, const char *sig, slice_t data);
+static void init_iterator(struct iterator *ii, const char *sig,
+			  const char *data, size_t sz);
 
 static int iter_error(struct iterator *p);
 
@@ -66,41 +39,42 @@ static int check_error_name(slice_t s);
 static int check_known_address(slice_t s);
 
 extern struct array_data parse_array(struct iterator *p);
-extern bool array_has_more(struct iterator *p, struct array_data *pd);
+extern bool array_has_more(struct iterator *p, struct array_data *a);
 
 // skip functions skip over data possibly returning an iterator to the data.
 // They do not fully validate the information.
 extern struct iterator skip_array(struct iterator *p);
 extern struct iterator skip_value(struct iterator *p);
-extern int skip_signature(const char **psig, bool in_array);
+extern int skip_signature(const char **psig);
 static bool is_signature(const char *sig, const char *test);
 
 extern void align_iterator_8(struct iterator *p);
 
-extern void TEST_parse();
+extern void TEST_parse(void);
 
 //////////////////////////////////////
 // message decoding
 
-// returns -ve on invalid message header
-// returns 0 on insufficient data to determine size
+// buffer must be at least DBUS_MIN_MSG_SIZE long
+// returns non-zero on invalid message header
+// returns zero on success and sets phdr and pbody to the header and body sizes
 // returns number of bytes in header or message
-int parse_header_size(slice_t data);
-int parse_message_size(slice_t data);
+int parse_message_size(const char *p, size_t *phdr, size_t *pbody);
 
-// buffer needs to include all the message fields data
+// buffer needs to be at least as long as the hdr size returned
+// by parse_message_size
 // returns non-zero on error
-int parse_header(struct message *msg, slice_t data);
+int parse_header(struct message *msg, const char *p);
 
 ////////////////////////////////////////
 // inline implementations
 
 static inline void init_iterator(struct iterator *ii, const char *sig,
-				 slice_t s)
+				 const char *p, size_t sz)
 {
-	ii->base = s.p;
+	ii->base = p;
 	ii->next = 0;
-	ii->end = s.len;
+	ii->end = sz;
 	ii->sig = sig;
 }
 
@@ -128,7 +102,7 @@ static inline bool is_signature(const char *sig, const char *test)
 	return !strncmp(sig, test, strlen(test));
 }
 
-static inline uint8_t native_endian()
+static inline uint8_t native_endian(void)
 {
 	union test {
 		uint16_t u;

@@ -7,145 +7,249 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <pthread.h>
 #include <signal.h>
 #include <unistd.h>
 #endif
 
-struct msgq *msgq_new()
+#ifdef _WIN32
+static_assert(sizeof(HANDLE) == sizeof(uintptr_t), "");
+#else
+static_assert(sizeof(pthread_t) == sizeof(uintptr_t), "");
+#endif
+
+static_assert(alignof(struct msg_queue) == CACHE_LINE_SIZE, "");
+static_assert(sizeof(struct msg_queue) == (3 + MSGQ_SIZE) * CACHE_LINE_SIZE,
+	      "");
+
+///////////////////////////
+// General structure setup
+
+struct msg_queue *msg_new_queue()
 {
-	struct msgq *q = aligned_alloc(CACHE_LINE_SIZE, sizeof(*q));
+	struct msg_queue *q = aligned_alloc(CACHE_LINE_SIZE, sizeof(*q));
 
-	// consumer thread should start by processing events (ie it's awake) and
-	// only after failing to acquire will it go to sleep
-	atomic_flag_test_and_set_explicit(&q->awake, memory_order_relaxed);
-	q->producer_next = 0;
-	q->consumer_next = 0;
-
-	for (int i = 0; i < MSGQ_SIZE; i++) {
-		q->entries[i].valid = 0;
-	}
+	atomic_store_explicit(&q->shutdown, false, memory_order_relaxed);
+	atomic_store_explicit(&q->waitlist, NULL, memory_order_relaxed);
+	atomic_store_explicit(&q->allocated, 0, memory_order_relaxed);
+	atomic_store_explicit(&q->consumed, 0, memory_order_relaxed);
 
 #ifdef _WIN32
-	q->wakeup.event = CreateEvent();
+	atomic_store_explicit(&q->wakeup, CreateEvent(), memory_order_relaxed);
+#else
+	atomic_store_explicit(&q->wakeup, pthread_self(), memory_order_relaxed);
 #endif
+
+	for (int i = 0; i < MSGQ_SIZE; i++) {
+		struct msg_header *e = msg_get(q, i);
+		atomic_store_explicit(&e->vt, NULL, memory_order_relaxed);
+	}
 
 	return q;
 }
 
-#ifdef _WIN32
-uintptr_t msgq_event(struct msgq *q)
+static void free_entry_data(struct msg_header *e)
 {
-	return q->wakeup.event;
+	struct msg_type *vt =
+		atomic_load_explicit(&e->vt, memory_order_relaxed);
+	if (vt->destroy) {
+		vt->destroy(e);
+	}
 }
-#endif
 
-void msgq_free(struct msgq *q)
+void msg_free_queue(struct msg_queue *q)
 {
 	if (q) {
 		for (int i = 0; i < MSGQ_SIZE; i++) {
-			struct msgq_entry *e = &q->entries[i];
-			if (e->valid && e->cleanup) {
-				e->cleanup(e->data);
-			}
+			free_entry_data(&q->entries[i]);
 		}
 #ifdef _WIN32
-		CloseHandle(q->wakeup.event);
+		CloseHandle((HANDLE)q->wakeup.event);
 #endif
 		free(q);
 	}
 }
 
-int msgq_allocate(struct msgq *q, int num, unsigned *pidx)
+void msg_start_producer(struct msg_waiter *w)
 {
-	assert(num > 0);
-
-	// we can use relaxed because we have no ordering requirements with
-	// other producers
-	unsigned idx = atomic_fetch_add_explicit(&q->producer_next, num,
-						 memory_order_relaxed);
-	// check if we have overrun the queue
-	// by seeing if the last item we allocated is still valid
-	struct msgq_entry *e = msgq_get(q, idx + num - 1);
-	if (atomic_load_explicit(&e->valid, memory_order_acquire) == true) {
-		// We've overrun the queue. Another thread may have tried to
-		// allocate some more so we can't return them without having
-		// fragmentation. We can't just use some of them as we'll end up
-		// with an unused hole that will stall the consumer. We don't
-		// want to block wait for the consumer as that would require
-		// spin waiting. Realistically we want to kick the client as
-		// it's not servicing messages quick enough. If it's still alive
-		// it will reconnect.
-		return 1;
-	}
-
-	// we have [idx,idx+end) available for the produce to fill out
-	*pidx = idx;
-	return 0;
-}
-
-void msgq_release(struct msgq *q, unsigned idx, int num)
-{
-	assert(num > 0);
-
-	// set the valid flag for all but the first using relaxed
-	for (int i = idx + num - 1; i > idx; i--) {
-		struct msgq_entry *e = msgq_get(q, i);
-		atomic_store_explicit(&e->valid, 1, memory_order_relaxed);
-	}
-
-	// and then finally use release ordering for the first item which
-	// gives us a single write barrier for the whole lot
-	struct msgq_entry *e = msgq_get(q, idx);
-	atomic_store_explicit(&e->valid, 1, memory_order_release);
-
-	if (atomic_flag_test_and_set_explicit(&q->awake,
-					      memory_order_acq_rel) == false) {
+	w->next = NULL;
+	w->need = 0;
 #ifdef _WIN32
-		SetEvent(q->wakeup.handle);
+	w->wakeup = INVALID_HANDLE_VALUE;
 #else
-		pthread_kill(q->wakeup.thread, SIGMSGQ);
+	w->wakeup = pthread_self();
 #endif
-	}
 }
 
-struct msgq_entry *msgq_acquire(struct msgq *q)
+void msg_stop_producer(struct msg_waiter *w)
 {
-	struct msgq_entry *e = msgq_get(q, q->consumer_next);
-	if (atomic_load_explicit(&e->valid, memory_order_acquire)) {
-		// this one is available
-		return e;
-	} else {
-		// time to go to sleep
-#ifndef _WIN32
-		q->wakeup.thread = pthread_self();
+#ifdef _WIN32
+	CloseHandle(w->wakeup);
 #endif
-		atomic_flag_clear_explicit(&q->awake, memory_order_release);
-		return NULL;
+}
+
+////////////////////////////
+// wakeup
+
+static inline void wakeup_consumer(struct msg_queue *q)
+{
+#ifdef _WIN32
+	SetEvent((HANDLE)q->wakeup);
+#else
+	pthread_kill((pthread_t)q->wakeup, MSGQ_SIG_CONSUMER);
+#endif
+}
+
+static inline void wakeup_producer(struct msg_waiter *b)
+{
+#ifdef _WIN32
+	SetEvent((HANDLE)b->wakeup);
+#else
+	pthread_kill((pthread_t)b->wakeup, MSGQ_SIG_PRODUCER);
+#endif
+}
+
+//////////////////////////////////////
+// overrun management
+
+static void update_waitlist(struct msg_queue *q, struct msg_waiter *head,
+			    struct msg_waiter *tail)
+{
+	tail->next = atomic_load(&q->waitlist);
+	while (!atomic_compare_exchange_weak(&q->waitlist, &tail->next, head)) {
 	}
 }
 
-void msgq_pop(struct msgq *q, struct msgq_entry *e)
+static void wait_on_consumer(struct msg_queue *q, struct msg_waiter *w,
+			     unsigned need)
 {
-	if (e->cleanup) {
-		e->cleanup(e->data);
+#ifdef _WIN32
+	if (w->wakeup == INVALID_HANDLE_VALUE) {
+		w->wakeup = CreateEvent(NULL, FALSE, FALSE, NULL);
 	}
-	q->consumer_next++;
+#endif
+
+	w->need = need;
+
+	// add ourselves to the waitlist
+	update_waitlist(q, w, w);
+
+	// check to see if the consumer has consumed enough in the interim and
+	// gone to sleep. If it has, we have to wake it up. We can't touch the
+	// waitlist after we've added ourselves to it without screwing it up.
+	if (atomic_load(&q->consumed) >= need) {
+		wakeup_consumer(q);
+	}
+
+	int sig;
+	sigset_t set;
+	sigemptyset(&set);
+	sigaddset(&set, MSGQ_SIG_PRODUCER);
+	sigwait(&set, &sig);
 }
 
-int msgq_send(struct msgq *q, uint16_t cmd, const void *p, size_t sz,
-	      destructor_fn cleanup)
+static void signal_waiters(struct msg_queue *q, unsigned consumed)
 {
-	struct msgq_entry *e;
-	unsigned idx;
-	assert(sz <= MSGQ_DATA_SIZE);
-	if (msgq_allocate(q, 1, &idx)) {
-		return -1;
+	// work through the waitlist, waking any that can now proceed, and put
+	// any that can't proceed back on the waitlist
+
+	struct msg_waiter *w = atomic_exchange_explicit(&q->waitlist, NULL,
+							memory_order_acquire);
+
+	struct msg_waiter *head = NULL;
+	struct msg_waiter *tail = NULL;
+
+	while (w) {
+		struct msg_waiter *next = w->next;
+		if (consumed >= w->need) {
+			w->next = NULL;
+			wakeup_producer(w);
+		} else if (!head) {
+			w->next = NULL;
+			head = w;
+			tail = w;
+		} else {
+			w->next = head;
+			head = w;
+		}
+		w = next;
 	}
-	e = msgq_get(q, idx);
-	e->cmd = cmd;
-	e->time_ms = 0;
-	e->cleanup = cleanup;
-	memcpy(e->data, p, sz);
-	msgq_release(q, idx, 1);
-	return 0;
+
+	// add waiters we can't wake yet back on the waitlist for next time
+	if (head != NULL) {
+		update_waitlist(q, head, tail);
+	}
+}
+
+///////////////////////////
+// Producer functions
+
+int msg_allocate(struct msg_queue *q, struct msg_waiter *wait, int num)
+{
+	assert(num > 0);
+
+	// use relaxed as we aren't synchronizing other data with other
+	// producers
+	uint16_t first = atomic_fetch_add_explicit(&q->allocated, num,
+						   memory_order_relaxed);
+	uint16_t last = first + (uint16_t)(num - 1);
+	uint16_t need = last - (uint16_t)MSGQ_SIZE;
+
+	// use acquire so that the the previous use of the entry is sent through
+	uint16_t consumed =
+		atomic_load_explicit(&q->consumed, memory_order_acquire);
+
+	if (consumed < need) {
+		if (wait) {
+			wait_on_consumer(q, wait, need);
+		} else {
+			// user doesn't want to block, the queue will stall out
+			// as we've already allocated queue entries. We can't
+			// return allocated entries as another thread may have
+			// allocated in the interim. Only option is to kill the
+			// consumer.
+			msg_send_shutdown(q);
+			return -1;
+		}
+	}
+	return first;
+}
+
+void msg_release(struct msg_queue *q, int idx, struct msg_type *type)
+{
+	struct msg_header *e = msg_get(q, idx);
+	if (type->send) {
+		type->send(e);
+	}
+
+	// release this entry to the consumer
+	atomic_store_explicit(&e->vt, type, memory_order_release);
+
+	// use relaxed as we don't really care about any dependent data for
+	// other entries. Just need to see if the consumer has only reached the
+	// entry before ours and thus possibly gone to sleep.
+	uint16_t consumed =
+		atomic_load_explicit(&q->consumed, memory_order_relaxed);
+
+	if (consumed == idx - 1) {
+		wakeup_consumer(q);
+	}
+}
+
+///////////////////////
+// Consumer functions
+
+int msg_pop(struct msg_queue *q, int idx)
+{
+	struct msg_header *e = msg_get(q, idx);
+	free_entry_data(e);
+
+	// Reset the flag so the consumer doesn't try and read it again.
+	// Producers set this when the message is ready, but don't otherwise use
+	// it.
+	atomic_store_explicit(&e->vt, NULL, memory_order_relaxed);
+
+	// release the entry back to the producers
+	atomic_store_explicit(&q->consumed, idx, memory_order_release);
+	return (uint16_t)(idx + 1);
 }

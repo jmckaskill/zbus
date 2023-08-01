@@ -1,6 +1,11 @@
 #pragma once
 
+#ifndef _WIN32
 #define _GNU_SOURCE
+#include <signal.h>
+#define MSGQ_SIG_CONSUMER (SIGRTMIN)
+#define MSGQ_SIG_PRODUCER (SIGRTMIN + 1)
+#endif
 
 #define MAX_NAME_NUM 4
 #define MAX_MATCH_NUM 16

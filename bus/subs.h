@@ -2,13 +2,13 @@
 #include "config.h"
 #include "lib/match.h"
 
-struct subscription {
+struct ucast_sub {
 	struct match m;
 	int remote_id;
 };
 
 struct subset {
-	struct subscription subs[MAX_MATCH_NUM];
+	struct ucast_sub subs[MAX_MATCH_NUM];
 	int num;
 };
 
@@ -27,7 +27,7 @@ int lower_bound(const void *key, const void *base, int nel, size_t width,
 
 // returns the index of an existing subscription or -(n+1) location of where to
 // insert if not found
-int find_sub(struct subscription *subs, int num, struct subscription *s);
+int find_sub(struct ucast_sub *subs, int num, struct ucast_sub *s);
 
 // filters the subs and num arguments to the subset that match a given interface
-void subs_for_interface(struct subscription **subs, int *pnum, slice_t iface);
+void subs_for_interface(struct ucast_sub **subs, int *pnum, slice_t iface);

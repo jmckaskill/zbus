@@ -9,132 +9,112 @@
 #include <errno.h>
 #include <stdint.h>
 
-static char *split_after_space(char *line)
+#define BUS_DESTINATION S("org.freedesktop.DBus")
+#define BUS_INTERFACE S("org.freedesktop.DBus")
+#define BUS_PATH S("/org/freedesktop/DBus")
+#define HELLO S("Hello")
+
+static int split_line(slice_t *pin, slice_t *pline)
 {
-	static char empty[] = { 0 };
-	char *space = strchr(line, ' ');
-	if (space) {
-		*space = 0;
-		return space + 1;
-	} else {
-		return empty;
+	if (split_slice(*pin, '\n', pline, pin)) {
+		return AUTH_READ_MORE;
 	}
-}
-
-static int split_line(buf_t *s, char **pline, int *pnext)
-{
-	int n = 0;
-	for (;;) {
-		if (n + 2 > s->len) {
-			return AUTH_READ_MORE;
-		}
-		char ch0 = s->p[n];
-		char ch1 = s->p[n + 1];
-
-		if (ch0 == '\r' && ch1 == '\n') {
-			// return the line, removing the \r\n
-			s->p[n] = 0;
-			*pline = s->p;
-			*pnext = n + 2;
-			return AUTH_OK;
-		}
-		// only ASCII non control characters are allowed
-		if (ch0 < 0 || ch0 < ' ' || ch0 > '~') {
-			return AUTH_ERROR;
-		}
-		n++;
+	if (!pline->len || pline->p[pline->len - 1] != '\r') {
+		return AUTH_ERROR;
 	}
+	pline->len--;
+	return 0;
 }
 
-static void remove_data(buf_t *s, int off)
+static int append(char *buf, size_t bufsz, size_t *plen, slice_t s)
 {
-	memmove(s->p, s->p + off, s->len - off);
-	s->len -= off;
+	if (*plen + s.len > bufsz) {
+		return -1;
+	}
+	memcpy(buf + *plen, s.p, s.len);
+	*plen += s.len;
+	return 0;
 }
 
-enum auth_phase {
-	AUTH_WAIT_FOR_NUL = 0,
-	AUTH_WAIT_FOR_AUTH,
-	AUTH_WAIT_FOR_BEGIN,
-	AUTH_WAIT_FOR_HELLO,
+enum {
+	SERVER_WAIT_FOR_NUL = 0,
+	SERVER_WAIT_FOR_AUTH,
+	SERVER_WAIT_FOR_BEGIN,
+	SERVER_WAIT_FOR_HELLO,
 };
 
-int step_server_auth(buf_t *in, buf_t *out, slice_t busid, slice_t unique_addr,
-		     uint32_t *pserial)
+int step_server_auth(int *pstate, slice_t *pin, char *out, size_t *poutsz,
+		     slice_t busid, uint32_t *pserial)
 {
-	// pserial is used as both a state variable and to hold the input
-	// message serial when we are done
-	int remove = 0;
+	size_t cap = *poutsz;
+	*poutsz = 0;
 
-	switch (*pserial) {
-	case AUTH_WAIT_FOR_NUL:
-		if (!in->len) {
+	switch (*pstate) {
+	case SERVER_WAIT_FOR_NUL:
+		if (!pin->len) {
 			return AUTH_READ_MORE;
 		}
-		if (in->p[0]) {
+		if (pin->p[0]) {
 			return AUTH_ERROR;
 		}
-		remove = 1;
+		pin->p++;
+		pin->len--;
 		goto wait_for_auth;
 
 	wait_for_auth:
-	case AUTH_WAIT_FOR_AUTH: {
-		*pserial = AUTH_WAIT_FOR_AUTH;
-		remove_data(in, remove);
-
-		char *arg0;
-		int err = split_line(in, &arg0, &remove);
+		*pstate = SERVER_WAIT_FOR_AUTH;
+	case SERVER_WAIT_FOR_AUTH: {
+		slice_t line;
+		int err = split_line(pin, &line);
 		if (err) {
 			return err;
 		}
-		char *arg1 = split_after_space(arg0);
-		char *arg2 = split_after_space(arg1);
 
-		if (strcmp(arg0, "AUTH")) {
-			// unknown command
-			if (buf_add(out, S("ERROR\r\n"))) {
+		slice_t arg0, arg1, arg2;
+		if (split_slice(line, ' ', &arg0, &line) ||
+		    split_slice(line, ' ', &arg1, &arg2) ||
+		    !slice_eq(arg0, S("AUTH"))) {
+			// unexpected command
+			if (append(out, cap, poutsz, S("ERROR\r\n"))) {
 				return AUTH_ERROR;
 			}
 			goto wait_for_auth;
 		}
 
-		if (strcmp(arg1, "EXTERNAL")) {
+		if (!slice_eq(arg1, S("EXTERNAL"))) {
 			// unsupported auth type
-			if (buf_add(out, S("REJECTED EXTERNAL\r\n"))) {
+			if (append(out, cap, poutsz,
+				   S("REJECTED EXTERNAL\r\n"))) {
 				return AUTH_ERROR;
 			}
 			goto wait_for_auth;
 		}
 
 		// for now ignore the argument
-		(void)arg2;
-		if (buf_addf(out, "OK %.*s\r\n", busid.len, busid.p)) {
+		if (append(out, cap, poutsz, S("OK ")) ||
+		    append(out, cap, poutsz, busid) ||
+		    append(out, cap, poutsz, S("\r\n"))) {
 			return AUTH_ERROR;
 		}
 		goto wait_for_begin;
 	}
 
 	wait_for_begin:
-	case AUTH_WAIT_FOR_BEGIN: {
-		*pserial = AUTH_WAIT_FOR_BEGIN;
-		remove_data(in, remove);
-
-		char *line;
-		int err = split_line(in, &line, &remove);
+		*pstate = SERVER_WAIT_FOR_BEGIN;
+	case SERVER_WAIT_FOR_BEGIN: {
+		slice_t line;
+		int err = split_line(pin, &line);
 		if (err) {
 			return err;
-
-		} else if (!strcmp(line, "BEGIN")) {
+		} else if (slice_eq(line, S("BEGIN"))) {
 			goto wait_for_hello;
-
-		} else if (!strcmp(line, "NEGOTIATE_UNIX_FD")) {
-			if (buf_add(out, S("AGREE_UNIX_FD\r\n"))) {
+		} else if (slice_eq(line, S("NEGOTIATE_UNIX_FD"))) {
+			if (append(out, cap, poutsz, S("AGREE_UNIX_FD\r\n"))) {
 				return AUTH_ERROR;
 			}
 			goto wait_for_begin;
-
 		} else {
-			if (buf_add(out, S("ERROR\r\n"))) {
+			if (append(out, cap, poutsz, S("ERROR\r\n"))) {
 				return AUTH_ERROR;
 			}
 			goto wait_for_begin;
@@ -142,44 +122,108 @@ int step_server_auth(buf_t *in, buf_t *out, slice_t busid, slice_t unique_addr,
 	}
 
 	wait_for_hello:
-	case AUTH_WAIT_FOR_HELLO: {
-		*pserial = AUTH_WAIT_FOR_HELLO;
-		remove_data(in, remove);
-
-		if (out->len) {
-			// we shouldn't have any pending send data at this point
-			// as the remote should have consumed everything before
-			// sending BEGIN
-			return AUTH_ERROR;
-		}
-
-		struct message msg;
-
+		*pstate = SERVER_WAIT_FOR_HELLO;
+	case SERVER_WAIT_FOR_HELLO: {
 		// process the Hello header
 
-		int hsz = parse_header_size(to_slice(*in));
-		if (hsz < 0 || hsz > in->cap) {
+		size_t hsz, bsz;
+		if (pin->len < DBUS_MIN_MSG_SIZE) {
+			return AUTH_READ_MORE;
+		} else if (parse_message_size(pin->p, &hsz, &bsz)) {
 			return AUTH_ERROR;
-		} else if (!hsz) {
+		} else if (hsz + bsz < pin->len) {
 			return AUTH_READ_MORE;
 		}
 
 		// verify the fields
 
-		if (parse_header(&msg, to_slice(*in)) || msg.body_len ||
-		    !msg.serial || msg.type != MSG_METHOD ||
-		    !slice_eq(msg.destination, S("org.freedesktop.DBus")) ||
-		    !slice_eq(msg.path, S("/org/freedesktop/DBus")) ||
-		    !slice_eq(msg.interface, S("org.freedesktop.DBus")) ||
-		    !slice_eq(msg.member, S("Hello")) || msg.signature[0]) {
+		struct message msg;
+		if (parse_header(&msg, pin->p) || !msg.serial ||
+		    msg.type != MSG_METHOD ||
+		    !slice_eq(msg.destination, BUS_DESTINATION) ||
+		    !slice_eq(msg.path, BUS_PATH) ||
+		    !slice_eq(msg.interface, BUS_INTERFACE) ||
+		    !slice_eq(msg.member, HELLO)) {
 			return AUTH_ERROR;
 		}
 
-		remove_data(in, hsz);
 		*pserial = msg.serial;
 		return AUTH_OK;
 	}
+	default:
+		return AUTH_ERROR;
 	}
+}
 
-	return AUTH_ERROR;
+enum {
+	CLIENT_SEND_NUL,
+	CLIENT_WAIT_FOR_OK,
+};
+
+int step_client_auth(int *pstate, slice_t *pin, char *out, size_t *poutsz,
+		     slice_t uid, uint32_t *pserial)
+{
+	static const char hexdigits[] = "0123456789abcdef";
+	size_t cap = *poutsz;
+	*poutsz = 0;
+
+	switch (*pstate) {
+	case CLIENT_SEND_NUL:
+		if (append(out, cap, poutsz,
+			   make_slice("\0AUTH EXTERNAL ", 15))) {
+			return AUTH_ERROR;
+		}
+		if (*poutsz + uid.len * 2 + 2 > cap) {
+			return AUTH_ERROR;
+		}
+		for (int i = 0; i < uid.len; i++) {
+			out[(*poutsz)++] =
+				hexdigits[*(uint8_t *)(uid.p + i) >> 4];
+			out[(*poutsz)++] =
+				hexdigits[*(uint8_t *)(uid.p + i) & 15];
+		}
+		out[(*poutsz)++] = '\r';
+		out[(*poutsz)++] = '\n';
+		goto wait_for_ok;
+
+	wait_for_ok:
+		*pstate = CLIENT_WAIT_FOR_OK;
+	case CLIENT_WAIT_FOR_OK: {
+		slice_t line;
+		int err = split_line(pin, &line);
+		if (err) {
+			return err;
+		}
+
+		slice_t cmd, arg;
+		if (split_slice(line, ' ', &cmd, &arg) ||
+		    !slice_eq(cmd, S("OK"))) {
+			return AUTH_ERROR;
+		}
+
+		// ignore bus id for now
+		(void)arg;
+		if (append(out, cap, poutsz, S("BEGIN\r\n"))) {
+			return AUTH_ERROR;
+		}
+		struct message msg;
+		init_message(&msg, MSG_METHOD, 1);
+		msg.destination = BUS_DESTINATION;
+		msg.path = BUS_PATH;
+		msg.interface = BUS_INTERFACE;
+		msg.member = HELLO;
+
+		struct builder b =
+			start_message(out + *poutsz, cap - *poutsz, &msg);
+		int sz = end_message(b);
+		if (sz < 0) {
+			return AUTH_ERROR;
+		}
+		*poutsz += sz;
+		*pserial = 1;
+		return AUTH_OK;
+	}
+	default:
+		return AUTH_ERROR;
+	}
 }

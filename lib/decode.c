@@ -206,7 +206,7 @@ int check_string(slice_t s)
 
 static slice_t parse_string_bytes(struct iterator *p, uint32_t len)
 {
-	slice_t ret = S("");
+	slice_t ret;
 	ret.p = p->base + p->next;
 	ret.len = len;
 	uint32_t n = p->next + len + 1;
@@ -316,8 +316,11 @@ struct iterator skip_array(struct iterator *p)
 	ret.end = start + len;
 	ret.sig = p->sig;
 
+	// step back one so that skip_signature can pick up the array
+	p->sig--;
+
 	if (len > DBUS_MAX_VALUE_SIZE || start + len > p->end ||
-	    skip_signature(&p->sig, true)) {
+	    skip_signature(&p->sig)) {
 		ret.next = ret.end + 1;
 	} else {
 		p->next = ret.end;
@@ -330,41 +333,43 @@ struct array_data parse_array(struct iterator *p)
 {
 	uint32_t len = parse4(p, TYPE_ARRAY);
 	uint32_t start = alignx(*p->sig, p->base, p->next, p->end);
-	const char *nextsig = p->sig;
 
-	struct array_data ad;
+	struct array_data a;
+
+	// step back so that skip_signature can pick up that we're in an array
+	const char *nextsig = p->sig - 1;
 
 	if (len > DBUS_MAX_MSG_SIZE || start + len > p->end ||
-	    skip_signature(&nextsig, true)) {
+	    skip_signature(&nextsig)) {
 		p->next = p->end + 1;
-		ad.sig = "";
-		ad.siglen = 0;
-		ad.data = NULL;
-		ad.datalen = 0;
+		a.sig = "";
+		a.siglen = 0;
+		a.off = 0;
+		a.hdr = 0;
 	} else {
-		ad.sig = p->sig;
-		ad.data = p->base + p->end;
-		ad.siglen = (uint8_t)(nextsig - ad.sig);
-		ad.datalen = 0;
+		a.sig = p->sig;
+		a.off = p->end;
+		a.siglen = (uint8_t)(nextsig - a.sig);
+		// hdr is used as a marker to indicate we're on the first item
+		a.hdr = 0;
 		p->next = start;
 		p->end = start + len;
 	}
-	return ad;
+	return a;
 }
 
-bool array_has_more(struct iterator *p, struct array_data *pd)
+bool array_has_more(struct iterator *p, struct array_data *a)
 {
 	if (p->next > p->end) {
 		// parse error
 		goto error;
 	}
 
-	const char *sigstart = pd->sig;
-	const char *sigend = pd->sig + pd->siglen;
+	const char *sigstart = a->sig;
+	const char *sigend = a->sig + a->siglen;
 
 	// check that the signature is where we expect it to be
-	// start for the first item, end for later items
-	if (p->sig != (pd->datalen ? sigend : sigstart)) {
+	if (p->sig != (a->hdr ? sigend : sigstart)) {
 		goto error;
 	}
 
@@ -372,12 +377,12 @@ bool array_has_more(struct iterator *p, struct array_data *pd)
 		// We've reached the end of the array. Update the iterator to
 		// the next item after the array
 		p->sig = sigend;
-		p->next = pd->data - p->base;
+		p->next = a->off;
 		return false;
 	} else {
 		// There are further items
 		p->sig = sigstart;
-		pd->datalen = 1;
+		a->hdr = 1;
 		return true;
 	}
 error:
@@ -515,7 +520,9 @@ struct iterator skip_value(struct iterator *p)
 				goto error;
 			}
 			next = alignx(*sig, base, next, end) + len;
-			if (skip_signature(&sig, true)) {
+			// step back so that skip_signature knows we're in an array
+			sig--;
+			if (skip_signature(&sig)) {
 				goto error;
 			}
 			break;
@@ -528,7 +535,8 @@ struct iterator skip_value(struct iterator *p)
 		case TYPE_VARIANT: {
 			// Need to save the current signature to a stack.
 			const char **psig = &stack[stackn++];
-			if (psig == stack + sizeof(stack) || next == end) {
+			if (psig == stack + sizeof(stack) / sizeof(stack[0]) ||
+			    next == end) {
 				goto error;
 			}
 			// parse to get the new signature from the data
@@ -567,15 +575,12 @@ error:
 	return ret;
 }
 
-int skip_signature(const char **psig, bool in_array)
+int skip_signature(const char **psig)
 {
 	int d = 0; // current stack entry index
 	char s[32]; // type code stack
 
 	s[d] = TYPE_INVALID;
-	if (in_array) {
-		s[d++] = TYPE_ARRAY;
-	}
 
 	for (;;) {
 		switch (*((*psig)++)) {
@@ -679,7 +684,7 @@ void TEST_parse()
 		3, 0, 0, 0, // u32
 	};
 	struct iterator ii;
-	init_iterator(&ii, "yqu", make_slice(test1, sizeof(test1)));
+	init_iterator(&ii, "yqu", test1, sizeof(test1));
 	assert(parse_byte(&ii) == 1 && !iter_error(&ii));
 	assert(parse_uint16(&ii) == 2 && !iter_error(&ii));
 	assert(parse_uint32(&ii) == 3 && !iter_error(&ii));
@@ -810,15 +815,14 @@ int check_address(slice_t s)
 
 void init_message(struct message *m, enum msg_type type, uint32_t serial)
 {
-	m->path = S("");
-	m->interface = S("");
-	m->member = S("");
-	m->error = S("");
-	m->destination = S("");
-	m->sender = S("");
+	m->path = empty_slice();
+	m->interface = empty_slice();
+	m->member = empty_slice();
+	m->error = empty_slice();
+	m->destination = empty_slice();
+	m->sender = empty_slice();
 	m->signature = "";
 	m->fdnum = 0;
-	m->body_len = 0;
 	m->reply_serial = 0;
 	m->serial = serial;
 	m->flags = 0;
@@ -827,12 +831,9 @@ void init_message(struct message *m, enum msg_type type, uint32_t serial)
 
 static_assert(sizeof(struct raw_header) == 16, "");
 
-int parse_message_size(slice_t data)
+int parse_message_size(const char *p, size_t *phdr, size_t *pbody)
 {
-	if (data.len < sizeof(struct raw_header)) {
-		return 0;
-	}
-	const struct raw_header *h = (const struct raw_header *)data.p;
+	const struct raw_header *h = (const struct raw_header *)p;
 	if (h->endian != native_endian()) {
 		return -1;
 	}
@@ -844,25 +845,9 @@ int parse_message_size(slice_t data)
 	    fpadded + blen > DBUS_MAX_MSG_SIZE) {
 		return -1;
 	}
-	return sizeof(struct raw_header) + (int)fpadded + (int)blen;
-}
-
-int parse_header_size(slice_t data)
-{
-	if (data.len < sizeof(struct raw_header)) {
-		return 0;
-	}
-	const struct raw_header *h = (const struct raw_header *)data.p;
-	if (h->endian != native_endian()) {
-		return -1;
-	}
-	uint32_t flen;
-	memcpy(&flen, &h->field_len, 4);
-	uint32_t fpadded = ALIGN_UINT_UP(flen, 8);
-	if (fpadded > DBUS_MAX_VALUE_SIZE) {
-		return -1;
-	}
-	return sizeof(struct raw_header) + (int)fpadded;
+	*phdr = sizeof(struct raw_header) + (int)fpadded;
+	*pbody = blen;
+	return 0;
 }
 
 static inline uint32_t read_little_4(const char *n)
@@ -894,12 +879,12 @@ static slice_t parse_string_field(struct iterator *ii)
 	const char *plen = ii->base + ii->next;
 	ii->next += 4;
 	if (ii->next > ii->end) {
-		return S("");
+		return empty_slice();
 	}
 	uint32_t len = read_little_4(plen);
 	if (len > DBUS_MAX_VALUE_SIZE) {
 		// protect against overflow
-		return S("");
+		return empty_slice();
 	}
 	ii->next += len + 1;
 	slice_t ret = make_slice(plen + 4, len);
@@ -990,29 +975,21 @@ error:
 	ii->next = ii->end + 1;
 }
 
-int parse_header(struct message *msg, slice_t data)
+int parse_header(struct message *msg, const char *p)
 {
-	int hsz = parse_header_size(data);
-	if (data.len < hsz) {
-		return -1;
-	}
-
 	// h may not be 4 byte aligned so copy the values
 	// over
-	const struct raw_header *h = (const struct raw_header *)data.p;
+	const struct raw_header *h = (const struct raw_header *)p;
 	uint32_t bsz, fsz, serial;
 	memcpy(&bsz, &h->body_len, 4);
 	memcpy(&fsz, &h->field_len, 4);
 	memcpy(&serial, &h->serial, 4);
 	init_message(msg, h->type, serial);
 	msg->flags = h->flags;
-	msg->header_len = hsz;
-	msg->body_len = bsz;
 	msg->serial = serial;
 
-	slice_t fdata = make_slice((char *)(h + 1), fsz);
 	struct iterator ii;
-	init_iterator(&ii, "", fdata);
+	init_iterator(&ii, "", (char *)(h + 1), fsz);
 
 	while (ii.next < ii.end) {
 		parse_field(msg, &ii);
@@ -1022,5 +999,21 @@ int parse_header(struct message *msg, slice_t data)
 		return -1;
 	}
 
-	return 0;
+	if (!msg->serial) {
+		return -1;
+	}
+
+	switch (msg->type) {
+	case MSG_METHOD:
+		return !msg->path.len || !msg->member.len;
+	case MSG_SIGNAL:
+		return !msg->path.len || !msg->interface.len ||
+		       !msg->member.len;
+	case MSG_REPLY:
+		return !msg->reply_serial;
+	case MSG_ERROR:
+		return !msg->error.len || !msg->reply_serial;
+	default:
+		return -1;
+	}
 }

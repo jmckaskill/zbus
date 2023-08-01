@@ -24,11 +24,9 @@
 
 static int process_controlq(struct remote *r)
 {
-	struct msgq_entry *e;
-	while ((e = msgq_acquire(r->qcontrol)) != NULL) {
-		switch (e->cmd) {
-		case MSG_SHUTDOWN:
-			return -1;
+	msg_type_t *e;
+	while ((e = msg_acquire(r->qcontrol)) != NULL) {
+		switch (e->code) {
 		case REP_UPDATE_NAME:
 		case REP_UPDATE_NAME_SUB:
 		case REP_UPDATE_SUB: {
@@ -48,13 +46,26 @@ static int process_controlq(struct remote *r)
 		case CMD_UPDATE_SUB: {
 		}
 		}
-		msgq_pop(r->qcontrol, e);
+		msg_pop(r->qcontrol, e);
 	}
 	return 0;
 }
 static int run_remote(void *udata)
 {
 	struct remote *r = udata;
+
+	msg_start_producer(&r->waiter);
+	r->qcontrol = msg_new_queue();
+	r->qdata = msg_new_queue();
+	r->icontrol = 0;
+	r->idata = 0;
+	r->in = new_page(1);
+	init_unix_oob(&r->send_oob);
+	init_unix_oob(&r->recv_oob);
+
+	buf_t s = MAKE_BUF(r->addr_buf);
+	id_to_string(&s, r->id);
+	r->addr = to_slice(s);
 	pthread_setname_np(pthread_self(), r->addr_buf);
 
 	if (authenticate(r)) {
@@ -63,7 +74,8 @@ static int run_remote(void *udata)
 
 	r->can_write = true;
 
-	for (;;) {
+	while (!msg_should_shutdown(r->qcontrol) &&
+	       !msg_should_shutdown(r->qdata)) {
 		if (process_controlq(r)) {
 			goto cleanup;
 		}
@@ -82,41 +94,19 @@ static int run_remote(void *udata)
 	}
 
 cleanup:
+	// remove references from other threads
 	remove_all_matches(r);
 
-	struct cmd_remote c = { .remote = r };
-	msgq_send(r->busq, MSG_DISCONNECTED, &c, sizeof(c), NULL);
-	return 0;
-}
+	int idx = msg_allocate(r->busq, &r->waiter, 1);
+	struct msg_disconnected *c = msg_get(r->busq, idx);
+	c->remote = r;
+	msg_release(r->busq, idx, &msg_disconnected_vt);
 
-int start_remote(struct remote *r)
-{
-	r->qcontrol = msgq_new();
-	r->qdata = msgq_new();
-	r->in = new_page(1);
-	init_unix_oob(&r->send_oob);
-	init_unix_oob(&r->recv_oob);
-
-	buf_t s = MAKE_BUF(r->addr_buf);
-	id_to_string(&s, r->id);
-	r->addr = to_slice(s);
-
-	if (thrd_create(&r->thread, &run_remote, r)) {
-		msgq_free(r->qcontrol);
-		msgq_free(r->qdata);
-		deref_page(r->in, 1);
-		return -1;
-	}
-
-	return 0;
-}
-
-void join_remote(struct remote *r)
-{
 	// Clean up everything except what other threads use. That is
 	// cleaned up gc_remote when the remote struct is garbage
 	// collected.
-	thrd_join(r->thread, NULL);
+
+	msg_stop_waiter(&r->waiter);
 	deref_page(r->out.pg, 1);
 	struct page *pg = r->in;
 	while (pg) {
@@ -127,11 +117,22 @@ void join_remote(struct remote *r)
 	close_fds(&r->send_oob, r->send_oob.fdn);
 	close_fds(&r->recv_oob, r->recv_oob.fdn);
 	close(r->sock);
+	return 0;
+}
+
+int start_remote(struct remote *r)
+{
+	return thrd_create(&r->thread, &run_remote, r);
+}
+
+void join_remote(struct remote *r)
+{
+	thrd_join(r->thread, NULL);
 }
 
 void gc_remote(void *p)
 {
 	struct remote *r = p;
-	msgq_free(r->qcontrol);
-	msgq_free(r->qdata);
+	msg_free_queue(r->qcontrol);
+	msg_free_queue(r->qdata);
 }
