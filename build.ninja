@@ -33,6 +33,7 @@ build obj/dmem.a: ar $
 build obj/lib/auth.o: cc lib/auth.c
 build obj/lib/decode.o: cc lib/decode.c
 build obj/lib/encode.o: cc lib/encode.c
+build obj/lib/log.o: cc lib/log.c
 build obj/lib/match.o: cc lib/match.c
 build obj/lib/slice.o: cc lib/slice.c
 build obj/lib/stream.o: cc lib/stream.c
@@ -41,6 +42,7 @@ build obj/lib.a: ar $
         obj/lib/auth.o $
         obj/lib/decode.o $
         obj/lib/encode.o $
+        obj/lib/log.o $
         obj/lib/match.o $
         obj/lib/slice.o $
         obj/lib/stream.o $

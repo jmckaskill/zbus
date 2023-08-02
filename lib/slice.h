@@ -4,6 +4,7 @@
 
 // #define S(X) cstr_slice(X)
 #define S(X) ((struct slice){ (X), sizeof(X) - 1 })
+#define S_PRI(X) (int)(X).len, (X).p
 
 struct slice {
 	const char *p;
@@ -19,7 +20,7 @@ static bool slice_has_prefix(slice_t s, slice_t pfx);
 static bool slice_has_suffix(slice_t s, slice_t sfx);
 extern int split_slice(slice_t src, char sep, slice_t *pleft, slice_t *prest);
 
-#define to_slice(X) make_slice((X).p, (X).len)
+#define to_slice(X) ((struct slice){ (X).p, (X).len })
 
 /////////////////////////
 // inline implementations

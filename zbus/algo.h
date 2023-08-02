@@ -47,22 +47,3 @@ static inline void circ_remove(struct circ_list *item)
 // bigger than the element.
 int lower_bound(const void *key, const void *base, int nel, size_t width,
 		int (*cmp)(const void *, const void *));
-
-static inline void opt_log_number(const char *key, int num)
-{
-	if (num) {
-		log_number(key, num);
-	}
-}
-
-static inline void opt_log_slice(const char *key, slice_t s)
-{
-	if (s.len) {
-		log_nstring(key, s.p, s.len);
-	}
-}
-
-static inline void log_slice(const char *key, slice_t s)
-{
-	log_nstring(key, s.p, s.len);
-}

@@ -157,7 +157,7 @@ static void broadcast(struct rx *r, const struct message *m, struct rope *body)
 
 	return;
 error:
-	write_error("error broadcasting signal", 0);
+	ERROR("error broadcasting signal");
 }
 
 ///////////////////////////////////////////

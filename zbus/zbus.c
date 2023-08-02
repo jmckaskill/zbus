@@ -23,12 +23,10 @@ static int ready_indicator(void *udata)
 		// immediately close it to indicate that we are ready to go
 		int fd = open(fifopn, O_WRONLY | O_CLOEXEC);
 		if (fd < 0) {
-			start_log(LOG_ERROR, "open ready fifo", errno);
-			log_cstring("path", fifopn);
-			finish_log();
+			ERROR("open ready fifo,error:%m,path:%s", fifopn);
 			return -1;
 		}
-		write_debug("open ready fifo");
+		DEBUG("open ready fifo");
 		close(fd);
 		usleep(1000);
 	}
@@ -47,8 +45,7 @@ static int usage(void)
 
 int main(int argc, char *argv[])
 {
-	log_arg0 = "zbus";
-
+	enum log_type log_type = LOG_TEXT;
 	const char *configdir = ".";
 	char *readypn = NULL;
 	int i;
@@ -87,7 +84,7 @@ int main(int argc, char *argv[])
 		return usage();
 	}
 
-	if (setup_log() || setup_signals()) {
+	if (setup_log(log_type, -1, "zbus") || setup_signals()) {
 		return 1;
 	}
 
@@ -97,18 +94,15 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	start_notice("startup");
-	log_cstring("sockpn", sockpn);
-	log_slice("busid", to_slice(bus.busid));
-	log_cstring("fifo", readypn);
-	finish_log();
+	NOTICE("startup,sockpn:%s,busid:%.*s,fifo:%s", sockpn, S_PRI(bus.busid),
+	       readypn);
 
 	int lfd = bind_bus(sockpn);
 	if (lfd < 0) {
 		return 1;
 	}
 
-	write_notice("ready");
+	NOTICE("ready");
 
 	thrd_t thrd;
 	if (readypn && !thrd_create(&thrd, &ready_indicator, readypn)) {
@@ -118,13 +112,11 @@ int main(int argc, char *argv[])
 	for (;;) {
 		int cfd = accept4(lfd, NULL, NULL, SOCK_CLOEXEC);
 		if (cfd < 0) {
-			write_error("accept", errno);
+			ERROR("accept,errno:%m");
 			break;
 		}
 
-		start_notice("new connection");
-		log_number("fd", cfd);
-		finish_log();
+		VERBOSE("new connection,fd:%d", cfd);
 
 		struct tx *tx = new_tx(cfd);
 		if (!tx) {

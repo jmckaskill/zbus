@@ -24,8 +24,10 @@ struct address *update_address(struct rcu_writer *w, struct address_map **pmap,
 
 	// copy the address info across and fix up pointers
 	memcpy(a, oa, sizeof(*a) + oa->name.len);
-	a->owner_list.prev->next = &a->owner_list;
-	a->owner_list.next->prev = &a->owner_list;
+	if (a->owner_list.next) {
+		a->owner_list.prev->next = &a->owner_list;
+		a->owner_list.next->prev = &a->owner_list;
+	}
 
 	// copy the map data across, replacing the address of interest
 	m->len = old->len;

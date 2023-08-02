@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "rx.h"
 #include "tx.h"
 #include "bus.h"
@@ -8,11 +9,13 @@
 #include "lib/encode.h"
 #include "lib/decode.h"
 #include "lib/auth.h"
+#include "lib/log.h"
 #include "dmem/common.h"
 #include <sys/socket.h>
 #include <unistd.h>
 #include <poll.h>
 #include <errno.h>
+#include <pthread.h>
 
 struct rx *new_rx(struct bus *bus, struct tx *tx, int fd)
 {
@@ -62,12 +65,18 @@ static ssize_t recv_one(int fd, char *p1, size_t n1, char *p2, size_t n2)
 			}
 			continue;
 		} else if (n < 0) {
-			write_error("recv", errno);
+			ERROR("recv,errno:%m,fd:%d", fd);
 			return -1;
 		} else if (n == 0) {
-			write_error("recv early EOF", 0);
+			ERROR("recv early EOF,fd:%d", fd);
 			return -1;
 		} else {
+			if (start_debug("recv")) {
+				log_int("fd", fd);
+				log_bytes("data1", p1, (n > n1) ? n1 : n);
+				log_bytes("data2", p2, (n > n1) ? (n - n1) : 0);
+				finish_log();
+			}
 			return n;
 		}
 	}
@@ -85,7 +94,7 @@ static int send_all(int fd, const char *p, size_t sz)
 			}
 			continue;
 		} else if (n <= 0) {
-			write_error("send", errno);
+			ERROR("send,errno:%m");
 			return -1;
 		} else {
 			p += n;
@@ -94,22 +103,6 @@ static int send_all(int fd, const char *p, size_t sz)
 		}
 	}
 	return 0;
-}
-
-static void log_message(struct rx *r, struct message *m)
-{
-	start_verbose("rx message");
-	log_number("remote", rxid(r));
-	log_number("type", m->type);
-	log_number("serial", m->serial);
-	opt_log_number("reply", m->reply_serial);
-	opt_log_number("flags", m->flags);
-	opt_log_slice("dst", m->destination);
-	opt_log_slice("iface", m->interface);
-	opt_log_slice("member", m->member);
-	opt_log_slice("path", m->path);
-	opt_log_slice("error", m->error);
-	finish_log();
 }
 
 static int authenticate(struct rx *r)
@@ -200,7 +193,11 @@ static int read_message(struct rx *r, struct msg_stream *s)
 		s->have += n;
 	}
 
-	log_message(r, &m);
+	if (start_debug("read")) {
+		log_int("fd", r->fd);
+		log_message(&m);
+		finish_log();
+	}
 
 	if (m.type == MSG_METHOD && slice_eq(m.destination, BUS_DESTINATION)) {
 		defragment_body(s, &r1.data, &r2.data);
@@ -222,6 +219,11 @@ static int read_message(struct rx *r, struct msg_stream *s)
 int rx_thread(void *udata)
 {
 	struct rx *r = udata;
+
+	char buf[UNIQ_ADDR_MAXLEN + 1];
+	memcpy(buf, r->addr.p, r->addr.len);
+	buf[(int)r->addr.len] = '\0';
+	pthread_setname_np(pthread_self(), buf);
 
 	if (authenticate(r)) {
 		goto free_rx;

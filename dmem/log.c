@@ -1,4 +1,4 @@
-#define _POSIX_C_SOURCE 199309L
+#define _GNU_SOURCE
 #include "log.h"
 #include <stdint.h>
 #include <threads.h>
@@ -10,31 +10,41 @@
 #include <stdbool.h>
 #include <assert.h>
 
-enum log_type log_type = LOG_TEXT;
 int log_verbose_flag = 0;
 int log_quiet_flag = 0;
-int log_fd = 2;
-const char *log_arg0;
+static enum log_type log_type = LOG_TEXT;
+static int log_fd;
+static const char *log_arg0 = "";
+static size_t arg0len;
 
 static mtx_t log_mutex;
 static char logbuf[512];
 static int logoff;
 static int logabort;
+static int logerrno;
+static size_t syshostlen;
 static char syshost[256];
 
 #ifndef NDEBUG
 static bool log_is_setup;
 #endif
 
-int setup_log(void)
+int setup_log(enum log_type type, int fd, const char *arg0)
 {
 	if (mtx_init(&log_mutex, mtx_plain) != thrd_success) {
 		return -1;
 	}
-	if (log_type == LOG_SYSLOG && gethostname(syshost, sizeof(syshost))) {
-		return -1;
+	log_type = type;
+	log_fd = fd >= 0 ? fd : 2;
+	if (log_type == LOG_SYSLOG) {
+		if (gethostname(syshost, sizeof(syshost))) {
+			return -1;
+		}
+		syshost[sizeof(syshost) - 1] = 0;
+		syshostlen = strlen(syshost);
+		log_arg0 = arg0;
+		arg0len = strlen(log_arg0);
 	}
-	syshost[sizeof(syshost) - 1] = 0;
 #ifndef NDEBUG
 	log_is_setup = true;
 #endif
@@ -56,44 +66,47 @@ static const char *prefix[] = {
 		"{\"level\":\"warning\",\"timestamp\":\"",
 	[(LOG_JSON * LOG_LEVELS) + LOG_ERROR] =
 		"{\"level\":\"error\",\"timestamp\":\"",
-	[(LOG_JSON * LOG_LEVELS) + LOG_ABORT] =
+	[(LOG_JSON * LOG_LEVELS) + LOG_FATAL] =
 		"{\"level\":\"emergency\",\"timestamp\":\"",
 	[(LOG_SYSLOG * LOG_LEVELS) + LOG_DEBUG] = "<7>",
 	[(LOG_SYSLOG * LOG_LEVELS) + LOG_VERBOSE] = "<6>",
 	[(LOG_SYSLOG * LOG_LEVELS) + LOG_NOTICE] = "<5>",
 	[(LOG_SYSLOG * LOG_LEVELS) + LOG_WARNING] = "<4>",
 	[(LOG_SYSLOG * LOG_LEVELS) + LOG_ERROR] = "<3>",
-	[(LOG_SYSLOG * LOG_LEVELS) + LOG_ABORT] = "<0>",
+	[(LOG_SYSLOG * LOG_LEVELS) + LOG_FATAL] = "<0>",
 	[(LOG_TEXT * LOG_LEVELS) + LOG_DEBUG] = "DBG ",
 	[(LOG_TEXT * LOG_LEVELS) + LOG_VERBOSE] = "",
 	[(LOG_TEXT * LOG_LEVELS) + LOG_NOTICE] = "",
 	[(LOG_TEXT * LOG_LEVELS) + LOG_WARNING] = YELLOW "WARN ",
 	[(LOG_TEXT * LOG_LEVELS) + LOG_ERROR] = RED "ERROR ",
-	[(LOG_TEXT * LOG_LEVELS) + LOG_ABORT] = RED "FATAL ",
+	[(LOG_TEXT * LOG_LEVELS) + LOG_FATAL] = RED "FATAL ",
 };
 
 #define MSG_KEY_SYSLOG "]: {\"msg\":\""
 #define MSG_KEY_JSON "\",\"message\":\""
 #define MSG_KEY_TEXT " "
-#define ERR_SEP_JSON "\",\"syserror\":\"\""
-#define ERR_SEP_TEXT ": "
 #define FIELD_KEY_JSON ",\""
 #define FIELD_KEY_TEXT "\n\t"
 #define FIELD_STR_JSON "\":\""
+#define FIELD_STR_TEXT "\t\t"
 #define FIELD_NUM_JSON "\":"
+#define FIELD_NUM_TEXT "\t\t"
 #define STR_END_JSON "\""
 #define STR_END_TEXT ""
 #define SUFFIX_JSON "}\n"
 #define SUFFIX_TEXT ("\n" CLEAR)
 #define ENCODE_INT32_LEN 11 // -2147483648
+#define ENCODE_UINT32_LEN 10 // 4294967295
+#define ENCODE_INT64_LEN 20 // -9223372036854775808
+#define ENCODE_UINT64_LEN 20 // 18446744073709551615
 #define ENCODE_CHAR_LEN 6 // \u1234
-#define FIELD_KEY_PAD (strlen(FIELD_KEY_TEXT) + 12 + 1)
 
 #define MSG_KEY ((log_type == LOG_TEXT) ? MSG_KEY_TEXT : MSG_KEY_JSON)
-#define ERR_SEP ((log_type == LOG_TEXT) ? ERR_SEP_TEXT : ERR_SEP_JSON)
 #define STR_END ((log_type == LOG_TEXT) ? STR_END_TEXT : STR_END_JSON)
 #define SUFFIX ((log_type == LOG_TEXT) ? SUFFIX_TEXT : SUFFIX_JSON)
 #define FIELD_KEY ((log_type == LOG_TEXT) ? FIELD_KEY_TEXT : FIELD_KEY_JSON)
+#define FIELD_STR ((log_type == LOG_TEXT) ? FIELD_STR_TEXT : FIELD_STR_JSON)
+#define FIELD_NUM ((log_type == LOG_TEXT) ? FIELD_NUM_TEXT : FIELD_NUM_JSON)
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
@@ -106,22 +119,21 @@ static const char *prefix[] = {
 
 // after the key in a number field
 #define NUM_FIELD_TAIL \
-	MAX(FIELD_KEY_PAD, strlen(FIELD_NUM_JSON)) + ENCODE_INT32_LEN
+	MAX(strlen(FIELD_NUM_TEXT), strlen(FIELD_NUM_JSON)) + ENCODE_INT64_LEN
 
 // after the key in a string field
-#define STR_FIELD_TAIL MAX(FIELD_KEY_PAD, strlen(FIELD_STR_JSON))
-
-// after the msg field in the header
-#define HDR_TAIL MAX(strlen(ERR_SEP_JSON), strlen(ERR_SEP_TEXT))
+#define STR_FIELD_TAIL MAX(strlen(FIELD_STR_TEXT), strlen(FIELD_STR_JSON))
 
 // after the arg0 field in the syslog header
 #define HDR_TAG_TAIL (1 /*[*/ + ENCODE_INT32_LEN + strlen(MSG_KEY_SYSLOG))
 
+#define MAX_KEY_LEN 32
+
 // Longest fixed string which goes after a variable length before the next
 // variable length. We reserve this much in the buffer when writing variable
 // length items.
-#define MAX_TAIL                                                    \
-	MAX5(STRING_TAIL, NUM_FIELD_TAIL, STR_FIELD_TAIL, HDR_TAIL, \
+#define MAX_TAIL                                                       \
+	MAX5(MAX_KEY_LEN, STRING_TAIL, NUM_FIELD_TAIL, STR_FIELD_TAIL, \
 	     HDR_TAG_TAIL)
 
 static const char escapes[128] = {
@@ -143,16 +155,21 @@ static const char escapes[128] = {
 	0,   0,	  0,   0, 0,	0,   0, 1, // 120
 };
 
-static const char hexdigit[] = "0123456789abcdef";
+static const char hexdigit[] = "0123456789ABCDEF";
+
+static void flush(size_t need)
+{
+	if (logoff + need + MAX_TAIL > sizeof(logbuf)) {
+		write(log_fd, logbuf, logoff);
+		logoff = 0;
+	}
+}
 
 // leave enough room for \u1234
 
 static void write_char(char ch)
 {
-	if (logoff + MAX_TAIL > sizeof(logbuf)) {
-		write(log_fd, logbuf, logoff);
-		logoff = 0;
-	}
+	flush(1);
 
 	unsigned char u = (unsigned char)ch;
 	signed char s = (signed char)ch;
@@ -177,37 +194,44 @@ static void write_char(char ch)
 	}
 }
 
-static void write_string(const char *str)
+static void write_nstring(const char *str, size_t len)
 {
-	while (*str) {
-		write_char(*(str++));
-	}
-}
-
-static void write_slice(const char *str, int len)
-{
-	for (int i = 0; i < len; i++) {
+	for (size_t i = 0; i < len; i++) {
 		write_char(str[i]);
 	}
 }
 
-static void append_number(int32_t num)
+static void append_uint64(uint64_t num)
 {
-	char buf[ENCODE_INT32_LEN];
+	char buf[ENCODE_UINT64_LEN];
+	char *p = buf + sizeof(buf);
+	do {
+		*--p = '0' + (num % 10);
+		num /= 10;
+	} while (num);
+	assert(logoff + sizeof(buf) <= sizeof(logbuf));
+	size_t len = buf + sizeof(buf) - p;
+	memcpy(logbuf + logoff, p, len);
+	logoff += len;
+}
+
+static void append_int64(int64_t num)
+{
+	char buf[ENCODE_INT64_LEN];
 	char *p = buf + sizeof(buf);
 	int sign = 0;
 	if (num < 0) {
 		sign = 1;
 		num = -num;
 	}
-	while (num) {
+	do {
 		*--p = '0' + (num % 10);
 		num /= 10;
-	}
+	} while (num);
 	if (sign) {
 		*--p = '-';
 	}
-	assert(logoff + ENCODE_INT32_LEN <= sizeof(logbuf));
+	assert(logoff + sizeof(buf) <= sizeof(logbuf));
 	size_t len = buf + sizeof(buf) - p;
 	memcpy(logbuf + logoff, p, len);
 	logoff += len;
@@ -223,26 +247,15 @@ static void append_padded(int num, int len)
 	logoff += len;
 }
 
-static inline void append(const char *str)
+static inline void append(const char *str, size_t len)
 {
-	int len = strlen(str);
+	assert(len < MAX_TAIL);
 	assert(logoff + len <= sizeof(logbuf));
 	memcpy(logbuf + logoff, str, len);
 	logoff += len;
 }
 
-static inline void pad_key(int start, const char *js)
-{
-	if (log_type == LOG_TEXT) {
-		do {
-			logbuf[logoff++] = ' ';
-		} while (logoff < start + FIELD_KEY_PAD);
-	} else {
-		append(js);
-	}
-}
-
-int start_log(enum log_level lvl, const char *msg, int err)
+int start_log2(enum log_level lvl, const char *msg, size_t mlen)
 {
 	assert(log_is_setup);
 	switch (lvl) {
@@ -253,7 +266,7 @@ int start_log(enum log_level lvl, const char *msg, int err)
 		break;
 	case LOG_WARNING:
 	case LOG_ERROR:
-	case LOG_ABORT:
+	case LOG_FATAL:
 		break;
 	case LOG_DEBUG:
 #ifdef NDEBUG
@@ -271,9 +284,11 @@ int start_log(enum log_level lvl, const char *msg, int err)
 	}
 
 	mtx_lock(&log_mutex);
+	logerrno = errno;
+	logabort = (lvl == LOG_FATAL);
 
-	logabort = (lvl == LOG_ABORT);
-	append(prefix[(log_type * LOG_LEVELS) + lvl]);
+	const char *pfx = prefix[(log_type * LOG_LEVELS) + lvl];
+	append(pfx, strlen(pfx));
 
 	struct timespec ts;
 	struct tm tm;
@@ -293,7 +308,7 @@ int start_log(enum log_level lvl, const char *msg, int err)
 			logbuf[logoff++] = '.';
 			append_padded(ts.tv_nsec / 1000000, 3);
 		}
-		append(MSG_KEY_TEXT);
+		append(MSG_KEY_TEXT, strlen(MSG_KEY_TEXT));
 		break;
 	case LOG_SYSLOG:
 		if (localtime_r(&ts.tv_sec, &tm)) {
@@ -301,7 +316,7 @@ int start_log(enum log_level lvl, const char *msg, int err)
 				"Jan ", "Feb ", "Mar ", "Apr ", "May ", "Jun ",
 				"Jul ", "Aug ", "Sep ", "Oct ", "Nov ", "Dec ",
 			};
-			append(months[tm.tm_mon]);
+			append(months[tm.tm_mon], 4);
 			append_padded(tm.tm_mday, 2);
 			logbuf[logoff++] = ' ';
 			append_padded(tm.tm_hour, 2);
@@ -310,15 +325,15 @@ int start_log(enum log_level lvl, const char *msg, int err)
 			logbuf[logoff++] = ':';
 			append_padded(tm.tm_sec, 2);
 			logbuf[logoff++] = ' ';
-			write_string(syshost);
+			write_nstring(syshost, strlen(syshost));
 			logbuf[logoff++] = ' ';
 		}
 		if (log_arg0) {
-			write_string(log_arg0);
+			write_nstring(log_arg0, strlen(log_arg0));
 		}
 		logbuf[logoff++] = '[';
-		append_number(getpid());
-		append(MSG_KEY_SYSLOG);
+		append_int64(getpid());
+		append(MSG_KEY_SYSLOG, strlen(MSG_KEY_SYSLOG));
 		break;
 	case LOG_JSON:
 		if (gmtime_r(&ts.tv_sec, &tm)) {
@@ -337,58 +352,137 @@ int start_log(enum log_level lvl, const char *msg, int err)
 			append_padded(ts.tv_nsec / 1000000, 3);
 			logbuf[logoff++] = 'Z';
 		}
-		append(MSG_KEY_JSON);
+		append(MSG_KEY_JSON, strlen(MSG_KEY_JSON));
 		break;
 	}
 
-	write_string(msg);
-	if (err) {
-		append(ERR_SEP);
-		write_string(strerror(err));
-	}
-	append(STR_END);
+	write_nstring(msg, mlen);
+	append(STR_END, strlen(STR_END));
 	return 1;
 }
 
 int finish_log(void)
 {
-	append(SUFFIX);
+	append(SUFFIX, strlen(SUFFIX));
 	write(log_fd, logbuf, logoff);
 	logoff = 0;
 	if (logabort) {
 		abort();
 	}
 	mtx_unlock(&log_mutex);
-	return 0;
+	return 1;
 }
 
-void log_cstring(const char *key, const char *str)
+static void pad_key(size_t klen, bool is_string)
 {
-	int start = logoff;
-	append(FIELD_KEY);
-	write_string(key);
-	pad_key(start, FIELD_STR_JSON);
-	write_string(str ? str : "(null)");
-	append(STR_END);
+	if (log_type == LOG_TEXT) {
+		logbuf[logoff++] = (klen < 8) ? '\t' : ' ';
+	} else {
+		logbuf[logoff++] = '"';
+		logbuf[logoff++] = ':';
+		if (is_string) {
+			logbuf[logoff++] = '"';
+		}
+	}
 }
 
-void log_nstring(const char *key, const char *str, size_t len)
+void log_bool_2(const char *key, size_t klen, bool val)
 {
-	int start = logoff;
-	append(FIELD_KEY);
-	write_string(key);
-	pad_key(start, FIELD_STR_JSON);
-	write_slice(str, len);
-	append(STR_END);
+	append(FIELD_KEY, strlen(FIELD_KEY));
+	append(key, klen);
+	pad_key(klen, false);
+	if (val) {
+		append("true", 4);
+	} else {
+		append("false", 5);
+	}
 }
 
-void log_number(const char *key, int number)
+void log_errno_2(const char *key, size_t klen)
 {
-	int start = logoff;
-	append(FIELD_KEY);
-	write_string(key);
-	pad_key(start, FIELD_NUM_JSON);
-	append_number(number);
+	const char *estr = strerror(logerrno);
+	int len = strlen(estr);
+	log_nstring_2(key, klen, len, estr);
+}
+
+void log_cstring_2(const char *key, size_t klen, const char *str)
+{
+	append(FIELD_KEY, strlen(FIELD_KEY));
+	append(key, klen);
+	if (str) {
+		pad_key(klen, true);
+		write_nstring(str, strlen(str));
+		append(STR_END, strlen(STR_END));
+	} else {
+		pad_key(klen, false);
+		append("null", 4);
+	}
+}
+
+void log_nstring_2(const char *key, size_t klen, int len, const char *str)
+{
+	append(FIELD_KEY, strlen(FIELD_KEY));
+	append(key, klen);
+	pad_key(klen, true);
+	write_nstring(str, len);
+	append(STR_END, strlen(STR_END));
+}
+
+void log_int_2(const char *key, size_t klen, int val)
+{
+	append(FIELD_KEY, strlen(FIELD_KEY));
+	append(key, klen);
+	pad_key(klen, false);
+	append_int64(val);
+}
+
+void log_uint_2(const char *key, size_t klen, unsigned val)
+{
+	append(FIELD_KEY, strlen(FIELD_KEY));
+	append(key, klen);
+	pad_key(klen, false);
+	append_uint64(val);
+}
+
+void log_hex_2(const char *key, size_t klen, unsigned val)
+{
+	if (log_type != LOG_TEXT) {
+		log_uint_2(key, klen, val);
+		return;
+	}
+	char buf[10];
+	buf[0] = '0';
+	buf[1] = 'x';
+	buf[2] = hexdigit[(val >> 28) & 15];
+	buf[3] = hexdigit[(val >> 24) & 15];
+	buf[4] = hexdigit[(val >> 20) & 15];
+	buf[5] = hexdigit[(val >> 16) & 15];
+	buf[6] = hexdigit[(val >> 12) & 15];
+	buf[7] = hexdigit[(val >> 8) & 15];
+	buf[8] = hexdigit[(val >> 4) & 15];
+	buf[9] = hexdigit[(val >> 0) & 15];
+	append(FIELD_KEY_TEXT, strlen(FIELD_KEY_TEXT));
+	append(key, klen);
+	pad_key(klen, false);
+	append(buf, 10);
+}
+
+void log_int64_2(const char *key, size_t klen, int64_t val)
+{
+	append(FIELD_KEY, strlen(FIELD_KEY));
+	append(key, klen);
+	pad_key(klen, true);
+	append_int64(val);
+	append(STR_END, strlen(STR_END));
+}
+
+void log_uint64_2(const char *key, size_t klen, uint64_t val)
+{
+	append(FIELD_KEY, strlen(FIELD_KEY));
+	append(key, klen);
+	pad_key(klen, true);
+	append_uint64(val);
+	append(STR_END, strlen(STR_END));
 }
 
 static const char b64digits[] =
@@ -449,13 +543,14 @@ static void write_base64(const uint8_t *data, size_t sz)
 	}
 }
 
-static void log_json_data(const char *key, const uint8_t *data, size_t sz)
+static void log_json_bytes(const char *key, size_t klen, const uint8_t *data,
+			   size_t sz)
 {
-	append(FIELD_KEY_JSON);
-	write_string(key);
-	append(FIELD_STR_JSON);
+	append(FIELD_KEY_JSON, strlen(FIELD_KEY_JSON));
+	append(key, klen);
+	append(FIELD_STR_JSON, strlen(FIELD_STR_JSON));
 	write_base64(data, sz);
-	append(STR_END_JSON);
+	append(STR_END_JSON, strlen(STR_END_JSON));
 }
 
 static char ascii(unsigned char ch)
@@ -463,21 +558,19 @@ static char ascii(unsigned char ch)
 	return (' ' <= ch && ch <= '~') ? ch : '.';
 }
 
-static void log_text_data(const char *key, const uint8_t *data, size_t sz)
+static void log_text_bytes(const char *key, size_t klen, const uint8_t *data,
+			   size_t sz)
 {
 	size_t i = 0;
 	for (;;) {
-		append(FIELD_KEY_TEXT);
-		write_string(key);
+		append(FIELD_KEY_TEXT, strlen(FIELD_KEY_TEXT));
+		append(key, klen);
+		pad_key(klen, false);
 
-		if (logoff + 6 + (8 * 2) + 1 + 8 + MAX_TAIL > sizeof(logbuf)) {
-			write(log_fd, logbuf, logoff);
-			logoff = 0;
-		}
+		flush(5 + (8 * 2) + 1 + 8);
 
 		size_t n = MIN(sz - i, 8);
 
-		logbuf[logoff++] = '\t';
 		logbuf[logoff++] = hexdigit[(i >> 12) & 15];
 		logbuf[logoff++] = hexdigit[(i >> 8) & 15];
 		logbuf[logoff++] = hexdigit[(i >> 4) & 15];
@@ -505,11 +598,106 @@ static void log_text_data(const char *key, const uint8_t *data, size_t sz)
 	}
 }
 
-void log_data(const char *key, const void *data, size_t sz)
+void log_bytes_2(const char *key, size_t klen, const void *data, size_t sz)
 {
 	if (log_type == LOG_TEXT) {
-		log_text_data(key, data, sz);
+		log_text_bytes(key, klen, data, sz);
 	} else {
-		log_json_data(key, data, sz);
+		log_json_bytes(key, klen, data, sz);
 	}
+}
+
+int log_vargs(const char *fmt, va_list ap)
+{
+	while (*fmt) {
+		const char *key = fmt;
+		const char *pct = strchr(key, '%');
+		if (!pct) {
+			goto error;
+		}
+		size_t klen = pct - key;
+		if (klen && key[klen - 1] == ':') {
+			klen--;
+		}
+		fmt = pct + 1;
+		switch (*(fmt++)) {
+		case '.': {
+			if (*(fmt++) != '*' || *(fmt++) != 's') {
+				goto error;
+			}
+			int len = va_arg(ap, int);
+			const char *str = va_arg(ap, const char *);
+			log_nstring_2(key, klen, len, str);
+			break;
+		}
+		case 's':
+			// cstring
+			log_cstring_2(key, klen, va_arg(ap, const char *));
+			break;
+		case 'd':
+		case 'i':
+			// int
+			log_int_2(key, klen, va_arg(ap, int));
+			break;
+		case 'x':
+		case 'X':
+			// hex
+			log_hex_2(key, klen, va_arg(ap, unsigned));
+			break;
+		case 'u':
+			// unsigned
+			log_uint_2(key, klen, va_arg(ap, unsigned));
+			break;
+		case 'm':
+			// errno
+			log_errno_2(key, klen);
+			break;
+		case 'l':
+			if (*(fmt++) != 'l') {
+				goto error;
+			}
+			switch (*(fmt++)) {
+			case 'u':
+				log_uint64_2(key, klen, va_arg(ap, uint64_t));
+				break;
+			case 'd':
+			case 'i':
+				log_int64_2(key, klen, va_arg(ap, int64_t));
+				break;
+			default:
+				goto error;
+			}
+		default:
+			goto error;
+		}
+		if (*fmt == ',') {
+			fmt++;
+		}
+	}
+	return 0;
+
+error:
+	assert(0);
+	return -1;
+}
+
+int log_args(const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	return log_vargs(fmt, ap);
+}
+
+int flog(enum log_level lvl, const char *fmt, ...)
+{
+	const char *args = strchrnul(fmt, ',');
+	if (!start_log2(lvl, fmt, args - fmt)) {
+		return 0;
+	}
+	if (*args == ',') {
+		va_list ap;
+		va_start(ap, fmt);
+		log_vargs(args + 1, ap);
+	}
+	return finish_log();
 }

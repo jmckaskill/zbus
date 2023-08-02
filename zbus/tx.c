@@ -2,6 +2,7 @@
 #include "tx.h"
 #include "sys.h"
 #include "lib/encode.h"
+#include "lib/log.h"
 #include "dmem/log.h"
 #include <unistd.h>
 #include <strings.h>
@@ -64,7 +65,7 @@ static int send_shutdown_locked(struct tx *t)
 {
 	int err = shutdown(t->fd, SHUT_WR);
 	if (err) {
-		write_error("shutdown", errno);
+		ERROR("shutdown,errno:%m");
 	}
 	t->shutdown = true;
 	if (t->send_waiters) {
@@ -135,7 +136,7 @@ static int send_locked(struct tx *t, bool block, struct rope *r)
 		// We don't want to stick around for the remote. DBUS doesn't
 		// allow dropping individual packets. Have to drop the entire
 		// connection and let the client resync.
-		write_error("overrun on tx buffer", 0);
+		ERROR("overrun on tx buffer");
 		goto shutdown;
 	}
 
@@ -170,7 +171,7 @@ static int send_locked(struct tx *t, bool block, struct rope *r)
 			continue;
 		} else if (w < 0 && errno == EAGAIN) {
 			if (!block) {
-				write_error("overrun on tx buffer", 0);
+				ERROR("overrun on tx buffer");
 				goto shutdown;
 			}
 
@@ -183,14 +184,26 @@ static int send_locked(struct tx *t, bool block, struct rope *r)
 			if (t->shutdown) {
 				return -1;
 			} else if (err) {
-				write_error("poll", errno);
+				ERROR("poll,errno:%m");
 				goto shutdown;
 			}
 			continue;
 		} else if (w <= 0) {
-			write_error("send", errno);
+			ERROR("send,errno:%m");
 			goto shutdown;
 		} else {
+			if (start_debug("send")) {
+				log_int("fd", t->fd);
+				int n = w;
+				struct rope *p = r;
+				while (n > 0) {
+					slice_t s = p->data;
+					log_bytes("data", s.p,
+						  (n < s.len) ? n : s.len);
+					n -= s.len;
+				}
+				finish_log();
+			}
 			r = rope_skip(r, w);
 			continue;
 		}
@@ -242,7 +255,8 @@ int send_request(struct tx *c, struct tx *s, slice_t sender,
 	h.signature = m->signature;
 	// leave reply_serial as 0
 	h.flags = m->flags;
-	int sz = write_header(buf, sizeof(buf), &h, rope_size(body));
+	size_t bsz = rope_size(body);
+	int sz = write_header(buf, sizeof(buf), &h, bsz);
 	if (sz < 0) {
 		return -1;
 	}
@@ -263,8 +277,15 @@ int send_request(struct tx *c, struct tx *s, slice_t sender,
 		r->serial = m->serial;
 		ref_tx(c);
 		s->request_available &= ~(1U << (reqidx - 1));
-		uint32_t serial = ((uint32_t)reqidx << 16) | r->count;
-		set_serial(buf, serial);
+		h.serial = ((uint32_t)reqidx << 16) | r->count;
+		set_serial(buf, h.serial);
+	}
+
+	if (start_debug("send request")) {
+		log_int("fd", s->fd);
+		log_message(&h);
+		log_uint("body", bsz);
+		finish_log();
 	}
 
 	struct rope rope;
@@ -316,7 +337,7 @@ int send_reply(struct tx *s, slice_t sender, const struct message *m,
 	       struct rope *body)
 {
 	// the request is consumed, but c has an active ref
-	uint32_t serial = m->serial;
+	uint32_t serial = m->reply_serial;
 	struct tx *c = consume_request(s, &serial);
 	if (!c) {
 		return -1;

@@ -135,7 +135,7 @@ int load_config(struct bus *b, const char *dir)
 		if (fd < 0) {
 			start_error("failed to open config file", errno);
 			log_cstring("dir", dir);
-			log_slice("file", fn);
+			log_nstring("file", S_PRI(fn));
 			finish_log();
 			continue;
 		}

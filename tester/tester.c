@@ -14,10 +14,10 @@
 #include <sys/socket.h>
 #include <threads.h>
 
-static inline void must(int iserr, const char *msg, int syserr)
+static inline void must(int error, const char *cmd)
 {
-	if (iserr) {
-		write_abort(msg, syserr);
+	if (error) {
+		FATAL("command failed,cmd:%s,errno:%m", cmd);
 	}
 }
 
@@ -27,25 +27,40 @@ static int run_client(void *udata)
 
 	struct client *c = open_client(sockpn);
 
-	int serial = send_bus_method(c, S("ListNames"), "");
-	must(serial < 0, "failed to send ListNames", 0);
+	int serial = call_bus_method(c, S("ListNames"), "");
+	must(serial < 0, "send ListNames");
 
-	slice_t err;
+	slice_t error;
 	struct iterator ii;
-	must(read_reply(c, serial, &ii, &err), "failed to get ListNames reply",
-	     errno);
-	if (err.len) {
-		start_error("ListNames error", 0);
-		log_slice("error", err);
-		finish_log();
+	int err = read_reply(c, serial, &ii, &error);
+	must(err, "get ListNames reply");
+	if (error.len) {
+		ERROR("ListNames,error:%.*s", S_PRI(error));
 	} else if (start_verbose("ListNames reply")) {
 		struct array_data ad = parse_array(&ii);
 		while (array_has_more(&ii, &ad)) {
 			slice_t str = parse_string(&ii);
-			log_slice("name", str);
+			log_nstring("name", S_PRI(str));
 		}
 		finish_log();
-		must(iter_error(&ii), "ListNames reply parse error", 0);
+	}
+	must(iter_error(&ii), "parse ListNames reply");
+
+	serial = call_method(c, S("com.example.Service"), S("/"),
+			     S("com.example.Service"), S("TestMethod"), "us", 0,
+			     S("TestString"));
+	must(serial < 0, "call TestMethod");
+
+	err = read_reply(c, serial, &ii, &error);
+	must(err, "get TestMethod reply");
+	if (error.len) {
+		ERROR("TestMethod,error:%.*s", S_PRI(error));
+	} else {
+		uint32_t u = parse_uint32(&ii);
+		slice_t str = parse_string(&ii);
+		int err = iter_error(&ii);
+		NOTICE("TestMethod reply,number:%u,string:%.*s,parse:%d", u,
+		       S_PRI(str), err);
 	}
 
 	close_client(c);
@@ -61,31 +76,38 @@ static struct client *start_server(const char *sockpn)
 {
 	struct client *c = open_client(sockpn);
 
-	int serial = send_bus_method(c, S("RequestName"), "su",
+	int serial = call_bus_method(c, S("RequestName"), "su",
 				     S("com.example.Service"), (uint32_t)0);
-	must(serial < 0, "call request name failed", 0);
+	must(serial < 0, "call RequestName");
 
 	slice_t err;
 	struct iterator ii;
-	must(read_reply(c, serial, &ii, &err),
-	     "failed to get request name reply", 0);
+	must(read_reply(c, serial, &ii, &err), "get RequestName reply");
 
 	if (err.len) {
-		start_abort("request name failed", 0);
-		log_slice("error", err);
-		finish_log();
+		ERROR("RequestName failed,error:%.*s", S_PRI(err));
 	} else {
 		int errcode = parse_uint32(&ii);
-		if (iter_error(&ii) ||
-		    errcode != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
-			start_abort("request name failed", 0);
-			log_number("parse error", iter_error(&ii));
-			log_number("errcode", errcode);
-			finish_log();
+		if (errcode != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
+			ERROR("RequestName failed,errcode:%d", errcode);
 		}
 	}
 
+	must(iter_error(&ii), "parse RequestName reply");
 	return c;
+}
+
+static void server_message(struct client *c, const struct message *m,
+			   struct iterator *ii)
+{
+	if (slice_eq(m->member, S("TestMethod"))) {
+		uint32_t u = parse_uint32(ii);
+		slice_t str = parse_string(ii);
+		NOTICE("server TestMethod,number:%d,string:%.*s", u,
+		       S_PRI(str));
+		int err = send_reply(c, m, "us", u + 1, S("response"));
+		must(err, "send TestMethod reply");
+	}
 }
 
 static int usage(void)
@@ -125,36 +147,40 @@ int main(int argc, char *argv[])
 	}
 	char *sockpn = argv[0];
 
-	if (setup_log()) {
+	if (setup_log(LOG_TEXT, -1, "tester")) {
 		return 1;
 	}
 
-	write_verbose("startup");
+	VERBOSE("startup");
 
 	if (readypn != NULL) {
-		start_notice("waiting for server to be ready by opening FIFO");
-		log_cstring("path", readypn);
-		finish_log();
+		NOTICE("waiting for server ready,fifopn:%s", readypn);
 		int rfd = open(readypn, O_RDONLY);
-		must(rfd < 0, "failed to open ready fifo", errno);
+		must(rfd < 0, "open ready fifo");
 		close(rfd);
 	}
 
-	write_notice("opening dbus socket");
-	log_cstring("path", sockpn);
-	finish_log();
+	NOTICE("opening dbus socket,path:%s", sockpn);
 
 	struct client *c = start_server(sockpn);
 	(void)c;
 
 	thrd_t thrd;
 	if (thrd_create(&thrd, &run_client, sockpn) != thrd_success) {
-		write_error("failed to start client thread", errno);
+		ERROR("failed to start client thread,errno:%m");
 		return 1;
 	}
-	thrd_detach(thrd);
 
-	sleep(100000);
+	struct message m;
+	struct iterator ii;
+	while (!read_message(c, &m, &ii)) {
+		if (m.type == MSG_METHOD &&
+		    slice_eq(m.interface, S("com.example.Service"))) {
+			server_message(c, &m, &ii);
+		}
+	}
 
+	thrd_join(thrd, NULL);
+	close_client(c);
 	return 0;
 }

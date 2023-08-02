@@ -15,7 +15,7 @@ int generate_busid(char *busid)
 	static const char hex_enc[] = "0123456789abcdef";
 	uint8_t rand[16];
 	if (getentropy(rand, sizeof(rand))) {
-		write_error("getentropy", errno);
+		ERROR("getentropy,errno:%m");
 		return -1;
 	}
 	for (int i = 0; i < sizeof(rand); i++) {
@@ -29,7 +29,7 @@ int bind_bus(const char *sockpn)
 {
 	int lfd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, PF_UNIX);
 	if (lfd < 0) {
-		write_error("socket", errno);
+		ERROR("socket,errno:%m");
 		goto error;
 	}
 
@@ -39,9 +39,7 @@ int bind_bus(const char *sockpn)
 
 	size_t pnlen = strlen(sockpn);
 	if (pnlen + 1 > sizeof(addr.sun_path)) {
-		start_error("socket pathname too long", 0);
-		log_cstring("path", sockpn);
-		finish_log();
+		ERROR("socket pathname too long,path:%s", sockpn);
 		goto error;
 	}
 
@@ -52,9 +50,7 @@ int bind_bus(const char *sockpn)
 	socklen_t salen = addr.sun_path + pnlen + 1 - (char *)&addr;
 	if (bind(lfd, (struct sockaddr *)&addr, salen) ||
 	    listen(lfd, SOMAXCONN)) {
-		start_error("bind", errno);
-		log_cstring("path", sockpn);
-		finish_log();
+		ERROR("bind,errno:%m,path:%s", sockpn);
 		goto error;
 	}
 
@@ -67,7 +63,7 @@ error:
 int setup_signals()
 {
 	if (signal(SIGPIPE, SIG_IGN)) {
-		write_error("ignore sigpipe", errno);
+		ERROR("ignore sigpipe,errno:%m");
 		return -1;
 	}
 

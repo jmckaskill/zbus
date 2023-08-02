@@ -1,5 +1,5 @@
 cc = musl-gcc
 ld = musl-gcc
 ar = ar rcs
-cflags = -static -Wstrict-prototypes -fstack-usage -fdiagnostics-color -g -Wall -Werror -I.
-ldflags = -static -fdiagnostics-color -g -Wall -Werror
+cflags = -Wstrict-prototypes -fstack-usage -fdiagnostics-color -g -Wall -Werror -I.
+ldflags =  -fdiagnostics-color -g -Wall -Werror

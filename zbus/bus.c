@@ -102,9 +102,8 @@ static void notify_name_changed(struct bus *bus, int id, slice_t name,
 	}
 	return;
 error:
-	start_error("failed to create NameOwnerChanged message", 0);
-	log_slice("name", name);
-	finish_log();
+	ERROR("failed to create NameOwnerChanged message,name:%.*s",
+	      S_PRI(name));
 	return;
 }
 
