@@ -53,8 +53,8 @@ int request_name(struct bus *b, slice_t name, int id, struct tx *tx,
 int release_name(struct bus *b, slice_t name, int id, struct tx *tx);
 
 int update_bus_sub(struct bus *b, bool add, struct tx *to, struct match *m,
-		   struct circ_list *o);
+		   uint32_t serial, struct circ_list *o);
 int update_bcast_sub(struct bus *b, bool add, struct tx *to, struct match *m,
-		     struct circ_list *o);
+		     uint32_t serial, struct circ_list *o);
 int update_ucast_sub(struct bus *b, bool add, struct tx *to, struct match *m,
-		     struct circ_list *o);
+		     uint32_t serial, struct circ_list *o);

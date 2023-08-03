@@ -196,6 +196,10 @@ static int read_message(struct rx *r, struct msg_stream *s)
 	if (start_debug("read")) {
 		log_int("fd", r->fd);
 		log_message(&m);
+		log_bytes("body", r1.data.p, r1.data.len);
+		if (r2.data.len) {
+			log_bytes("body2", r2.data.p, r2.data.len);
+		}
 		finish_log();
 	}
 
@@ -220,10 +224,7 @@ int rx_thread(void *udata)
 {
 	struct rx *r = udata;
 
-	char buf[UNIQ_ADDR_MAXLEN + 1];
-	memcpy(buf, r->addr.p, r->addr.len);
-	buf[(int)r->addr.len] = '\0';
-	pthread_setname_np(pthread_self(), buf);
+	set_thread_name(to_slice(r->addr));
 
 	if (authenticate(r)) {
 		goto free_rx;

@@ -70,7 +70,7 @@ void free_subscription_map(struct subscription_map *m)
 static int add_subscription(struct rcu_writer *w,
 			    struct subscription_map **pmap,
 			    const struct match *match, struct tx *tx,
-			    struct circ_list *owner)
+			    uint32_t serial, struct circ_list *owner)
 {
 	struct subscription key;
 	key.match = *match;
@@ -81,15 +81,13 @@ static int add_subscription(struct rcu_writer *w,
 	int n = old ? old->len : 0;
 	int idx = lower_bound(&key, old->v, n, esz, &insert_compare);
 
-	if (idx >= 0) {
-		// subscription is already in the list. Increment the count.
-		// This field is only used by add/rm subscription under the
-		// write lock so we don't need to publish a new RCU data.
-		struct subscription *s = old->v[idx];
-		s->count++;
-		return 0;
+	if (idx < 0) {
+		// new subscription
+		idx = -(idx + 1);
+	} else {
+		// subscription is already in the list. Add it before the
+		// existing item.
 	}
-	idx = -(idx + 1);
 
 	struct subscription_map *m = malloc(sizeof(*m) + (n + 1) * esz);
 	struct subscription *s = malloc(sizeof(*s) + match->str_len);
@@ -103,8 +101,9 @@ static int add_subscription(struct rcu_writer *w,
 	memcpy(s->mstr, match->base, match->str_len);
 	s->match.base = s->mstr;
 	s->tx = tx;
+	s->serial = serial;
 	ref_tx(s->tx);
-	s->count = 1;
+	s->serial = serial;
 	circ_add(&s->owner, owner);
 
 	// copy the subscriptions across
@@ -135,12 +134,6 @@ static int rm_subscription(struct rcu_writer *w, struct subscription_map **pmap,
 	}
 
 	struct subscription *s = old->v[idx];
-	if (--s->count > 0) {
-		// Ref count is only used in add/rm functions within write lock.
-		// So safe to modify directly without duplicating the data.
-		return 0;
-	}
-
 	struct subscription_map *m = malloc(sizeof(*m) + (n - 1) * esz);
 	if (!m) {
 		return ERR_OOM;
@@ -158,10 +151,10 @@ static int rm_subscription(struct rcu_writer *w, struct subscription_map **pmap,
 
 int addrm_subscription(struct rcu_writer *w, struct subscription_map **pmap,
 		       bool add, const struct match *m, struct tx *tx,
-		       struct circ_list *o)
+		       uint32_t serial, struct circ_list *o)
 {
 	if (add) {
-		return add_subscription(w, pmap, m, tx, o);
+		return add_subscription(w, pmap, m, tx, serial, o);
 	} else {
 		return rm_subscription(w, pmap, m, tx);
 	}

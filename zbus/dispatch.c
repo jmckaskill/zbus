@@ -6,13 +6,11 @@
 ///////////////////////////////////////////
 // Add/RemoveMatch
 
-static int addrm_match(struct rx *r, const struct message *req, slice_t body,
-		       bool add)
+static int addrm_match(struct rx *r, const struct message *req,
+		       struct iterator *ii, bool add)
 {
-	struct iterator ii;
-	init_iterator(&ii, req->signature, body.p, body.len);
-	slice_t mstr = parse_string(&ii);
-	if (iter_error(&ii)) {
+	slice_t mstr = parse_string(ii);
+	if (iter_error(ii)) {
 		return ERR_BAD_ARGUMENT;
 	}
 
@@ -34,16 +32,19 @@ static int addrm_match(struct rx *r, const struct message *req, slice_t body,
 	if (slice_eq(iface, BUS_INTERFACE)) {
 		if (path_matches(&m, BUS_PATH) &&
 		    member_matches(&m, SIGNAL_NAME_OWNER_CHANGED)) {
-			err = update_bus_sub(r->bus, add, r->tx, &m, &r->subs);
+			err = update_bus_sub(r->bus, add, r->tx, &m,
+					     req->serial, &r->subs);
 		} else {
 			err = ERR_NOT_FOUND;
 		}
 
 	} else if (!m.sender_len) {
-		err = update_bcast_sub(r->bus, add, r->tx, &m, &r->subs);
+		err = update_bcast_sub(r->bus, add, r->tx, &m, req->serial,
+				       &r->subs);
 
 	} else {
-		err = update_ucast_sub(r->bus, add, r->tx, &m, &r->subs);
+		err = update_ucast_sub(r->bus, add, r->tx, &m, req->serial,
+				       &r->subs);
 	}
 
 	mtx_unlock(&r->bus->lk);
@@ -57,14 +58,16 @@ void rm_all_matches_locked(struct rx *r)
 		struct circ_list *n = ii->next;
 		struct subscription *s =
 			container_of(ii, struct subscription, owner);
-		s->count = 1;
 		slice_t src = match_sender(&s->match);
 		if (!src.len) {
-			update_bcast_sub(r->bus, false, r->tx, &s->match, NULL);
+			update_bcast_sub(r->bus, false, r->tx, &s->match, 0,
+					 NULL);
 		} else if (slice_eq(src, BUS_DESTINATION)) {
-			update_bus_sub(r->bus, false, r->tx, &s->match, NULL);
+			update_bus_sub(r->bus, false, r->tx, &s->match, 0,
+				       NULL);
 		} else {
-			update_ucast_sub(r->bus, false, r->tx, &s->match, NULL);
+			update_ucast_sub(r->bus, false, r->tx, &s->match, 0,
+					 NULL);
 		}
 		ii = n;
 	}
@@ -92,7 +95,8 @@ static int build_signal(struct cached_signal *c, const struct message *m)
 	n.sender = c->src;
 	n.signature = m->signature;
 	// leave fdnum blank
-	// leave reply_serial blank
+	// add a dummy reply serial that we'll overwrite for each publish
+	n.reply_serial = UINT32_MAX;
 	n.flags = m->flags;
 	size_t bodysz = rope_size(c->rope.next);
 	int sz = write_header(c->buf, sizeof(c->buf), &n, bodysz);
@@ -120,6 +124,7 @@ static int send_broadcast(struct subscription_map *s, const struct message *m,
 			return ERR_OOM;
 		}
 
+		set_reply_serial(c->buf, v[i]->serial);
 		send_rope(v[i]->tx, false, &c->rope);
 	}
 	return 0;
@@ -163,13 +168,11 @@ error:
 ///////////////////////////////////////////
 // Request/ReleaseName
 
-static int addrm_name(struct rx *r, const struct message *req, slice_t body,
-		      bool add)
+static int addrm_name(struct rx *r, const struct message *req,
+		      struct iterator *ii, bool add)
 {
-	struct iterator ii;
-	init_iterator(&ii, req->signature, body.p, body.len);
-	slice_t name = parse_string(&ii);
-	if (iter_error(&ii)) {
+	slice_t name = parse_string(ii);
+	if (iter_error(ii)) {
 		return ERR_BAD_ARGUMENT;
 	}
 
@@ -257,13 +260,9 @@ static int list_names(struct rx *r, struct rcu_names *n,
 ///////////////////////////////////
 // Bus dispatch
 
-static int bus_method(struct rx *r, const struct message *m, struct rope *body)
+static int bus_method(struct rx *r, const struct message *m,
+		      struct iterator *ii)
 {
-	if (body->next) {
-		// we were unable to defragment the body earlier
-		return ERR_OOM;
-	}
-
 	if (slice_eq(m->path, BUS_PATH) &&
 	    slice_eq(m->interface, BUS_INTERFACE)) {
 		switch (m->member.len) {
@@ -276,7 +275,7 @@ static int bus_method(struct rx *r, const struct message *m, struct rope *body)
 			break;
 		case 8:
 			if (slice_eq(m->member, METHOD_ADD_MATCH)) {
-				return addrm_match(r, m, body->data, true);
+				return addrm_match(r, m, ii, true);
 			}
 			break;
 		case 9:
@@ -289,11 +288,11 @@ static int bus_method(struct rx *r, const struct message *m, struct rope *body)
 			break;
 		case 11:
 			if (slice_eq(m->member, METHOD_REMOVE_MATCH)) {
-				return addrm_match(r, m, body->data, true);
+				return addrm_match(r, m, ii, true);
 			} else if (slice_eq(m->member, METHOD_REQUEST_NAME)) {
-				return addrm_name(r, m, body->data, true);
+				return addrm_name(r, m, ii, true);
 			} else if (slice_eq(m->member, METHOD_RELEASE_NAME)) {
-				return addrm_name(r, m, body->data, false);
+				return addrm_name(r, m, ii, false);
 			}
 			break;
 		case 12:
@@ -417,34 +416,43 @@ static int unicast(struct rx *r, const struct message *m, struct rope *b)
 	return err;
 }
 
-int dispatch(struct rx *r, const struct message *msg, struct rope *body)
+int dispatch(struct rx *r, const struct message *m, struct rope *b)
 {
-	switch (msg->type) {
+	switch (m->type) {
 	case MSG_SIGNAL:
-		if (!msg->destination.len) {
-			broadcast(r, msg, body);
+		if (!m->destination.len) {
+			broadcast(r, m, b);
 		} else {
-			unicast(r, msg, body);
+			unicast(r, m, b);
 		}
 		return 0;
 	case MSG_METHOD: {
 		int err;
-		if (!msg->destination.len) {
-			err = peer_method(r, msg, body);
-		} else if (slice_eq(msg->destination, BUS_DESTINATION)) {
-			err = bus_method(r, msg, body);
+		if (!m->destination.len) {
+			err = peer_method(r, m, b);
+		} else if (slice_eq(m->destination, BUS_DESTINATION)) {
+			if (b->next) {
+				// we were unable to defragment the message
+				// earlier
+				err = ERR_OOM;
+			} else {
+				struct iterator ii;
+				init_iterator(&ii, m->signature, b->data.p,
+					      b->data.len);
+				err = bus_method(r, m, &ii);
+			}
 		} else {
-			err = unicast(r, msg, body);
+			err = unicast(r, m, b);
 		}
 
-		if (err && !(msg->flags & FLAG_NO_REPLY_EXPECTED)) {
-			return reply_error(r->tx, msg->serial, err);
+		if (err && !(m->flags & FLAG_NO_REPLY_EXPECTED)) {
+			return reply_error(r->tx, m->serial, err);
 		}
 		return 0;
 	}
 	case MSG_REPLY:
 	case MSG_ERROR:
-		send_reply(r->tx, to_slice(r->addr), msg, body);
+		send_reply(r->tx, to_slice(r->addr), m, b);
 		return 0;
 	default:
 		assert(0);

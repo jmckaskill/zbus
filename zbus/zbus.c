@@ -18,6 +18,8 @@ static int ready_indicator(void *udata)
 {
 	char *fifopn = (char *)udata;
 
+	set_thread_name(S("ready-fifo"));
+
 	for (;;) {
 		// Wait for a client to open the fifo for read. We then
 		// immediately close it to indicate that we are ready to go
@@ -45,6 +47,8 @@ static int usage(void)
 
 int main(int argc, char *argv[])
 {
+	set_thread_name(S("main"));
+
 	enum log_type log_type = LOG_TEXT;
 	const char *configdir = ".";
 	char *readypn = NULL;

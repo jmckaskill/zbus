@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "sys.h"
 #include "dmem/log.h"
 #include <errno.h>
@@ -9,6 +10,7 @@
 #include <string.h>
 #include <signal.h>
 #include <poll.h>
+#include <pthread.h>
 
 int generate_busid(char *busid)
 {
@@ -87,4 +89,13 @@ try_again:
 		goto try_again;
 	}
 	return n <= 0;
+}
+
+void set_thread_name(slice_t s)
+{
+	char buf[256];
+	size_t n = (s.len < sizeof(buf)) ? s.len : (sizeof(buf) - 1);
+	memcpy(buf, s.p, n);
+	buf[n] = '\0';
+	pthread_setname_np(pthread_self(), buf);
 }

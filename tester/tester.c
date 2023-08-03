@@ -21,46 +21,103 @@ static inline void must(int error, const char *cmd)
 	}
 }
 
+static int on_list_names(void *udata, struct client *c, struct message *m,
+			 struct iterator *ii)
+{
+	unregister_cb(c, m->reply_serial);
+
+	if (m->error.len) {
+		ERROR("ListNames,error:%.*s", S_PRI(m->error));
+	} else if (start_verbose("ListNames reply")) {
+		struct array_data ad = parse_array(ii);
+		while (array_has_more(ii, &ad)) {
+			slice_t str = parse_string(ii);
+			log_nstring("name", S_PRI(str));
+		}
+		finish_log();
+	}
+	must(iter_error(ii), "parse ListNames reply");
+	return 0;
+}
+
+static int on_test_signal(void *udata, struct client *c, struct message *m,
+			  struct iterator *ii)
+{
+	const char *match = udata;
+	switch (m->type) {
+	case MSG_REPLY:
+		NOTICE("TestSignal registered,match:%s", match);
+		break;
+	case MSG_ERROR:
+		ERROR("failed to register TestSignal,error:%.*s,match:%s",
+		      S_PRI(m->error), match);
+		break;
+	case MSG_SIGNAL: {
+		uint32_t u = parse_uint32(ii);
+		slice_t str = parse_string(ii);
+		NOTICE("recv TestSignal,number:%u,string:%.*s,match:%s", u,
+		       S_PRI(str), match);
+		break;
+	}
+	}
+	return 0;
+}
+
+static int on_test_method(void *, struct client *c, struct message *m,
+			  struct iterator *ii)
+{
+	unregister_cb(c, m->reply_serial);
+
+	if (m->error.len) {
+		ERROR("TestMethod,error:%.*s", S_PRI(m->error));
+	} else {
+		uint32_t u = parse_uint32(ii);
+		slice_t str = parse_string(ii);
+		int err = iter_error(ii);
+		NOTICE("TestMethod reply,number:%u,string:%.*s,parse:%d", u,
+		       S_PRI(str), err);
+	}
+
+	return 0;
+}
+
 static int run_client(void *udata)
 {
 	const char *sockpn = udata;
 
 	struct client *c = open_client(sockpn);
 
-	int serial = call_bus_method(c, S("ListNames"), "");
-	must(serial < 0, "send ListNames");
+	uint32_t list_names = register_cb(c, &on_list_names, NULL);
+	must(!list_names, "register ListNames");
+	must(call_bus_method(c, list_names, S("ListNames"), ""),
+	     "send ListNames");
 
-	slice_t error;
+	slice_t ucast = S("sender='com.example.Service',"
+			  "interface='com.example.Service',"
+			  "member='TestSignal'");
+	uint32_t test_signal = register_cb(c, &on_test_signal, (void *)ucast.p);
+	must(!test_signal, "register TestSignal");
+	must(call_bus_method(c, test_signal, S("AddMatch"), "s", ucast),
+	     "send AddMatch");
+
+	slice_t bcast = S("interface='com.example.Service',"
+			  "member='TestSignal2'");
+	uint32_t test_signal2 =
+		register_cb(c, &on_test_signal, (void *)bcast.p);
+	must(!test_signal2, "register TestSignal");
+	must(call_bus_method(c, test_signal2, S("AddMatch"), "s", bcast),
+	     "send AddMatch");
+
+	uint32_t test_method = register_cb(c, &on_test_method, NULL);
+	must(!test_method, "register TestMethod");
+	must(call_method(c, test_method, S("com.example.Service"), S("/"),
+			 S("com.example.Service"), S("TestMethod"), "us", 0,
+			 S("TestString")),
+	     "send TestMethod");
+
+	struct message m;
 	struct iterator ii;
-	int err = read_reply(c, serial, &ii, &error);
-	must(err, "get ListNames reply");
-	if (error.len) {
-		ERROR("ListNames,error:%.*s", S_PRI(error));
-	} else if (start_verbose("ListNames reply")) {
-		struct array_data ad = parse_array(&ii);
-		while (array_has_more(&ii, &ad)) {
-			slice_t str = parse_string(&ii);
-			log_nstring("name", S_PRI(str));
-		}
-		finish_log();
-	}
-	must(iter_error(&ii), "parse ListNames reply");
-
-	serial = call_method(c, S("com.example.Service"), S("/"),
-			     S("com.example.Service"), S("TestMethod"), "us", 0,
-			     S("TestString"));
-	must(serial < 0, "call TestMethod");
-
-	err = read_reply(c, serial, &ii, &error);
-	must(err, "get TestMethod reply");
-	if (error.len) {
-		ERROR("TestMethod,error:%.*s", S_PRI(error));
-	} else {
-		uint32_t u = parse_uint32(&ii);
-		slice_t str = parse_string(&ii);
-		int err = iter_error(&ii);
-		NOTICE("TestMethod reply,number:%u,string:%.*s,parse:%d", u,
-		       S_PRI(str), err);
+	while (!read_message(c, &m, &ii) && !distribute_message(c, &m, &ii)) {
 	}
 
 	close_client(c);
@@ -72,29 +129,42 @@ static int run_client(void *udata)
 #define DBUS_REQUEST_NAME_REPLY_EXISTS 3
 #define DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER 4
 
+static int on_request_name(void *, struct client *c, struct message *m,
+			   struct iterator *ii)
+{
+	unregister_cb(c, m->reply_serial);
+
+	if (m->error.len) {
+		FATAL("RequestName failed,error:%.*s", S_PRI(m->error));
+	} else {
+		int errcode = parse_uint32(ii);
+		if (errcode != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
+			FATAL("RequestName failed,errcode:%d", errcode);
+		}
+	}
+	return 1;
+}
+
 static struct client *start_server(const char *sockpn)
 {
 	struct client *c = open_client(sockpn);
 
-	int serial = call_bus_method(c, S("RequestName"), "su",
-				     S("com.example.Service"), (uint32_t)0);
-	must(serial < 0, "call RequestName");
+	uint32_t request_name = register_cb(c, &on_request_name, NULL);
+	must(call_bus_method(c, request_name, S("RequestName"), "su",
+			     S("com.example.Service"), (uint32_t)0),
+	     "send RequestName");
 
-	slice_t err;
-	struct iterator ii;
-	must(read_reply(c, serial, &ii, &err), "get RequestName reply");
-
-	if (err.len) {
-		ERROR("RequestName failed,error:%.*s", S_PRI(err));
-	} else {
-		int errcode = parse_uint32(&ii);
-		if (errcode != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
-			ERROR("RequestName failed,errcode:%d", errcode);
+	for (;;) {
+		struct message m;
+		struct iterator ii;
+		if (read_message(c, &m, &ii)) {
+			close_client(c);
+			return NULL;
+		}
+		if (distribute_message(c, &m, &ii)) {
+			return c;
 		}
 	}
-
-	must(iter_error(&ii), "parse RequestName reply");
-	return c;
 }
 
 static void server_message(struct client *c, const struct message *m,
@@ -107,6 +177,14 @@ static void server_message(struct client *c, const struct message *m,
 		       S_PRI(str));
 		int err = send_reply(c, m, "us", u + 1, S("response"));
 		must(err, "send TestMethod reply");
+
+		err = send_signal(c, S("/"), S("com.example.Service"),
+				  S("TestSignal"), "su", S("TestString"), 14);
+		must(err, "send TestSignal");
+
+		err = send_signal(c, S("/path"), S("com.example.Service"),
+				  S("TestSignal2"), "su", S("TestString2"), 15);
+		must(err, "send TestSignal2");
 	}
 }
 

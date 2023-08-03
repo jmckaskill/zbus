@@ -284,7 +284,7 @@ int send_request(struct tx *c, struct tx *s, slice_t sender,
 	if (start_debug("send request")) {
 		log_int("fd", s->fd);
 		log_message(&h);
-		log_uint("body", bsz);
+		log_uint("bsz", bsz);
 		finish_log();
 	}
 

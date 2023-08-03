@@ -73,6 +73,7 @@ int end_message(struct builder b);
 
 // These functions let you modify a written header buffer in place
 void set_serial(char *buf, uint32_t serial);
+void set_reply_serial(char *buf, uint32_t serial);
 
 ///////////////////////////////////////////////////////
 // Inline implementationns

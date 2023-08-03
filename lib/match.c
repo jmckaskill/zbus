@@ -148,6 +148,9 @@ int decode_match(struct match *m, const char *s, size_t len)
 
 bool path_matches(const struct match *m, slice_t path)
 {
+	if (!m->path_len) {
+		return true;
+	}
 	if (m->include_children ? (path.len < m->path_len) :
 				  (path.len != m->path_len)) {
 		return false;

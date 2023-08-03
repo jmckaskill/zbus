@@ -269,7 +269,8 @@ int release_name(struct bus *b, slice_t name, int id, struct tx *tx)
 }
 
 static int update_root_sub(struct bus *b, bool add, struct tx *to,
-			   struct match *m, struct circ_list *o, int offset)
+			   struct match *m, uint32_t serial,
+			   struct circ_list *o, int offset)
 {
 	struct rcu_names *od = rcu_root(b->names);
 	struct rcu_names *nd = malloc(sizeof(*nd));
@@ -279,7 +280,7 @@ static int update_root_sub(struct bus *b, bool add, struct tx *to,
 	*nd = *od;
 
 	struct subscription_map **pmap = (void *)((char *)nd + offset);
-	int err = addrm_subscription(b->names, pmap, add, m, to, o);
+	int err = addrm_subscription(b->names, pmap, add, m, to, serial, o);
 	if (err) {
 		free(nd);
 		return err;
@@ -290,21 +291,21 @@ static int update_root_sub(struct bus *b, bool add, struct tx *to,
 }
 
 int update_bus_sub(struct bus *b, bool add, struct tx *to, struct match *m,
-		   struct circ_list *o)
+		   uint32_t serial, struct circ_list *o)
 {
-	return update_root_sub(b, add, to, m, o,
+	return update_root_sub(b, add, to, m, serial, o,
 			       offsetof(struct rcu_names, name_changed));
 }
 
 int update_bcast_sub(struct bus *b, bool add, struct tx *to, struct match *m,
-		     struct circ_list *o)
+		     uint32_t serial, struct circ_list *o)
 {
-	return update_root_sub(b, add, to, m, o,
+	return update_root_sub(b, add, to, m, serial, o,
 			       offsetof(struct rcu_names, broadcast));
 }
 
 int update_ucast_sub(struct bus *b, bool add, struct tx *to, struct match *m,
-		     struct circ_list *o)
+		     uint32_t serial, struct circ_list *o)
 {
 	struct rcu_names *names = rcu_root(b->names);
 
@@ -328,7 +329,8 @@ int update_ucast_sub(struct bus *b, bool add, struct tx *to, struct match *m,
 	struct address *a = map->v[idx];
 	struct subscription_map *os = rcu_root(a->subs_writer);
 	struct subscription_map *ns = os;
-	int err = addrm_subscription(a->subs_writer, &ns, add, m, to, o);
+	int err =
+		addrm_subscription(a->subs_writer, &ns, add, m, to, serial, o);
 	if (err) {
 		return err;
 	}

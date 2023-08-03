@@ -15,6 +15,7 @@
 static int ready_indicator(void *udata)
 {
 	char *fifopn = (char *)udata;
+	set_thread_name(S("ready"));
 
 	for (;;) {
 		// Wait for a client to open the fifo for read. We then
@@ -39,6 +40,8 @@ static int usage()
 
 int main(int argc, char *argv[])
 {
+	set_thread_name(S("main"));
+	
 	char *readypn = NULL;
 	int i;
 	while ((i = getopt(argc, argv, "hqvf:")) > 0) {

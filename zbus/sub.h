@@ -9,7 +9,7 @@ struct subscription {
 	struct circ_list owner;
 	struct tx *tx;
 	struct match match;
-	int count;
+	uint32_t serial;
 	char mstr[0];
 };
 
@@ -23,7 +23,7 @@ void free_subscription_map(struct subscription_map *m);
 
 int addrm_subscription(struct rcu_writer *w, struct subscription_map **pmap,
 		       bool add, const struct match *m, struct tx *tx,
-		       struct circ_list *o);
+		       uint32_t serial, struct circ_list *o);
 
 int find_subscriptions(struct subscription_map *m, slice_t interface,
 		       struct subscription ***pfirst);

@@ -151,7 +151,8 @@ struct client *open_client(const char *sockpn)
 		goto error;
 	}
 	c->fd = fd;
-	c->next_serial = 1;
+	c->cb_available = UINT16_MAX;
+	memset(&c->cbs, 0, sizeof(c->cbs));
 	init_msg_stream(&c->in, msgsz, defrag);
 
 	struct message m;
@@ -181,12 +182,31 @@ void close_client(struct client *c)
 	}
 }
 
+uint32_t register_cb(struct client *c, message_fn fn, void *udata)
+{
+	int idx = ffs(c->cb_available);
+	if (!idx) {
+		return 0;
+	}
+	c->cbs[idx - 1].fn = fn;
+	c->cbs[idx - 1].udata = udata;
+	c->cb_available &= ~(1U << (idx - 1));
+	return idx;
+}
+
+void unregister_cb(struct client *c, uint32_t serial)
+{
+	assert(0 < serial && serial <= sizeof(c->cbs) / sizeof(c->cbs[0]));
+	c->cb_available |= 1U << (serial - 1);
+	c->cbs[serial - 1].fn = NULL;
+	c->cbs[serial - 1].udata = NULL;
+}
+
 int vsend_signal(struct client *c, slice_t path, slice_t iface, slice_t mbr,
 		 const char *sig, va_list ap)
 {
-	int serial = c->next_serial++;
 	struct message m;
-	init_message(&m, MSG_SIGNAL, serial);
+	init_message(&m, MSG_SIGNAL, UINT32_MAX);
 	m.member = mbr;
 	m.path = path;
 	m.interface = iface;
@@ -210,12 +230,12 @@ int vsend_signal(struct client *c, slice_t path, slice_t iface, slice_t mbr,
 	return 0;
 }
 
-int vcall_method(struct client *c, slice_t dst, slice_t path, slice_t iface,
-		 slice_t mbr, const char *sig, va_list ap)
+int vcall_method(struct client *c, uint32_t serial, slice_t dst, slice_t path,
+		 slice_t iface, slice_t mbr, const char *sig, va_list ap)
 {
-	int serial = c->next_serial++;
 	struct message m;
-	init_message(&m, MSG_METHOD, serial);
+	init_message(&m, MSG_METHOD, serial ? serial : UINT32_MAX);
+	m.flags = serial ? 0 : FLAG_NO_REPLY_EXPECTED;
 	m.member = mbr;
 	m.destination = dst;
 	m.path = path;
@@ -232,20 +252,18 @@ int vcall_method(struct client *c, slice_t dst, slice_t path, slice_t iface,
 		ERROR("failed to encode message");
 		return -1;
 	}
-	if (write_all(c->fd, buf, sz,
-		      "call_method,dst:%.*s,path:%.*s,iface:%.*s,mbr:%.*s",
+	if (write_all(c->fd, buf, sz, "dst:%.*s,path:%.*s,iface:%.*s,mbr:%.*s",
 		      S_PRI(dst), S_PRI(path), S_PRI(iface), S_PRI(mbr))) {
 		return -1;
 	}
-	return serial;
+	return 0;
 }
 
 int vsend_reply(struct client *c, const struct message *req, const char *sig,
 		va_list ap)
 {
-	int serial = c->next_serial++;
 	struct message m;
-	init_message(&m, MSG_REPLY, serial);
+	init_message(&m, MSG_REPLY, UINT32_MAX);
 	m.signature = sig;
 	m.reply_serial = req->serial;
 	m.destination = req->sender;
@@ -269,9 +287,8 @@ int vsend_reply(struct client *c, const struct message *req, const char *sig,
 
 int send_error(struct client *c, uint32_t request_serial, slice_t error)
 {
-	int serial = c->next_serial++;
 	struct message m;
-	init_message(&m, MSG_ERROR, serial);
+	init_message(&m, MSG_ERROR, UINT32_MAX);
 	m.error = error;
 	m.reply_serial = request_serial;
 
@@ -298,12 +315,12 @@ int send_signal(struct client *c, slice_t path, slice_t iface, slice_t mbr,
 	return vsend_signal(c, path, iface, mbr, sig, ap);
 }
 
-int call_method(struct client *c, slice_t dst, slice_t path, slice_t iface,
-		slice_t mbr, const char *sig, ...)
+int call_method(struct client *c, uint32_t serial, slice_t dst, slice_t path,
+		slice_t iface, slice_t mbr, const char *sig, ...)
 {
 	va_list ap;
 	va_start(ap, sig);
-	return vcall_method(c, dst, path, iface, mbr, sig, ap);
+	return vcall_method(c, serial, dst, path, iface, mbr, sig, ap);
 }
 
 int send_reply(struct client *c, const struct message *req, const char *sig,
@@ -314,11 +331,12 @@ int send_reply(struct client *c, const struct message *req, const char *sig,
 	return vsend_reply(c, req, sig, ap);
 }
 
-int call_bus_method(struct client *c, slice_t member, const char *sig, ...)
+int call_bus_method(struct client *c, uint32_t serial, slice_t member,
+		    const char *sig, ...)
 {
 	va_list ap;
 	va_start(ap, sig);
-	return vcall_method(c, S("org.freedesktop.DBus"),
+	return vcall_method(c, serial, S("org.freedesktop.DBus"),
 			    S("/org/freedesktop/DBus"),
 			    S("org.freedesktop.DBus"), member, sig, ap);
 }
@@ -356,23 +374,17 @@ int read_message(struct client *c, struct message *msg, struct iterator *body)
 	}
 }
 
-int read_reply(struct client *c, int serial, struct iterator *reply,
-	       slice_t *perror)
+int distribute_message(struct client *c, struct message *m,
+		       struct iterator *body)
 {
-	for (;;) {
-		struct message msg;
-		if (read_message(c, &msg, reply)) {
-			perror->p = strerror(errno);
-			perror->len = strlen(perror->p);
-			return -1;
-		}
-		if (msg.type != MSG_REPLY && msg.type != MSG_ERROR) {
-			continue;
-		}
-		if (msg.reply_serial != serial) {
-			continue;
-		}
-		*perror = msg.error;
+	if (!(0 < m->reply_serial &&
+	      m->reply_serial <= sizeof(c->cbs) / sizeof(c->cbs[0]))) {
 		return 0;
+	}
+	int idx = m->reply_serial - 1;
+	if (c->cb_available & (1U << idx)) {
+		return 0;
+	} else {
+		return c->cbs[idx].fn(c->cbs[idx].udata, c, m, body);
 	}
 }
