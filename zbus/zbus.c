@@ -49,15 +49,11 @@ int main(int argc, char *argv[])
 {
 	set_thread_name(S("main"));
 
-	enum log_type log_type = LOG_TEXT;
 	const char *configdir = ".";
 	char *readypn = NULL;
 	int i;
-	while ((i = getopt(argc, argv, "Cshqvjf:")) > 0) {
+	while ((i = getopt(argc, argv, "Chqvjf:")) > 0) {
 		switch (i) {
-		case 's':
-			log_type = LOG_SYSLOG;
-			break;
 		case 'j':
 			log_type = LOG_JSON;
 			break;
@@ -88,13 +84,14 @@ int main(int argc, char *argv[])
 		return usage();
 	}
 
-	if (setup_log(log_type, -1, "zbus") || setup_signals()) {
+	if (setup_signals()) {
 		return 1;
 	}
 
 	char *sockpn = argv[0];
 	struct bus bus;
-	if (init_bus(&bus) || add_name(&bus, S("com.example.Service"))) {
+	if (init_bus(&bus) || add_name(&bus, S("com.example.Service"), false) ||
+	    add_name(&bus, S("com.example.Autostart"), true)) {
 		return 1;
 	}
 

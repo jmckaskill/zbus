@@ -192,17 +192,18 @@ static int send_locked(struct tx *t, bool block, struct rope *r)
 			ERROR("send,errno:%m");
 			goto shutdown;
 		} else {
-			if (start_debug("send")) {
-				log_int("fd", t->fd);
+			struct logbuf lb;
+			if (start_debug(&lb, "send")) {
+				log_int(&lb, "fd", t->fd);
 				int n = w;
 				struct rope *p = r;
 				while (n > 0) {
 					slice_t s = p->data;
-					log_bytes("data", s.p,
+					log_bytes(&lb, "data", s.p,
 						  (n < s.len) ? n : s.len);
 					n -= s.len;
 				}
-				finish_log();
+				finish_log(&lb);
 			}
 			r = rope_skip(r, w);
 			continue;
@@ -281,11 +282,12 @@ int send_request(struct tx *c, struct tx *s, slice_t sender,
 		set_serial(buf, h.serial);
 	}
 
-	if (start_debug("send request")) {
-		log_int("fd", s->fd);
-		log_message(&h);
-		log_uint("bsz", bsz);
-		finish_log();
+	struct logbuf lb;
+	if (start_debug(&lb, "send request")) {
+		log_int(&lb, "fd", s->fd);
+		log_message(&lb, &h);
+		log_uint(&lb, "bsz", bsz);
+		finish_log(&lb);
 	}
 
 	struct rope rope;

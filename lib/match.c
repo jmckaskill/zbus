@@ -90,7 +90,9 @@ int decode_match(struct match *m, const char *s, size_t len)
 		return -1;
 	}
 
+	memset(m, 0, sizeof(*m));
 	m->base = s;
+	m->str_len = len;
 	const char *end = s + len;
 	while (s < end) {
 		// check for a range that does not include backslashes or

@@ -3,6 +3,14 @@
 #include "tx.h"
 #include "algo.h"
 #include <limits.h>
+#include <time.h>
+
+struct autostart {
+	cnd_t wait;
+	time_t last_launch;
+	bool running;
+	int waiters;
+};
 
 struct address {
 	struct rcu_object obj;
@@ -11,6 +19,7 @@ struct address {
 	struct tx *tx;
 	struct circ_list owner_list;
 	int owner_id;
+	struct autostart *autostart;
 	struct {
 		int len;
 		char p[0];
@@ -22,6 +31,9 @@ struct address_map {
 	int len;
 	struct address *v[0];
 };
+
+struct autostart *new_autostart(void);
+void free_autostart(struct autostart *a);
 
 void free_address_map(struct address_map *m);
 

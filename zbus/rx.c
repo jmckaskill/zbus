@@ -71,11 +71,13 @@ static ssize_t recv_one(int fd, char *p1, size_t n1, char *p2, size_t n2)
 			ERROR("recv early EOF,fd:%d", fd);
 			return -1;
 		} else {
-			if (start_debug("recv")) {
-				log_int("fd", fd);
-				log_bytes("data1", p1, (n > n1) ? n1 : n);
-				log_bytes("data2", p2, (n > n1) ? (n - n1) : 0);
-				finish_log();
+			struct logbuf lb;
+			if (start_debug(&lb, "recv")) {
+				log_int(&lb, "fd", fd);
+				log_bytes(&lb, "data1", p1, (n > n1) ? n1 : n);
+				log_bytes(&lb, "data2", p2,
+					  (n > n1) ? (n - n1) : 0);
+				finish_log(&lb);
 			}
 			return n;
 		}
@@ -193,14 +195,15 @@ static int read_message(struct rx *r, struct msg_stream *s)
 		s->have += n;
 	}
 
-	if (start_debug("read")) {
-		log_int("fd", r->fd);
-		log_message(&m);
-		log_bytes("body", r1.data.p, r1.data.len);
+	struct logbuf lb;
+	if (start_debug(&lb, "read")) {
+		log_int(&lb, "fd", r->fd);
+		log_message(&lb, &m);
+		log_bytes(&lb, "body", r1.data.p, r1.data.len);
 		if (r2.data.len) {
-			log_bytes("body2", r2.data.p, r2.data.len);
+			log_bytes(&lb, "body2", r2.data.p, r2.data.len);
 		}
-		finish_log();
+		finish_log(&lb);
 	}
 
 	if (m.type == MSG_METHOD && slice_eq(m.destination, BUS_DESTINATION)) {

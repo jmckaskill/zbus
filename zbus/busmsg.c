@@ -20,6 +20,9 @@ static const slice_t error_names[] = {
 	[-(ERR_NAME_HAS_NO_OWNER + 1)] =
 		X("org.freedesktop.DBus.Error.NameHasNoOwner"),
 	[-(ERR_BAD_ARGUMENT + 1)] = X("org.freedesktop.DBus.Error.BadArgument"),
+	[-(ERR_LAUNCH_FAILED + 1)] =
+		X("org.freedesktop.DBus.Error.LaunchFailed"),
+	[-(ERR_TIMED_OUT + 1)] = X("org.freedesktop.DBus.Error.TimedOut"),
 };
 
 #undef X

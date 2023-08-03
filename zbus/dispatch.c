@@ -177,15 +177,39 @@ static int addrm_name(struct rx *r, const struct message *req,
 	}
 
 	mtx_lock(&r->bus->lk);
-	int err = add ? request_name(r->bus, name, rxid(r), r->tx, &r->owned) :
+	int sts = add ? request_name(r->bus, name, rxid(r), r->tx, &r->owned) :
 			release_name(r->bus, name, rxid(r), r->tx);
 	mtx_unlock(&r->bus->lk);
 
-	if (err < 0) {
+	int err = sts < 0 ? sts : reply_uint32(r->tx, req->serial, sts);
+	if (err) {
 		return err;
+	} else if (sts != 1) {
+		return 0;
 	}
 
-	return reply_uint32(r->tx, req->serial, err);
+	// send the NameAcquired/NameLost Signal
+	char buf[256];
+	struct message m;
+	init_message(&m, MSG_SIGNAL, NO_REPLY_SERIAL);
+	m.path = BUS_PATH;
+	m.interface = BUS_INTERFACE;
+	m.member = add ? SIGNAL_NAME_ACQUIRED : SIGNAL_NAME_LOST;
+	// leave error blank
+	// leave destination blank
+	m.sender = BUS_DESTINATION;
+	m.signature = "s";
+	// leave fdnum as 0
+	// leave reply_serial as 0
+	m.flags = FLAG_NO_REPLY_EXPECTED;
+
+	struct builder b = start_message(buf, sizeof(buf), &m);
+	append_string(&b, name);
+	int sz = end_message(b);
+	if (sz < 0) {
+		return ERR_OOM;
+	}
+	return send_data(r->tx, true, buf, sz);
 }
 
 void rm_all_names_locked(struct rx *r)
@@ -366,52 +390,73 @@ static int peer_method(struct rx *r, const struct message *m, struct rope *body)
 /////////////////////////////////
 // Unicast signals and requests
 
-static struct tx *ref_unique_tx(struct rx *r, int id)
+static int ref_unique_tx(struct rx *r, int id, struct tx **ptx)
 {
-	struct tx *tx = NULL;
 	struct rcu_names *d = rcu_lock(r->names);
 	int idx = find_unique_address(d->unique, id);
 	if (idx >= 0) {
-		tx = d->unique->v[idx]->tx;
-		ref_tx(tx);
+		*ptx = d->unique->v[idx]->tx;
+		ref_tx(*ptx);
 	}
 	rcu_unlock(r->names);
-	return tx;
+	return *ptx ? 0 : ERR_NO_REMOTE;
 }
 
-static struct tx *ref_named_tx(struct rx *r, slice_t name)
+static int ref_named_tx(struct rx *r, slice_t name, bool should_autostart,
+			struct tx **ptx)
 {
+	struct tx *tx = NULL;
 	struct rcu_names *d = rcu_lock(r->names);
 	int idx = find_named_address(d->named, name);
-	struct tx *tx = NULL;
-	if (idx >= 0 && d->named->v[idx]->tx) {
-		tx = d->named->v[idx]->tx;
-		ref_tx(tx);
+	bool can_autostart = false;
+	int err = ERR_NO_REMOTE;
+	if (idx >= 0) {
+		struct address *a = d->named->v[idx];
+		can_autostart = a->autostart != NULL;
+		if (a->tx) {
+			tx = a->tx;
+			ref_tx(tx);
+		}
 	}
 	rcu_unlock(r->names);
-	return tx;
+	if (tx || !should_autostart || !can_autostart) {
+		*ptx = tx;
+		return tx ? 0 : ERR_NO_REMOTE;
+	}
+
+	mtx_lock(&r->bus->lk);
+	struct address *addr;
+	err = autolaunch_service(r->bus, name, &addr);
+	if (!err) {
+		*ptx = addr->tx;
+		ref_tx(*ptx);
+	}
+	mtx_unlock(&r->bus->lk);
+	return err;
 }
 
 static int unicast(struct rx *r, const struct message *m, struct rope *b)
 {
-	struct tx *tx;
 	slice_t name = m->destination;
+	struct tx *tx;
+	int err;
 
 	if (slice_has_prefix(name, S(UNIQ_ADDR_PREFIX))) {
 		int id = address_to_id(name);
 		if (id < 0) {
 			return ERR_NO_REMOTE;
 		}
-		tx = ref_unique_tx(r, id);
+		err = ref_unique_tx(r, id, &tx);
 	} else {
-		tx = ref_named_tx(r, name);
+		bool should_autostart = (m->flags & FLAG_NO_AUTO_START) == 0;
+		err = ref_named_tx(r, name, should_autostart, &tx);
 	}
 
-	if (!tx) {
-		return ERR_NO_REMOTE;
+	if (err) {
+		return err;
 	}
 
-	int err = send_request(r->tx, tx, to_slice(r->addr), m, b);
+	err = send_request(r->tx, tx, to_slice(r->addr), m, b);
 	deref_tx(tx);
 	return err;
 }
@@ -432,8 +477,8 @@ int dispatch(struct rx *r, const struct message *m, struct rope *b)
 			err = peer_method(r, m, b);
 		} else if (slice_eq(m->destination, BUS_DESTINATION)) {
 			if (b->next) {
-				// we were unable to defragment the message
-				// earlier
+				// we were unable to defragment the
+				// message earlier
 				err = ERR_OOM;
 			} else {
 				struct iterator ii;

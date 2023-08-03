@@ -26,6 +26,8 @@
 #define METHOD_GET_SELINUX S("GetConnectionSELinuxSEcurityContext") // 35
 
 #define SIGNAL_NAME_OWNER_CHANGED S("NameOwnerChanged")
+#define SIGNAL_NAME_ACQUIRED S("NameAcquired")
+#define SIGNAL_NAME_LOST S("NameLost")
 
 #define MONITORING_INTERFACE S("org.freedesktop.DBus.Monitoring")
 #define METHOD_BECOME_MONITOR S("BecomeMonitor")

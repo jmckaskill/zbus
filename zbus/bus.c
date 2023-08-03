@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "bus.h"
 #include "algo.h"
 #include "busmsg.h"
@@ -5,6 +6,7 @@
 #include "lib/decode.h"
 #include "dmem/log.h"
 #include "dmem/common.h"
+#include <time.h>
 
 int init_bus(struct bus *b)
 {
@@ -75,11 +77,16 @@ static void notify_name_changed(struct bus *bus, int id, slice_t name,
 	char buf[256];
 	struct message m;
 	init_message(&m, MSG_SIGNAL, NO_REPLY_SERIAL);
-	m.flags = FLAG_NO_REPLY_EXPECTED;
 	m.path = BUS_PATH;
 	m.interface = BUS_INTERFACE;
 	m.member = SIGNAL_NAME_OWNER_CHANGED;
+	// leave error blank
+	// leave destination blank
+	m.sender = BUS_DESTINATION;
 	m.signature = "sss";
+	// leave fdnum as 0
+	// leave reply_serial as 0
+	m.flags = FLAG_NO_REPLY_EXPECTED;
 
 	struct builder b = start_message(buf, sizeof(buf), &m);
 	if (append_address(&b, id, name)) {
@@ -162,7 +169,7 @@ error:
 	return -1;
 }
 
-int add_name(struct bus *b, slice_t name)
+int add_name(struct bus *b, slice_t name, bool autostart)
 {
 	struct rcu_names *od = rcu_root(b->names);
 	int idx = find_named_address(od->named, name);
@@ -172,17 +179,26 @@ int add_name(struct bus *b, slice_t name)
 
 	struct rcu_names *nd = malloc(sizeof(*nd));
 	if (!nd) {
-		return -1;
+		goto error;
 	}
 	*nd = *od;
 
-	struct address *a = add_address(b->names, &nd->named, -(idx + 1), name);
-	if (!a) {
-		return -1;
+	struct autostart *na = NULL;
+	if (autostart && (na = new_autostart()) == NULL) {
+		goto error;
 	}
 
+	struct address *a = add_address(b->names, &nd->named, -(idx + 1), name);
+	if (!a) {
+		goto error;
+	}
+	a->autostart = na;
 	rcu_update(b->names, nd, &free);
 	return 0;
+error:
+	free(nd);
+	free_autostart(na);
+	return -1;
 }
 
 int request_name(struct bus *b, slice_t name, int id, struct tx *tx,
@@ -224,6 +240,9 @@ int request_name(struct bus *b, slice_t name, int id, struct tx *tx,
 
 	// and release the new name list
 	rcu_update(b->names, nd, &free);
+	if (na->autostart && na->autostart->waiters) {
+		cnd_broadcast(&na->autostart->wait);
+	}
 	notify_name_changed(b, -1, name, -1, id);
 	return DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER;
 }
@@ -267,6 +286,91 @@ int release_name(struct bus *b, slice_t name, int id, struct tx *tx)
 	notify_name_changed(b, -1, name, id, -1);
 	return DBUS_RELEASE_NAME_REPLY_RELEASED;
 }
+
+int autolaunch_service(struct bus *b, slice_t name, struct address **paddr)
+{
+	struct timespec now;
+	if (timespec_get(&now, TIME_UTC) != TIME_UTC) {
+		ERROR("what is the time?,errno:%m");
+		return ERR_INTERNAL;
+	}
+	struct timespec wait = {
+		.tv_sec = now.tv_sec + 500,
+		.tv_nsec = now.tv_nsec,
+	};
+
+	bool launched = false;
+
+	for (;;) {
+		struct rcu_names *d = rcu_root(b->names);
+		int idx = find_named_address(d->named, name);
+		if (idx < 0) {
+			return ERR_NO_REMOTE;
+		}
+
+		struct address *addr = d->named->v[idx];
+		struct autostart *a = addr->autostart;
+		if (addr->tx) {
+			// service launched between our first check and getting
+			// the bus lock
+			*paddr = addr;
+			return 0;
+		} else if (!a) {
+			// autostart was disabled between our first check and
+			// getting the bus lock
+			return ERR_NOT_ALLOWED;
+		}
+
+		if (!a->running && !launched &&
+		    difftime(now.tv_sec, a->last_launch) > 5) {
+			// it's been a while since we launched it, let's try and
+			// launch it again
+			if (launch_service(b, name)) {
+				return ERR_LAUNCH_FAILED;
+			}
+			a->last_launch = now.tv_sec;
+			a->running = true;
+			launched = true;
+		} else if (!a->running) {
+			return ERR_LAUNCH_FAILED;
+		}
+
+		a->waiters++;
+		int err = cnd_timedwait(&a->wait, &b->lk, &wait);
+		a->waiters--;
+
+		if (err != thrd_success) {
+			return ERR_TIMED_OUT;
+		}
+		// rcu data should have been updated by the name being grabbed
+		// so loop around and have a look
+
+		if (timespec_get(&now, TIME_UTC) != TIME_UTC) {
+			ERROR("what is the time?,errno:%m");
+			return ERR_INTERNAL;
+		}
+	}
+}
+
+void service_exited(struct bus *b, slice_t name)
+{
+	struct rcu_names *d = rcu_root(b->names);
+	int idx = find_named_address(d->named, name);
+	if (idx < 0) {
+		return;
+	}
+	struct autostart *a = d->named->v[idx]->autostart;
+	if (!a) {
+		return;
+	}
+	a->running = false;
+	if (a->waiters) {
+		cnd_broadcast(&a->wait);
+	}
+}
+
+////////////////////////////////////
+// subscriptions
 
 static int update_root_sub(struct bus *b, bool add, struct tx *to,
 			   struct match *m, uint32_t serial,

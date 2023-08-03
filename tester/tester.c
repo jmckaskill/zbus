@@ -28,13 +28,12 @@ static int on_list_names(void *udata, struct client *c, struct message *m,
 
 	if (m->error.len) {
 		ERROR("ListNames,error:%.*s", S_PRI(m->error));
-	} else if (start_verbose("ListNames reply")) {
+	} else {
 		struct array_data ad = parse_array(ii);
 		while (array_has_more(ii, &ad)) {
 			slice_t str = parse_string(ii);
-			log_nstring("name", S_PRI(str));
+			VERBOSE("ListName,name:%.*s", S_PRI(str));
 		}
-		finish_log();
 	}
 	must(iter_error(ii), "parse ListNames reply");
 	return 0;
@@ -81,6 +80,20 @@ static int on_test_method(void *, struct client *c, struct message *m,
 	return 0;
 }
 
+static int on_autostart(void *, struct client *c, struct message *m,
+			struct iterator *ii)
+{
+	unregister_cb(c, m->reply_serial);
+
+	if (m->error.len) {
+		ERROR("Autostart,error:%.*s", S_PRI(m->error));
+	} else {
+		NOTICE("autostart hello");
+	}
+
+	return 0;
+}
+
 static int run_client(void *udata)
 {
 	const char *sockpn = udata;
@@ -114,6 +127,12 @@ static int run_client(void *udata)
 			 S("com.example.Service"), S("TestMethod"), "us", 0,
 			 S("TestString")),
 	     "send TestMethod");
+
+	uint32_t test_autostart = register_cb(c, &on_autostart, NULL);
+	must(!test_autostart, "register autostart");
+	must(call_method(c, test_autostart, S("com.example.Autostart"), S("/"),
+			 S("com.example.Service"), S("Hello"), ""),
+	     "send autostart");
 
 	struct message m;
 	struct iterator ii;
@@ -224,10 +243,6 @@ int main(int argc, char *argv[])
 		return usage();
 	}
 	char *sockpn = argv[0];
-
-	if (setup_log(LOG_TEXT, -1, "tester")) {
-		return 1;
-	}
 
 	VERBOSE("startup");
 

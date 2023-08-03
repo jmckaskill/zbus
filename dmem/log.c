@@ -12,68 +12,22 @@
 
 int log_verbose_flag = 0;
 int log_quiet_flag = 0;
-static enum log_type log_type = LOG_TEXT;
-static int log_fd;
-static const char *log_arg0 = "";
-static size_t arg0len;
-
-static mtx_t log_mutex;
-static char logbuf[512];
-static int logoff;
-static int logabort;
-static int logerrno;
-static size_t syshostlen;
-static char syshost[256];
-
-#ifndef NDEBUG
-static bool log_is_setup;
-#endif
-
-int setup_log(enum log_type type, int fd, const char *arg0)
-{
-	if (mtx_init(&log_mutex, mtx_plain) != thrd_success) {
-		return -1;
-	}
-	log_type = type;
-	log_fd = fd >= 0 ? fd : 2;
-	if (log_type == LOG_SYSLOG) {
-		if (gethostname(syshost, sizeof(syshost))) {
-			return -1;
-		}
-		syshost[sizeof(syshost) - 1] = 0;
-		syshostlen = strlen(syshost);
-		log_arg0 = arg0;
-		arg0len = strlen(log_arg0);
-	}
-#ifndef NDEBUG
-	log_is_setup = true;
-#endif
-	return 0;
-}
+enum log_type log_type = LOG_TEXT;
+int log_fd;
 
 #define YELLOW "\033[33m"
 #define RED "\033[31m"
 #define CLEAR "\033[0m"
 
 static const char *prefix[] = {
-	[(LOG_JSON * LOG_LEVELS) + LOG_DEBUG] =
-		"{\"level\":\"debug\",\"timestamp\":\"",
-	[(LOG_JSON * LOG_LEVELS) + LOG_VERBOSE] =
-		"{\"level\":\"info\",\"timestamp\":\"",
+	[(LOG_JSON * LOG_LEVELS) + LOG_DEBUG] = "{\"lvl\":\"debug\",\"ts\":\"",
+	[(LOG_JSON * LOG_LEVELS) + LOG_VERBOSE] = "{\"lvl\":\"info\",\"ts\":\"",
 	[(LOG_JSON * LOG_LEVELS) + LOG_NOTICE] =
-		"{\"level\":\"notice\",\"timestamp\":\"",
+		"{\"lvl\":\"notice\",\"ts\":\"",
 	[(LOG_JSON * LOG_LEVELS) + LOG_WARNING] =
-		"{\"level\":\"warning\",\"timestamp\":\"",
-	[(LOG_JSON * LOG_LEVELS) + LOG_ERROR] =
-		"{\"level\":\"error\",\"timestamp\":\"",
-	[(LOG_JSON * LOG_LEVELS) + LOG_FATAL] =
-		"{\"level\":\"emergency\",\"timestamp\":\"",
-	[(LOG_SYSLOG * LOG_LEVELS) + LOG_DEBUG] = "<7>",
-	[(LOG_SYSLOG * LOG_LEVELS) + LOG_VERBOSE] = "<6>",
-	[(LOG_SYSLOG * LOG_LEVELS) + LOG_NOTICE] = "<5>",
-	[(LOG_SYSLOG * LOG_LEVELS) + LOG_WARNING] = "<4>",
-	[(LOG_SYSLOG * LOG_LEVELS) + LOG_ERROR] = "<3>",
-	[(LOG_SYSLOG * LOG_LEVELS) + LOG_FATAL] = "<0>",
+		"{\"lvl\":\"warning\",\"ts\":\"",
+	[(LOG_JSON * LOG_LEVELS) + LOG_ERROR] = "{\"lvl\":\"error\",\"ts\":\"",
+	[(LOG_JSON * LOG_LEVELS) + LOG_FATAL] = "{\"lvl\":\"fatal\",\"ts\":\"",
 	[(LOG_TEXT * LOG_LEVELS) + LOG_DEBUG] = "DBG ",
 	[(LOG_TEXT * LOG_LEVELS) + LOG_VERBOSE] = "",
 	[(LOG_TEXT * LOG_LEVELS) + LOG_NOTICE] = "",
@@ -101,40 +55,19 @@ static const char *prefix[] = {
 #define ENCODE_UINT64_LEN 20 // 18446744073709551615
 #define ENCODE_CHAR_LEN 6 // \u1234
 
+// enough for a field open, field seperator, number and closing brace/newline
+// if we have this much spare room on top of the key length then we start an
+// field entry
+#define MIN_FIELD_LEN 32
+
+#define MIN_HEADER_LEN 128
+
 #define MSG_KEY ((log_type == LOG_TEXT) ? MSG_KEY_TEXT : MSG_KEY_JSON)
 #define STR_END ((log_type == LOG_TEXT) ? STR_END_TEXT : STR_END_JSON)
 #define SUFFIX ((log_type == LOG_TEXT) ? SUFFIX_TEXT : SUFFIX_JSON)
 #define FIELD_KEY ((log_type == LOG_TEXT) ? FIELD_KEY_TEXT : FIELD_KEY_JSON)
 #define FIELD_STR ((log_type == LOG_TEXT) ? FIELD_STR_TEXT : FIELD_STR_JSON)
 #define FIELD_NUM ((log_type == LOG_TEXT) ? FIELD_NUM_TEXT : FIELD_NUM_JSON)
-
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
-#define MAX3(a, b, c) MAX(MAX(a, b), c)
-#define MAX4(a, b, c, d) MAX(MAX3(a, b, c), d)
-#define MAX5(a, b, c, d, e) MAX(MAX4(a, b, c, d), e)
-
-// anywhere in a string
-#define STRING_TAIL ENCODE_CHAR_LEN
-
-// after the key in a number field
-#define NUM_FIELD_TAIL \
-	MAX(strlen(FIELD_NUM_TEXT), strlen(FIELD_NUM_JSON)) + ENCODE_INT64_LEN
-
-// after the key in a string field
-#define STR_FIELD_TAIL MAX(strlen(FIELD_STR_TEXT), strlen(FIELD_STR_JSON))
-
-// after the arg0 field in the syslog header
-#define HDR_TAG_TAIL (1 /*[*/ + ENCODE_INT32_LEN + strlen(MSG_KEY_SYSLOG))
-
-#define MAX_KEY_LEN 32
-
-// Longest fixed string which goes after a variable length before the next
-// variable length. We reserve this much in the buffer when writing variable
-// length items.
-#define MAX_TAIL                                                       \
-	MAX5(MAX_KEY_LEN, STRING_TAIL, NUM_FIELD_TAIL, STR_FIELD_TAIL, \
-	     HDR_TAG_TAIL)
 
 static const char escapes[128] = {
 	1,   1,	  1,   1, 1,	1,   1, 1, // 0
@@ -157,68 +90,84 @@ static const char escapes[128] = {
 
 static const char hexdigit[] = "0123456789ABCDEF";
 
-static void flush(size_t need)
+static unsigned write_char(char *buf, unsigned off, char ch)
 {
-	if (logoff + need + MAX_TAIL > sizeof(logbuf)) {
-		write(log_fd, logbuf, logoff);
-		logoff = 0;
-	}
-}
-
-// leave enough room for \u1234
-
-static void write_char(char ch)
-{
-	flush(1);
-
 	unsigned char u = (unsigned char)ch;
 	signed char s = (signed char)ch;
 	int esc = s > 0 ? escapes[s] : 0;
 	if (!esc) {
-		logbuf[logoff++] = ch;
+		buf[off++] = ch;
 	} else if (esc > 1) {
-		logbuf[logoff++] = '\\';
-		logbuf[logoff++] = esc;
+		buf[off++] = '\\';
+		buf[off++] = esc;
 	} else if (log_type == LOG_JSON) {
-		logbuf[logoff++] = '\\';
-		logbuf[logoff++] = 'u';
-		logbuf[logoff++] = '0';
-		logbuf[logoff++] = '0';
-		logbuf[logoff++] = hexdigit[u >> 4];
-		logbuf[logoff++] = hexdigit[u & 15];
+		buf[off++] = '\\';
+		buf[off++] = 'u';
+		buf[off++] = '0';
+		buf[off++] = '0';
+		buf[off++] = hexdigit[u >> 4];
+		buf[off++] = hexdigit[u & 15];
 	} else {
-		logbuf[logoff++] = '\\';
-		logbuf[logoff++] = 'x';
-		logbuf[logoff++] = hexdigit[u >> 4];
-		logbuf[logoff++] = hexdigit[u & 15];
+		buf[off++] = '\\';
+		buf[off++] = 'x';
+		buf[off++] = hexdigit[u >> 4];
+		buf[off++] = hexdigit[u & 15];
+	}
+	return off;
+}
+
+static inline int append(char *buf, int off, const char *str, size_t len)
+{
+	memcpy(buf + off, str, len);
+	return off + len;
+}
+
+static inline int grow(struct logbuf *b, size_t sz)
+{
+	if (b->lvl >= LOG_VERBOSE) {
+		size_t alloc = b->off + sz;
+		if (alloc < b->end * 2) {
+			alloc = b->end * 2;
+		}
+		char *newbuf = realloc(b->buf, alloc);
+		if (!newbuf) {
+			return -1;
+		}
+		b->buf = newbuf;
+		return 0;
+	} else {
+		b->off = append(b->buf, b->off, "...", 3);
+		finish_log(b);
+		return -1;
 	}
 }
 
-static void write_nstring(const char *str, size_t len)
+static void write_nstring(struct logbuf *b, const char *str, size_t len)
 {
 	for (size_t i = 0; i < len; i++) {
-		write_char(str[i]);
+		if (b->off + MIN_FIELD_LEN > b->end && grow(b, MIN_FIELD_LEN)) {
+			return;
+		}
+		b->off = write_char(b->buf, b->off, str[i]);
 	}
 }
 
-static void append_uint64(uint64_t num)
+static int append_uint64(char *buf, int off, uint64_t num)
 {
-	char buf[ENCODE_UINT64_LEN];
-	char *p = buf + sizeof(buf);
+	char e[ENCODE_UINT64_LEN];
+	char *p = e + sizeof(e);
 	do {
 		*--p = '0' + (num % 10);
 		num /= 10;
 	} while (num);
-	assert(logoff + sizeof(buf) <= sizeof(logbuf));
-	size_t len = buf + sizeof(buf) - p;
-	memcpy(logbuf + logoff, p, len);
-	logoff += len;
+	size_t len = e + sizeof(e) - p;
+	return append(buf, off, p, len);
 }
 
-static void append_int64(int64_t num)
+static int append_int64(char *buf, int off, int64_t num)
 {
-	char buf[ENCODE_INT64_LEN];
-	char *p = buf + sizeof(buf);
+	char e[ENCODE_INT64_LEN];
+	char *p = e + sizeof(e);
 	int sign = 0;
 	if (num < 0) {
 		sign = 1;
@@ -231,33 +180,38 @@ static void append_int64(int64_t num)
 	if (sign) {
 		*--p = '-';
 	}
-	assert(logoff + sizeof(buf) <= sizeof(logbuf));
-	size_t len = buf + sizeof(buf) - p;
-	memcpy(logbuf + logoff, p, len);
-	logoff += len;
+	size_t len = e + sizeof(e) - p;
+	return append(buf, off, p, len);
 }
 
-static void append_padded(int num, int len)
+static int append_padded(char *buf, int off, unsigned num, int len)
 {
-	assert(logoff + len <= sizeof(logbuf));
 	for (int i = len - 1; i >= 0; i--) {
-		logbuf[logoff + i] = (num % 10) + '0';
+		buf[off + i] = (num % 10) + '0';
 		num /= 10;
 	}
-	logoff += len;
+	return off + len;
 }
 
-static inline void append(const char *str, size_t len)
+static int append_key(char *buf, int off, const char *key, size_t len,
+		      bool is_string)
 {
-	assert(len < MAX_TAIL);
-	assert(logoff + len <= sizeof(logbuf));
-	memcpy(logbuf + logoff, str, len);
-	logoff += len;
+	off = append(buf, off, key, len);
+	if (log_type == LOG_TEXT) {
+		buf[off++] = (len < 8) ? '\t' : ' ';
+	} else {
+		buf[off++] = '"';
+		buf[off++] = ':';
+		if (is_string) {
+			buf[off++] = '"';
+		}
+	}
+	return off;
 }
 
-int start_log2(enum log_level lvl, const char *msg, size_t mlen)
+int start_log2(struct logbuf *b, char *buf, size_t sz, enum log_level lvl,
+	       const char *msg, size_t mlen)
 {
-	assert(log_is_setup);
 	switch (lvl) {
 	case LOG_NOTICE:
 		if (log_quiet_flag) {
@@ -278,17 +232,20 @@ int start_log2(enum log_level lvl, const char *msg, size_t mlen)
 		if (!log_verbose_flag) {
 			return 0;
 		}
+		buf = malloc(1024);
 		break;
 	default:
 		assert(0);
 	}
 
-	mtx_lock(&log_mutex);
-	logerrno = errno;
-	logabort = (lvl == LOG_FATAL);
+	if (sz < MIN_HEADER_LEN) {
+		return 0;
+	}
 
+	int err = errno;
+	int off = 0;
 	const char *pfx = prefix[(log_type * LOG_LEVELS) + lvl];
-	append(pfx, strlen(pfx));
+	off = append(buf, off, pfx, strlen(pfx));
 
 	struct timespec ts;
 	struct tm tm;
@@ -300,189 +257,206 @@ int start_log2(enum log_level lvl, const char *msg, size_t mlen)
 	switch (log_type) {
 	case LOG_TEXT:
 		if (localtime_r(&ts.tv_sec, &tm)) {
-			append_padded(tm.tm_hour, 2);
-			logbuf[logoff++] = ':';
-			append_padded(tm.tm_min, 2);
-			logbuf[logoff++] = ':';
-			append_padded(tm.tm_sec, 2);
-			logbuf[logoff++] = '.';
-			append_padded(ts.tv_nsec / 1000000, 3);
+			off = append_padded(buf, off, tm.tm_hour, 2);
+			buf[off++] = ':';
+			off = append_padded(buf, off, tm.tm_min, 2);
+			buf[off++] = ':';
+			off = append_padded(buf, off, tm.tm_sec, 2);
+			buf[off++] = '.';
+			off = append_padded(buf, off, ts.tv_nsec / 1000000, 3);
 		}
-		append(MSG_KEY_TEXT, strlen(MSG_KEY_TEXT));
-		break;
-	case LOG_SYSLOG:
-		if (localtime_r(&ts.tv_sec, &tm)) {
-			static const char months[12][5] = {
-				"Jan ", "Feb ", "Mar ", "Apr ", "May ", "Jun ",
-				"Jul ", "Aug ", "Sep ", "Oct ", "Nov ", "Dec ",
-			};
-			append(months[tm.tm_mon], 4);
-			append_padded(tm.tm_mday, 2);
-			logbuf[logoff++] = ' ';
-			append_padded(tm.tm_hour, 2);
-			logbuf[logoff++] = ':';
-			append_padded(tm.tm_min, 2);
-			logbuf[logoff++] = ':';
-			append_padded(tm.tm_sec, 2);
-			logbuf[logoff++] = ' ';
-			write_nstring(syshost, strlen(syshost));
-			logbuf[logoff++] = ' ';
-		}
-		if (log_arg0) {
-			write_nstring(log_arg0, strlen(log_arg0));
-		}
-		logbuf[logoff++] = '[';
-		append_int64(getpid());
-		append(MSG_KEY_SYSLOG, strlen(MSG_KEY_SYSLOG));
+		off = append(buf, off, MSG_KEY_TEXT, strlen(MSG_KEY_TEXT));
 		break;
 	case LOG_JSON:
 		if (gmtime_r(&ts.tv_sec, &tm)) {
-			append_padded(tm.tm_year + 1900, 4);
-			logbuf[logoff++] = '-';
-			append_padded(tm.tm_mon + 1, 2);
-			logbuf[logoff++] = '-';
-			append_padded(tm.tm_mday, 2);
-			logbuf[logoff++] = 'T';
-			append_padded(tm.tm_hour, 2);
-			logbuf[logoff++] = ':';
-			append_padded(tm.tm_min, 2);
-			logbuf[logoff++] = ':';
-			append_padded(tm.tm_sec, 2);
-			logbuf[logoff++] = '.';
-			append_padded(ts.tv_nsec / 1000000, 3);
-			logbuf[logoff++] = 'Z';
+			off = append_padded(buf, off, tm.tm_year + 1900, 4);
+			buf[off++] = '-';
+			off = append_padded(buf, off, tm.tm_mon + 1, 2);
+			buf[off++] = '-';
+			off = append_padded(buf, off, tm.tm_mday, 2);
+			buf[off++] = 'T';
+			off = append_padded(buf, off, tm.tm_hour, 2);
+			buf[off++] = ':';
+			off = append_padded(buf, off, tm.tm_min, 2);
+			buf[off++] = ':';
+			off = append_padded(buf, off, tm.tm_sec, 2);
+			buf[off++] = '.';
+			off = append_padded(buf, off, ts.tv_nsec / 1000000, 3);
+			buf[off++] = 'Z';
 		}
-		append(MSG_KEY_JSON, strlen(MSG_KEY_JSON));
+		off = append(buf, off, MSG_KEY_JSON, strlen(MSG_KEY_JSON));
 		break;
 	}
 
-	write_nstring(msg, mlen);
-	append(STR_END, strlen(STR_END));
+	b->buf = buf;
+	b->off = off;
+	b->end = sz;
+	b->err = err;
+	b->lvl = lvl;
+
+	write_nstring(b, msg, mlen);
+	b->off = append(b->buf, b->off, STR_END, strlen(STR_END));
+
 	return 1;
 }
 
-int finish_log(void)
+int finish_log(struct logbuf *b)
 {
-	append(SUFFIX, strlen(SUFFIX));
-	write(log_fd, logbuf, logoff);
-	logoff = 0;
-	if (logabort) {
+	if (b->lvl == LOG_FATAL) {
 		abort();
 	}
-	mtx_unlock(&log_mutex);
-	return 1;
-}
-
-static void pad_key(size_t klen, bool is_string)
-{
-	if (log_type == LOG_TEXT) {
-		logbuf[logoff++] = (klen < 8) ? '\t' : ' ';
-	} else {
-		logbuf[logoff++] = '"';
-		logbuf[logoff++] = ':';
-		if (is_string) {
-			logbuf[logoff++] = '"';
-		}
+	if (!b->buf) {
+		return -1;
 	}
-}
-
-void log_bool_2(const char *key, size_t klen, bool val)
-{
-	append(FIELD_KEY, strlen(FIELD_KEY));
-	append(key, klen);
-	pad_key(klen, false);
-	if (val) {
-		append("true", 4);
-	} else {
-		append("false", 5);
+	b->off = append(b->buf, b->off, SUFFIX, strlen(SUFFIX));
+	write(log_fd, b->buf, b->off);
+	if (b->lvl >= LOG_VERBOSE) {
+		free(b->buf);
 	}
+	b->buf = NULL;
+	b->off = 0;
+	b->end = 0;
+	return 0;
 }
 
-void log_errno_2(const char *key, size_t klen)
+void log_bool_2(struct logbuf *b, const char *key, size_t klen, bool val)
 {
-	const char *estr = strerror(logerrno);
-	int len = strlen(estr);
-	log_nstring_2(key, klen, len, estr);
-}
-
-void log_cstring_2(const char *key, size_t klen, const char *str)
-{
-	append(FIELD_KEY, strlen(FIELD_KEY));
-	append(key, klen);
-	if (str) {
-		pad_key(klen, true);
-		write_nstring(str, strlen(str));
-		append(STR_END, strlen(STR_END));
-	} else {
-		pad_key(klen, false);
-		append("null", 4);
-	}
-}
-
-void log_nstring_2(const char *key, size_t klen, int len, const char *str)
-{
-	append(FIELD_KEY, strlen(FIELD_KEY));
-	append(key, klen);
-	pad_key(klen, true);
-	write_nstring(str, len);
-	append(STR_END, strlen(STR_END));
-}
-
-void log_int_2(const char *key, size_t klen, int val)
-{
-	append(FIELD_KEY, strlen(FIELD_KEY));
-	append(key, klen);
-	pad_key(klen, false);
-	append_int64(val);
-}
-
-void log_uint_2(const char *key, size_t klen, unsigned val)
-{
-	append(FIELD_KEY, strlen(FIELD_KEY));
-	append(key, klen);
-	pad_key(klen, false);
-	append_uint64(val);
-}
-
-void log_hex_2(const char *key, size_t klen, unsigned val)
-{
-	if (log_type != LOG_TEXT) {
-		log_uint_2(key, klen, val);
+	char *buf = b->buf;
+	int off = b->off;
+	if (off + MIN_FIELD_LEN + klen > b->end &&
+	    grow(b, MIN_FIELD_LEN + klen)) {
 		return;
 	}
-	char buf[10];
-	buf[0] = '0';
-	buf[1] = 'x';
-	buf[2] = hexdigit[(val >> 28) & 15];
-	buf[3] = hexdigit[(val >> 24) & 15];
-	buf[4] = hexdigit[(val >> 20) & 15];
-	buf[5] = hexdigit[(val >> 16) & 15];
-	buf[6] = hexdigit[(val >> 12) & 15];
-	buf[7] = hexdigit[(val >> 8) & 15];
-	buf[8] = hexdigit[(val >> 4) & 15];
-	buf[9] = hexdigit[(val >> 0) & 15];
-	append(FIELD_KEY_TEXT, strlen(FIELD_KEY_TEXT));
-	append(key, klen);
-	pad_key(klen, false);
-	append(buf, 10);
+	off = append(buf, off, FIELD_KEY, strlen(FIELD_KEY));
+	off = append_key(buf, off, key, klen, false);
+	if (val) {
+		b->off = append(buf, off, "true", 4);
+	} else {
+		b->off = append(buf, off, "false", 5);
+	}
 }
 
-void log_int64_2(const char *key, size_t klen, int64_t val)
+void log_errno_2(struct logbuf *b, const char *key, size_t klen)
 {
-	append(FIELD_KEY, strlen(FIELD_KEY));
-	append(key, klen);
-	pad_key(klen, true);
-	append_int64(val);
-	append(STR_END, strlen(STR_END));
+	const char *estr = strerror(b->err);
+	int len = strlen(estr);
+	log_nstring_2(b, key, klen, len, estr);
 }
 
-void log_uint64_2(const char *key, size_t klen, uint64_t val)
+void log_cstring_2(struct logbuf *b, const char *key, size_t klen,
+		   const char *str)
 {
-	append(FIELD_KEY, strlen(FIELD_KEY));
-	append(key, klen);
-	pad_key(klen, true);
-	append_uint64(val);
-	append(STR_END, strlen(STR_END));
+	if (b->off + MIN_FIELD_LEN + klen > b->end &&
+	    grow(b, MIN_FIELD_LEN + klen)) {
+		return;
+	}
+
+	b->off = append(b->buf, b->off, FIELD_KEY, strlen(FIELD_KEY));
+	b->off = append_key(b->buf, b->off, key, klen, str != NULL);
+	if (str) {
+		write_nstring(b, str, strlen(str));
+		b->off = append(b->buf, b->off, STR_END, strlen(STR_END));
+	} else {
+		b->off = append(b->buf, b->off, "null", 4);
+	}
+}
+
+void log_nstring_2(struct logbuf *b, const char *key, size_t klen, int len,
+		   const char *str)
+{
+	char *buf = b->buf;
+	int off = b->off;
+	if (off + MIN_FIELD_LEN + klen > b->end &&
+	    grow(b, MIN_FIELD_LEN + klen)) {
+		return;
+	}
+	off = append(buf, off, FIELD_KEY, strlen(FIELD_KEY));
+	off = append_key(buf, off, key, klen, true);
+	b->off = off;
+	write_nstring(b, str, len);
+	b->off = append(buf, b->off, STR_END, strlen(STR_END));
+}
+
+void log_int_2(struct logbuf *b, const char *key, size_t klen, int val)
+{
+	char *buf = b->buf;
+	int off = b->off;
+	if (off + MIN_FIELD_LEN + klen > b->end &&
+	    grow(b, MIN_FIELD_LEN + klen)) {
+		return;
+	}
+	off = append(buf, off, FIELD_KEY, strlen(FIELD_KEY));
+	off = append_key(buf, off, key, klen, false);
+	b->off = append_int64(buf, off, val);
+}
+
+void log_uint_2(struct logbuf *b, const char *key, size_t klen, unsigned val)
+{
+	char *buf = b->buf;
+	int off = b->off;
+	if (off + MIN_FIELD_LEN + klen > b->end &&
+	    grow(b, MIN_FIELD_LEN + klen)) {
+		return;
+	}
+	off = append(buf, off, FIELD_KEY, strlen(FIELD_KEY));
+	off = append_key(buf, off, key, klen, false);
+	b->off = append_uint64(buf, off, val);
+}
+
+void log_int64_2(struct logbuf *b, const char *key, size_t klen, int64_t val)
+{
+	char *buf = b->buf;
+	int off = b->off;
+	if (off + MIN_FIELD_LEN + klen > b->end &&
+	    grow(b, MIN_FIELD_LEN + klen)) {
+		return;
+	}
+	off = append(buf, off, FIELD_KEY, strlen(FIELD_KEY));
+	off = append_key(buf, off, key, klen, true);
+	off = append_int64(buf, off, val);
+	b->off = append(buf, off, STR_END, strlen(STR_END));
+}
+
+void log_uint64_2(struct logbuf *b, const char *key, size_t klen, uint64_t val)
+{
+	char *buf = b->buf;
+	int off = b->off;
+	if (off + MIN_FIELD_LEN + klen > b->end &&
+	    grow(b, MIN_FIELD_LEN + klen)) {
+		return;
+	}
+	off = append(buf, off, FIELD_KEY, strlen(FIELD_KEY));
+	off = append_key(buf, off, key, klen, true);
+	off = append_uint64(buf, off, val);
+	b->off = append(buf, off, STR_END, strlen(STR_END));
+}
+
+void log_hex_2(struct logbuf *b, const char *key, size_t klen, unsigned val)
+{
+	if (log_type != LOG_TEXT) {
+		log_uint_2(b, key, klen, val);
+		return;
+	}
+	char *buf = b->buf;
+	int off = b->off;
+	if (off + MIN_FIELD_LEN + klen > b->end &&
+	    grow(b, MIN_FIELD_LEN + klen)) {
+		return;
+	}
+	char x[10];
+	x[0] = '0';
+	x[1] = 'x';
+	x[2] = hexdigit[(val >> 28) & 15];
+	x[3] = hexdigit[(val >> 24) & 15];
+	x[4] = hexdigit[(val >> 20) & 15];
+	x[5] = hexdigit[(val >> 16) & 15];
+	x[6] = hexdigit[(val >> 12) & 15];
+	x[7] = hexdigit[(val >> 8) & 15];
+	x[8] = hexdigit[(val >> 4) & 15];
+	x[9] = hexdigit[(val >> 0) & 15];
+	off = append(buf, off, FIELD_KEY_TEXT, strlen(FIELD_KEY_TEXT));
+	off = append_key(buf, off, key, klen, false);
+	b->off = append(buf, off, x, 10);
 }
 
 static const char b64digits[] =
@@ -507,16 +481,12 @@ static void to_base64(char d[4], const uint8_t s[3])
 	d[3] = b64digits[i3];
 }
 
-static void write_base64(const uint8_t *data, size_t sz)
+static int write_base64(char *buf, int off, const uint8_t *data, size_t sz)
 {
 	size_t i;
 	for (i = 0; i + 3 <= sz; i += 3) {
-		if (logoff + 4 + 4 + MAX_TAIL > sizeof(logbuf)) {
-			write(log_fd, logbuf, logoff);
-			logoff = 0;
-		}
-		to_base64(logbuf + logoff, data + i);
-		logoff += 4;
+		to_base64(buf + off, data + i);
+		off += 4;
 	}
 	switch (sz - i) {
 	case 2: {
@@ -524,33 +494,40 @@ static void write_base64(const uint8_t *data, size_t sz)
 		pad[0] = data[i];
 		pad[1] = data[i + 1];
 		pad[2] = 0;
-		to_base64(logbuf + logoff, pad);
-		logbuf[logoff + 3] = '=';
-		logoff += 4;
-		break;
+		to_base64(buf + off, pad);
+		buf[off + 3] = '=';
+		return off + 4;
 	}
 	case 1: {
 		uint8_t pad[3];
 		pad[0] = data[i];
 		pad[1] = 0;
 		pad[2] = 0;
-		to_base64(logbuf + logoff, pad);
-		logbuf[logoff + 2] = '=';
-		logbuf[logoff + 3] = '=';
-		logoff += 4;
-		break;
+		to_base64(buf + off, pad);
+		buf[off + 2] = '=';
+		buf[off + 3] = '=';
+		return off + 4;
 	}
+	default:
+		return off;
 	}
 }
 
-static void log_json_bytes(const char *key, size_t klen, const uint8_t *data,
-			   size_t sz)
+static void log_json_bytes(struct logbuf *b, const char *key, size_t klen,
+			   const uint8_t *data, size_t sz)
 {
-	append(FIELD_KEY_JSON, strlen(FIELD_KEY_JSON));
-	append(key, klen);
-	append(FIELD_STR_JSON, strlen(FIELD_STR_JSON));
-	write_base64(data, sz);
-	append(STR_END_JSON, strlen(STR_END_JSON));
+	char *buf = b->buf;
+	int off = b->off;
+	size_t b64bytes = ((sz + 2) / 3) * 4;
+	if (off + MIN_FIELD_LEN + klen + b64bytes > b->end &&
+	    grow(b, MIN_FIELD_LEN + klen + b64bytes)) {
+		return;
+	}
+	off = append(buf, off, FIELD_KEY_JSON, strlen(FIELD_KEY_JSON));
+	off = append(buf, off, key, klen);
+	off = append(buf, off, FIELD_STR_JSON, strlen(FIELD_STR_JSON));
+	off = write_base64(buf, off, data, sz);
+	b->off = append(buf, off, STR_END_JSON, strlen(STR_END_JSON));
 }
 
 static char ascii(unsigned char ch)
@@ -558,37 +535,47 @@ static char ascii(unsigned char ch)
 	return (' ' <= ch && ch <= '~') ? ch : '.';
 }
 
-static void log_text_bytes(const char *key, size_t klen, const uint8_t *data,
-			   size_t sz)
+static void log_text_bytes(struct logbuf *b, const char *key, size_t klen,
+			   const uint8_t *data, size_t sz)
 {
+	char *buf = b->buf;
+	int off = b->off;
+	size_t rowb = strlen(FIELD_KEY_TEXT) + klen + 6 + (2 * 8) + 1 + 8;
+	size_t rows = ((sz + 7) / 8);
+	size_t need = rows * rowb;
+	if (off + need > b->end && grow(b, need)) {
+		return;
+	}
+
 	size_t i = 0;
 	for (;;) {
-		append(FIELD_KEY_TEXT, strlen(FIELD_KEY_TEXT));
-		append(key, klen);
-		pad_key(klen, false);
+		off = append(buf, off, FIELD_KEY_TEXT, strlen(FIELD_KEY_TEXT));
+		off = append(buf, off, key, klen);
 
-		flush(5 + (8 * 2) + 1 + 8);
+		size_t n = sz - i;
+		if (n > 8) {
+			n = 8;
+		}
 
-		size_t n = MIN(sz - i, 8);
-
-		logbuf[logoff++] = hexdigit[(i >> 12) & 15];
-		logbuf[logoff++] = hexdigit[(i >> 8) & 15];
-		logbuf[logoff++] = hexdigit[(i >> 4) & 15];
-		logbuf[logoff++] = hexdigit[i & 15];
-		logbuf[logoff++] = ' ';
+		buf[off++] = (klen < 8) ? '\t' : ' ';
+		buf[off++] = hexdigit[(i >> 12) & 15];
+		buf[off++] = hexdigit[(i >> 8) & 15];
+		buf[off++] = hexdigit[(i >> 4) & 15];
+		buf[off++] = hexdigit[i & 15];
+		buf[off++] = ' ';
 
 		for (size_t j = 0; j < n; j++) {
-			logbuf[logoff++] = hexdigit[data[i + j] >> 4];
-			logbuf[logoff++] = hexdigit[data[i + j] & 15];
+			buf[off++] = hexdigit[data[i + j] >> 4];
+			buf[off++] = hexdigit[data[i + j] & 15];
 		}
 		for (size_t j = n; j < 8; j++) {
-			logbuf[logoff++] = ' ';
-			logbuf[logoff++] = ' ';
+			buf[off++] = ' ';
+			buf[off++] = ' ';
 		}
-		logbuf[logoff++] = ' ';
+		buf[off++] = ' ';
 
 		for (size_t j = 0; j < n; j++) {
-			logbuf[logoff++] = ascii(data[i + j]);
+			buf[off++] = ascii(data[i + j]);
 		}
 
 		i += 8;
@@ -596,18 +583,21 @@ static void log_text_bytes(const char *key, size_t klen, const uint8_t *data,
 			break;
 		}
 	}
+
+	b->off = off;
 }
 
-void log_bytes_2(const char *key, size_t klen, const void *data, size_t sz)
+void log_bytes_2(struct logbuf *b, const char *key, size_t klen,
+		 const void *data, size_t sz)
 {
 	if (log_type == LOG_TEXT) {
-		log_text_bytes(key, klen, data, sz);
+		log_text_bytes(b, key, klen, data, sz);
 	} else {
-		log_json_bytes(key, klen, data, sz);
+		log_json_bytes(b, key, klen, data, sz);
 	}
 }
 
-int log_vargs(const char *fmt, va_list ap)
+int log_vargs(struct logbuf *b, const char *fmt, va_list ap)
 {
 	while (*fmt) {
 		const char *key = fmt;
@@ -627,30 +617,30 @@ int log_vargs(const char *fmt, va_list ap)
 			}
 			int len = va_arg(ap, int);
 			const char *str = va_arg(ap, const char *);
-			log_nstring_2(key, klen, len, str);
+			log_nstring_2(b, key, klen, len, str);
 			break;
 		}
 		case 's':
 			// cstring
-			log_cstring_2(key, klen, va_arg(ap, const char *));
+			log_cstring_2(b, key, klen, va_arg(ap, const char *));
 			break;
 		case 'd':
 		case 'i':
 			// int
-			log_int_2(key, klen, va_arg(ap, int));
+			log_int_2(b, key, klen, va_arg(ap, int));
 			break;
 		case 'x':
 		case 'X':
 			// hex
-			log_hex_2(key, klen, va_arg(ap, unsigned));
+			log_hex_2(b, key, klen, va_arg(ap, unsigned));
 			break;
 		case 'u':
 			// unsigned
-			log_uint_2(key, klen, va_arg(ap, unsigned));
+			log_uint_2(b, key, klen, va_arg(ap, unsigned));
 			break;
 		case 'm':
 			// errno
-			log_errno_2(key, klen);
+			log_errno_2(b, key, klen);
 			break;
 		case 'l':
 			if (*(fmt++) != 'l') {
@@ -658,11 +648,12 @@ int log_vargs(const char *fmt, va_list ap)
 			}
 			switch (*(fmt++)) {
 			case 'u':
-				log_uint64_2(key, klen, va_arg(ap, uint64_t));
+				log_uint64_2(b, key, klen,
+					     va_arg(ap, uint64_t));
 				break;
 			case 'd':
 			case 'i':
-				log_int64_2(key, klen, va_arg(ap, int64_t));
+				log_int64_2(b, key, klen, va_arg(ap, int64_t));
 				break;
 			default:
 				goto error;
@@ -681,23 +672,25 @@ error:
 	return -1;
 }
 
-int log_args(const char *fmt, ...)
+int log_args(struct logbuf *b, const char *fmt, ...)
 {
 	va_list ap;
 	va_start(ap, fmt);
-	return log_vargs(fmt, ap);
+	return log_vargs(b, fmt, ap);
 }
 
 int flog(enum log_level lvl, const char *fmt, ...)
 {
+	char buf[256];
+	struct logbuf b;
 	const char *args = strchrnul(fmt, ',');
-	if (!start_log2(lvl, fmt, args - fmt)) {
+	if (!start_log2(&b, buf, sizeof(buf), lvl, fmt, args - fmt)) {
 		return 0;
 	}
 	if (*args == ',') {
 		va_list ap;
 		va_start(ap, fmt);
-		log_vargs(args + 1, ap);
+		log_vargs(&b, args + 1, ap);
 	}
-	return finish_log();
+	return finish_log(&b);
 }

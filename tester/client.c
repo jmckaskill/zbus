@@ -13,24 +13,27 @@ static int write_all(int fd, char *b, size_t sz, const char *args, ...)
 
 static int write_all(int fd, char *b, size_t sz, const char *args, ...)
 {
-	if (start_debug("write")) {
+	struct logbuf lb;
+	if (start_debug(&lb, "write")) {
 		va_list ap;
 		va_start(ap, args);
-		log_vargs(args, ap);
-		log_int("fd", fd);
-		log_bytes("data", b, sz);
-		finish_log();
+		log_vargs(&lb, args, ap);
+		log_int(&lb, "fd", fd);
+		log_bytes(&lb, "data", b, sz);
+		finish_log(&lb);
 	}
 	while (sz) {
 		int w = write(fd, b, sz);
 		if (w <= 0) {
-			start_log(LOG_ERROR, "write");
+			char buf[128];
+			struct logbuf lb;
+			start_log(&lb, buf, sizeof(buf), LOG_ERROR, "write");
 			va_list ap;
 			va_start(ap, args);
-			log_vargs(args, ap);
-			log_errno("errno");
-			log_int("fd", fd);
-			finish_log();
+			log_vargs(&lb, args, ap);
+			log_errno(&lb, "errno");
+			log_int(&lb, "fd", fd);
+			finish_log(&lb);
 			return -1;
 		}
 		b += w;
@@ -52,10 +55,11 @@ try_again:
 		ERROR("recv early EOF,fd:%d", fd);
 		return -1;
 	}
-	if (start_debug("read")) {
-		log_int("fd", fd);
-		log_bytes("data", buf, r);
-		finish_log();
+	struct logbuf b;
+	if (start_debug(&b, "read")) {
+		log_int(&b, "fd", fd);
+		log_bytes(&b, "data", buf, r);
+		finish_log(&b);
 	}
 	return r;
 }
@@ -358,10 +362,11 @@ int read_message(struct client *c, struct message *msg, struct iterator *body)
 			c->in.have += n;
 			continue;
 		} else if (err == STREAM_OK) {
-			if (start_debug("read message")) {
-				log_int("fd", c->fd);
-				log_message(msg);
-				finish_log();
+			struct logbuf lb;
+			if (start_debug(&lb, "read message")) {
+				log_int(&lb, "fd", c->fd);
+				log_message(&lb, msg);
+				finish_log(&lb);
 			}
 			if (defragment_body(&c->in, &b1, &b2)) {
 				return -1;

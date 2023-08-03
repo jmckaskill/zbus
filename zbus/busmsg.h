@@ -13,6 +13,8 @@
 #define ERR_REMOTE_FAILED -8
 #define ERR_NAME_HAS_NO_OWNER -9
 #define ERR_WRONG_METHOD -10
+#define ERR_LAUNCH_FAILED -11
+#define ERR_TIMED_OUT -12
 
 int reply_error(struct tx *to, uint32_t request_serial, int errcode);
 int reply_uint32(struct tx *to, uint32_t request_serial, uint32_t value);

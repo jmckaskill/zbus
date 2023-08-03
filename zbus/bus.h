@@ -36,7 +36,9 @@ int register_remote(struct bus *b, int id, slice_t name, struct tx *tx,
 
 int unregister_remote(struct bus *b, int id);
 
-int add_name(struct bus *b, slice_t name);
+int add_name(struct bus *b, slice_t name, bool autostart);
+int autolaunch_service(struct bus *b, slice_t name, struct address **paddr);
+void service_exited(struct bus *b, slice_t name);
 
 #define DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER 1
 #define DBUS_REQUEST_NAME_REPLY_IN_QUEUE 2

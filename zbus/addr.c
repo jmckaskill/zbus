@@ -71,6 +71,7 @@ struct address *add_address(struct rcu_writer *w, struct address_map **pmap,
 	a->tx = NULL;
 	circ_init(&a->owner_list);
 	a->owner_id = -1;
+	a->autostart = NULL;
 	memcpy(&a->name.p, name.p, name.len);
 	a->name.len = name.len;
 
@@ -86,9 +87,30 @@ struct address *add_address(struct rcu_writer *w, struct address_map **pmap,
 	return a;
 }
 
+struct autostart *new_autostart(void)
+{
+	struct autostart *a = malloc(sizeof(*a));
+	if (!a || cnd_init(&a->wait)) {
+		free(a);
+		return NULL;
+	}
+	a->last_launch = (time_t)0;
+	a->waiters = 0;
+	return a;
+}
+
+void free_autostart(struct autostart *a)
+{
+	if (a) {
+		cnd_destroy(&a->wait);
+		free(a);
+	}
+}
+
 static void free_address(struct address *a)
 {
 	if (a) {
+		free_autostart(a->autostart);
 		free_rcu_reader(a->subs_writer, a->subs_reader);
 		free_rcu_writer(a->subs_writer);
 		deref_tx(a->tx);
