@@ -7,6 +7,7 @@
 #include "lib/log.h"
 #include "lib/algo.h"
 #include "lib/sys.h"
+#include "vendor/c-rbtree-3.1.0/src/c-rbtree.h"
 #include <sys/types.h>
 #include <dirent.h>
 #include <time.h>
@@ -516,8 +517,6 @@ static struct config *new_config(void)
 	c->max_num_remotes = 64;
 	c->max_num_names = 4;
 	c->max_num_subs = 16;
-	c->runas_user = -1;
-	c->runas_group = -1;
 	c->launch_helper = NULL;
 	c->readypn = NULL;
 	c->sockpn = NULL;
@@ -573,6 +572,8 @@ static struct address *get_address(CRBTree *t, char *key, size_t klen,
 #define CFG_KEY -1
 #define CFG_VALUE -2
 #define CFG_OVERLONG -3
+#define CFG_READ_FILE -4
+#define CFG_OPEN_DIR -5
 
 static int parse_global_config(struct config *c, const char *key,
 			       const char *val)
@@ -685,47 +686,6 @@ static bool has_prefix(char *str, size_t len, const char *pfx, size_t plen)
 	return len >= plen && !memcmp(str, pfx, plen) && len <= UINT8_MAX;
 }
 
-static int parse_config_entry(struct config_loader *c, const char *fn,
-			      int lineno, char *key, char *val)
-{
-	int err;
-	size_t klen = strlen(key);
-	if (has_prefix(key, klen, "interface.", 10)) {
-		size_t pfx = strlen("interface.");
-		struct address *a =
-			get_address(&c->interfaces, key, klen, &pfx);
-		err = a ? parse_interface_config(a, key + pfx, val) :
-			  CFG_OVERLONG;
-
-	} else if (has_prefix(key, klen, "address.", 8)) {
-		size_t pfx = strlen("address.");
-		struct address *a = get_address(&c->addresses, key, klen, &pfx);
-		err = a ? parse_address_config(a, key + pfx, val) :
-			  CFG_OVERLONG;
-
-	} else {
-		err = parse_global_config(c->global, key, val);
-	}
-
-	switch (err) {
-	case 0:
-		return 0;
-	case CFG_OVERLONG:
-		ERROR("overlong config value,file:%s,line:%d", fn, lineno);
-		return -1;
-	case CFG_KEY:
-		ERROR("unknown config key,file:%s,line:%d,key:%s", fn, lineno,
-		      key);
-		return -1;
-	case CFG_VALUE:
-		ERROR("unknown config value,file:%s,line:%d,key:%s,val:%s", fn,
-		      lineno, key, val);
-		return -1;
-	default:
-		return -1;
-	}
-}
-
 struct stack_entry {
 	struct ini_reader ini;
 	char *fn;
@@ -739,16 +699,14 @@ struct parse_stack {
 
 static int load_next_file(struct stack_entry *s, const char *file)
 {
-	char *fn = strdup(file);
 	char *data;
 	size_t sz;
-	if (sys_slurp(fn, &data, &sz)) {
-		free(fn);
-		return -1;
+	if (sys_slurp(file, &data, &sz)) {
+		return CFG_READ_FILE;
 	}
 	init_ini(&s->ini, data, sz);
 	s->heap = data;
-	s->fn = fn;
+	s->fn = strdup(file);
 	return 0;
 }
 
@@ -770,8 +728,7 @@ static int load_dir(struct stack_entry *s, const char *pn)
 {
 	struct sysdir *d;
 	if (sys_opendir(&d, pn)) {
-		ERROR("failed to open config dir,dir:%s,errno:%m", pn);
-		return -1;
+		return CFG_OPEN_DIR;
 	}
 	init_ini(&s->ini, NULL, 0);
 	s->dir = d;
@@ -808,7 +765,8 @@ next_file:
 	return s;
 }
 
-static int do_parse(struct parse_stack *p, struct config_loader *c)
+static int do_parse(struct parse_stack *p, struct config *cfg, CRBTree *taddr,
+		    CRBTree *tiface)
 {
 	struct stack_entry *s = p->v;
 	struct stack_entry *sbot = p->v;
@@ -829,25 +787,58 @@ static int do_parse(struct parse_stack *p, struct config_loader *c)
 			break;
 		}
 
+		int lineno = s->ini.lineno;
+		int err;
+		size_t klen = strlen(key);
 		if (!strcmp(key, "include")) {
 			if (++s == stop) {
 				ERROR("parse include depth too deep");
 				break;
 			}
-			if (load_file(s, val)) {
-				break;
-			}
+			err = load_file(s, val);
 		} else if (!strcmp(key, "includedir")) {
 			if (++s == stop) {
 				ERROR("parse include depth too deep");
 				break;
 			}
-			if (load_dir(s, val)) {
-				break;
-			}
-		} else if (parse_config_entry(c, s->fn, s->ini.lineno, key,
-					      val)) {
-			break;
+			err = load_dir(s, val);
+		} else if (has_prefix(key, klen, "interface.", 10)) {
+			size_t pfx = strlen("interface.");
+			struct address *a =
+				get_address(tiface, key, klen, &pfx);
+			err = a ? parse_interface_config(a, key + pfx, val) :
+				  CFG_OVERLONG;
+
+		} else if (has_prefix(key, klen, "address.", 8)) {
+			size_t pfx = strlen("address.");
+			struct address *a = get_address(taddr, key, klen, &pfx);
+			err = a ? parse_address_config(a, key + pfx, val) :
+				  CFG_OVERLONG;
+
+		} else {
+			err = parse_global_config(cfg, key, val);
+		}
+
+		switch (err) {
+		case 0:
+			continue;
+		case CFG_OPEN_DIR:
+			ERROR("failed to open config dir,dir:%s,errno:%m", val);
+			return -1;
+		case CFG_OVERLONG:
+			ERROR("overlong config value,file:%s,line:%d", s->fn,
+			      lineno);
+			return -1;
+		case CFG_KEY:
+			ERROR("unknown config key,file:%s,line:%d,key:%s",
+			      s->fn, lineno, key);
+			return -1;
+		case CFG_VALUE:
+			ERROR("unknown config value,file:%s,line:%d,key:%s,val:%s",
+			      s->fn, lineno, key, val);
+			return -1;
+		default:
+			return -1;
 		}
 	}
 
@@ -855,22 +846,6 @@ static int do_parse(struct parse_stack *p, struct config_loader *c)
 		close_file(s--);
 	}
 	return -1;
-}
-
-int add_config_file(struct config_loader *c, const char *fn)
-{
-	struct parse_stack s;
-	if (load_file(s.v, fn)) {
-		return -1;
-	}
-	return do_parse(&s, c);
-}
-
-int add_config_cmdline(struct config_loader *c, const char *str)
-{
-	struct parse_stack s;
-	load_string(s.v, str);
-	return do_parse(&s, c);
 }
 
 static void free_tree(CRBTree *t)
@@ -887,30 +862,39 @@ static void free_tree(CRBTree *t)
 	}
 }
 
-void init_config(struct config_loader *c)
+int load_config(struct bus *b, struct config_arguments *args)
 {
-	memset(c, 0, sizeof(*c));
-	c->global = new_config();
-}
+	struct config *cfg = new_config();
+	CRBTree taddr = C_RBTREE_INIT;
+	CRBTree tiface = C_RBTREE_INIT;
 
-void destroy_config(struct config_loader *c)
-{
-	free_tree(&c->addresses);
-	free_tree(&c->interfaces);
-	free_config(&c->global->rcu);
-}
+	for (int i = 0; i < args->num; i++) {
+		struct parse_stack s;
+		if (args->v[i].cmdline) {
+			load_string(&s.v[0], args->v[i].cmdline);
+		} else if (load_file(&s.v[0], args->v[i].file)) {
+			goto error;
+		}
 
-void load_config(struct config_loader *c, struct bus *b)
-{
+		if (do_parse(&s, cfg, &taddr, &tiface)) {
+			goto error;
+		}
+	}
+
 	struct rcu_object *objs = NULL;
 	const struct rcu_data *od = rcu_root(b->rcu);
 	struct rcu_data *nd = edit_rcu_data(&objs, od);
 	rcu_register_gc(&objs, &free_config, &nd->config->rcu);
-	nd->config = c->global;
-	nd->destinations =
-		merge_addresses(&objs, nd->destinations, &c->addresses);
-	nd->interfaces = merge_addresses(&objs, nd->interfaces, &c->interfaces);
+	nd->config = cfg;
+	nd->destinations = merge_addresses(&objs, nd->destinations, &taddr);
+	nd->interfaces = merge_addresses(&objs, nd->interfaces, &tiface);
 	rcu_commit(b->rcu, nd, objs);
-	// we consumed all the data, reset to blank
-	memset(c, 0, sizeof(*c));
+	// we consumed all the data, reset to blank, so don't need to free it
+	return 0;
+
+error:
+	free_config(&cfg->rcu);
+	free_tree(&taddr);
+	free_tree(&tiface);
+	return -1;
 }

@@ -47,21 +47,18 @@ int main(int argc, char *argv[])
 {
 	set_thread_name("main");
 
-	struct config_loader ldr;
-	init_config(&ldr);
+	struct config_arguments args;
+	memset(&args, 0, sizeof(args));
 
 	int i;
-	while ((i = getopt(argc, argv, "hf:c:")) > 0) {
+	while ((i = getopt(argc, argv, "hf:c:")) > 0 &&
+	       args.num < MAX_ARGUMENTS) {
 		switch (i) {
 		case 'f':
-			if (add_config_file(&ldr, optarg)) {
-				return 1;
-			}
+			args.v[args.num++].file = optarg;
 			break;
 		case 'c':
-			if (add_config_cmdline(&ldr, optarg)) {
-				return 1;
-			}
+			args.v[args.num++].cmdline = optarg;
 			break;
 		case 'h':
 		case '?':
@@ -75,10 +72,9 @@ int main(int argc, char *argv[])
 	}
 
 	struct bus b;
-	if (setup_signals() || init_bus(&b)) {
+	if (setup_signals() || init_bus(&b) || load_config(&b, &args)) {
 		return 1;
 	}
-	load_config(&ldr, &b);
 
 	const struct rcu_data *d = rcu_root(b.rcu);
 	const struct config *c = d->config;
@@ -94,11 +90,7 @@ int main(int argc, char *argv[])
 	if (lfd < 0) {
 		return 1;
 	}
-	if (lfd > 0 && dup2(lfd, 0) != 0) {
-		return 1;
-	}
-	close(lfd);
-	lfd = 0;
+	must_set_non_blocking(lfd);
 
 	VERBOSE("ready");
 
@@ -115,33 +107,35 @@ int main(int argc, char *argv[])
 
 	for (;;) {
 		int cfd = accept4(lfd, NULL, NULL, SOCK_CLOEXEC);
-		if (cfd < 0) {
+		if (cfd < 0 && errno == EINTR) {
+			continue;
+		} else if (cfd < 0 && errno == EAGAIN) {
+			int err = poll_accept(lfd);
+			if (err == POLL_ACCEPT) {
+				continue;
+			} else if (err == POLL_SIGHUP) {
+				if (load_config(&b, &args)) {
+					ERROR("failed to reload config - continuing with previous config");
+				}
+				continue;
+			} else {
+				return 2;
+			}
+		} else if (cfd < 0) {
 			ERROR("accept,errno:%m");
-			break;
+			return 2;
 		}
 
 		VERBOSE("new connection,fd:%d", cfd);
 
-		struct tx *tx = new_tx(cfd, next_id++);
-		if (!tx) {
-			close(cfd);
-			continue;
-		}
-
-		struct rx *rx = new_rx(&b, tx, cfd);
-		if (!rx) {
-			deref_tx(tx);
-			continue;
-		}
+		struct rx *rx = new_rx(&b, cfd, next_id++);
 
 		thrd_t thrd;
 		if (thrd_create(&thrd, &rx_thread, rx) == thrd_success) {
 			thrd_detach(thrd);
 		} else {
+			ERROR("failed to create rx thread");
 			free_rx(rx);
 		}
 	}
-
-	destroy_bus(&b);
-	return 0;
 }

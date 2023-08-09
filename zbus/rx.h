@@ -22,6 +22,6 @@ struct rx {
 	str8_t addr;
 };
 
-struct rx *new_rx(struct bus *bus, struct tx *tx, int fd);
+struct rx *new_rx(struct bus *bus, int fd, int id);
 void free_rx(struct rx *r);
 int rx_thread(void *);

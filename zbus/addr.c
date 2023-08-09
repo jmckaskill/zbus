@@ -10,7 +10,7 @@
 ///////////////////////////
 // address data management
 
-static inline void collect_address(struct rcu_object **objs, struct address *a)
+static inline void collect_address(struct rcu_object **objs, const struct address *a)
 {
 	rcu_register_gc(objs, (rcu_fn)&free, &a->rcu);
 }

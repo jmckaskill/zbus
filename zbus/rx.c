@@ -18,14 +18,14 @@
 #include <errno.h>
 #include <pthread.h>
 
-struct rx *new_rx(struct bus *bus, struct tx *tx, int fd)
+struct rx *new_rx(struct bus *bus, int fd, int id)
 {
 	struct rx *r = fmalloc(sizeof(*r) + UNIQ_ADDR_BUFLEN);
 	memset(r, 0, sizeof(*r));
 	r->bus = bus;
-	r->tx = tx;
+	r->tx = new_tx(fd, id);
 	r->fd = fd;
-	r->addr.len = id_to_address(r->addr.p, tx->id);
+	r->addr.len = id_to_address(r->addr.p, id);
 	return r;
 }
 

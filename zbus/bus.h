@@ -9,7 +9,6 @@
 #include "txmap.h"
 #include "dbus/match.h"
 #include "lib/log.h"
-#include "vendor/c-rbtree-3.1.0/src/c-rbtree.h"
 #include <threads.h>
 
 struct tx;
@@ -22,8 +21,6 @@ struct config {
 	unsigned max_num_remotes;
 	unsigned max_num_names;
 	unsigned max_num_subs;
-	int runas_user;
-	int runas_group;
 	int sockfd;
 	str8_t *launch_helper;
 	str8_t *sockpn;
@@ -76,17 +73,17 @@ int release_name(struct bus *b, struct rx *r, const str8_t *name,
 int update_sub(struct bus *b, bool add, struct tx *tx, const char *str,
 	       struct match m, uint32_t serial);
 
-struct config_loader {
-	struct config *global;
-	CRBTree addresses;
-	CRBTree interfaces;
+#define MAX_ARGUMENTS 32
+
+struct config_arguments {
+	int num;
+	struct {
+		const char *cmdline;
+		const char *file;
+	} v[MAX_ARGUMENTS];
 };
 
-void init_config(struct config_loader *c);
-void destroy_config(struct config_loader *c);
-int add_config_file(struct config_loader *c, const char *fn);
-int add_config_cmdline(struct config_loader *c, const char *arg);
-void load_config(struct config_loader *c, struct bus *b);
+int load_config(struct bus *b, struct config_arguments *c);
 
 static inline str8_t *str8dup(const str8_t *from)
 {

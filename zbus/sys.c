@@ -73,8 +73,27 @@ error:
 	return -1;
 }
 
-static void wakeup(int)
+static atomic_flag g_sighup;
+static atomic_flag g_sigchld;
+
+static inline bool have_sighup(void)
 {
+	return !atomic_flag_test_and_set(&g_sighup);
+}
+
+static inline bool have_sigchld(void)
+{
+	return !atomic_flag_test_and_set(&g_sigchld);
+}
+
+static void on_sighup(int)
+{
+	atomic_flag_clear(&g_sighup);
+}
+
+static void on_sigchld(int)
+{
+	atomic_flag_clear(&g_sigchld);
 }
 
 struct child_info {
@@ -88,23 +107,17 @@ KHASH_MAP_INIT_INT(child_info, struct child_info *);
 static mtx_t child_lk;
 static khash_t(child_info) children;
 
-static int child_listener(void *)
+static int reap_children(void)
 {
 	for (;;) {
 		int sts;
 		pid_t pid = waitpid(-1, &sts, WNOHANG);
 
 		if (pid < 0 && (errno == EAGAIN || errno == ECHILD)) {
-			sigset_t sigs;
-			sigemptyset(&sigs);
-			sigaddset(&sigs, SIGCHLD);
-			int sig;
-			if (sigwait(&sigs, &sig)) {
-				FATAL("sigwait failed,errno:%m");
-			}
-			continue;
+			return 0;
 		} else if (pid < 0) {
-			FATAL("wait failed,errno:%m");
+			ERROR("wait failed,errno:%m");
+			return -1;
 		}
 
 		mtx_lock(&child_lk);
@@ -181,6 +194,10 @@ int launch_service(struct bus *bus, const str8_t *name)
 		close(1);
 		// leave stderr open
 
+		sigset_t ss;
+		sigemptyset(&ss);
+		pthread_sigmask(SIG_SETMASK, &ss, NULL);
+
 		execvp("zbus-launch", args);
 		ERROR("execvp failed in child,errno:%m");
 		exit(112);
@@ -189,31 +206,41 @@ int launch_service(struct bus *bus, const str8_t *name)
 
 int setup_signals(void)
 {
+	// set default mask
+	sigset_t mask;
+	sigemptyset(&mask);
+	sigaddset(&mask, SIGCHLD);
+	sigaddset(&mask, SIGHUP);
+	if (pthread_sigmask(SIG_SETMASK, &mask, NULL)) {
+		ERROR("set sigmask,errno:%m");
+		return -1;
+	}
+
+	atomic_flag_test_and_set(&g_sigchld);
+	atomic_flag_test_and_set(&g_sighup);
+
 	// setup handlers
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
-	sa.sa_handler = &wakeup;
+
+	sa.sa_handler = &on_sigchld;
 	if (sigaction(SIGCHLD, &sa, NULL)) {
 		ERROR("setup sigchld,errno:%m");
 		return -1;
 	}
 
-	// set default mask
-	sigset_t mask;
-	sigemptyset(&mask);
-	sigaddset(&mask, SIGPIPE);
-	sigaddset(&mask, SIGCHLD);
-	if (pthread_sigmask(SIG_BLOCK, &mask, NULL)) {
-		ERROR("set sigmask,errno:%m");
+	sa.sa_handler = &on_sighup;
+	if (sigaction(SIGHUP, &sa, NULL)) {
+		ERROR("setup sighup,errno:%m");
 		return -1;
 	}
 
-	// spawn child thread
-	thrd_t child_thread;
-	if (thrd_create(&child_thread, &child_listener, NULL)) {
-		ERROR("spawn child thread,errno:%m");
+	sa.sa_handler = SIG_IGN;
+	if (sigaction(SIGPIPE, &sa, NULL)) {
+		ERROR("setup SIGPIPE,errno:%m");
 		return -1;
 	}
+
 	return 0;
 }
 
@@ -248,6 +275,30 @@ try_again:
 		goto try_again;
 	}
 	return n <= 0;
+}
+
+int poll_accept(int fd)
+{
+try_again:
+	struct pollfd pfd = {
+		.fd = fd,
+		.events = POLLIN,
+	};
+	sigset_t ss;
+	sigemptyset(&ss);
+	int n = ppoll(&pfd, 1, NULL, &ss);
+	if (n == 1) {
+		return POLL_ACCEPT;
+	} else if (have_sigchld() && reap_children()) {
+		return -1;
+	} else if (have_sighup()) {
+		return POLL_SIGHUP;
+	} else if (n < 0 && (errno == EINTR || errno == EAGAIN)) {
+		goto try_again;
+	} else {
+		ERROR("poll,errno:%m");
+		return -1;
+	}
 }
 
 #ifndef NDEBUG

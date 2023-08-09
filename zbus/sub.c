@@ -24,7 +24,7 @@ static int cmp_subkey_subscription(const void *key, const void *element)
 	return diff ? diff : memcmp(k->mstr, s->mstr, k->len);
 }
 
-void collect_subscription(struct rcu_object **objs, struct subscription *s)
+void collect_subscription(struct rcu_object **objs, const struct subscription *s)
 {
 	rcu_register_gc(objs, (rcu_fn)&free, &s->h.rcu);
 }
