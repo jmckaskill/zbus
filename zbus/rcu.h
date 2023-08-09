@@ -33,8 +33,8 @@ void rcu_commit(struct rcu_writer *w, void *p, struct rcu_object *objs);
 struct rcu_reader *new_rcu_reader(struct rcu_writer *w);
 void free_rcu_reader(struct rcu_writer *w, struct rcu_reader *r);
 
-static inline void rcu_on_commit(struct rcu_object **list, rcu_fn fn,
-				 const struct rcu_object *o)
+static inline void rcu_register_gc(struct rcu_object **list, rcu_fn fn,
+				   const struct rcu_object *o)
 {
 	struct rcu_object *m = (struct rcu_object *)o;
 	m->next = *list;

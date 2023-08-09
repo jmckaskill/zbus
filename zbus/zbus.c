@@ -129,8 +129,8 @@ int main(int argc, char *argv[])
 		}
 
 		struct rx *rx = new_rx(&b, tx, cfd);
-		deref_tx(tx);
 		if (!rx) {
+			deref_tx(tx);
 			continue;
 		}
 

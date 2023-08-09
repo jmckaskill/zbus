@@ -13,7 +13,7 @@ struct vector *edit_vector(struct rcu_object **objs, const struct vector *ob,
 
 	if (ob) {
 		static_assert(offsetof(struct vector, rcu) == 0, "");
-		rcu_on_commit(objs, (rcu_fn)&free, &ob->rcu);
+		rcu_register_gc(objs, (rcu_fn)&free, &ob->rcu);
 	}
 
 	assert(n + num >= 0);

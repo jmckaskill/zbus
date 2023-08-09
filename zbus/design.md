@@ -32,3 +32,5 @@ Refs are pulled to allow locks to be dropped IE to allow calls such as:
 5. Lock TX struct
 6. Send data to TX struct
 7. Unlock TX structs
+
+struct rx is never stored in any accesible location so that functions that take an rx argument can only be called on that rx thread.

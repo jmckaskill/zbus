@@ -37,9 +37,9 @@
 
 int bus_method(struct rx *r, struct message *m, struct iterator *ii);
 int peer_method(struct rx *r, struct message *m);
-int unicast(struct rx *r, struct tx_msg *m);
-int broadcast(struct rx *r, struct tx_msg *m);
-int build_reply(struct rx *r, struct tx_msg *m);
+int unicast(struct rx *r, struct txmsg *m);
+int broadcast(struct rx *r, struct txmsg *m);
+int build_reply(struct rx *r, struct txmsg *m);
 
 void rm_all_names_locked(struct rx *r);
 void rm_all_matches_locked(struct rx *r);

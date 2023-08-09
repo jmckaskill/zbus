@@ -1,6 +1,5 @@
 #pragma once
 #include "tx.h"
-#include "rx.h"
 #include "dbus/encode.h"
 
 // general errors that any function can return
@@ -16,6 +15,9 @@
 #define ERR_WRONG_METHOD 10
 #define ERR_LAUNCH_FAILED 11
 #define ERR_TIMED_OUT 12
+#define ERR_DISCONNECT 13
+
+struct rx;
 
 int reply_error(struct rx *r, uint32_t serial, int errcode);
 int reply_uint32(struct rx *r, uint32_t serial, uint32_t value);

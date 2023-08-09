@@ -13,6 +13,8 @@ struct address {
 	struct rcu_object rcu;
 	struct CRBNode rb;
 	struct submap *subs;
+	// tx ptr is stored here, but doesn't contain a ref. This is not needed
+	// as it's covered by the ref in the txmap.
 	struct tx *tx;
 	time_t last_launch;
 	bool running;
@@ -27,7 +29,6 @@ struct addrmap {
 };
 
 struct address *new_address(const str8_t *name);
-void free_address(struct rcu_object *o);
 struct address *edit_address(struct rcu_object **objs,
 			     const struct address *oa);
 
@@ -43,6 +44,11 @@ struct addrmap *merge_addresses(struct rcu_object **objs,
 
 //////////////////////////////
 // inline implementations
+
+static inline void free_address(struct address *a)
+{
+	free(a);
+}
 
 static inline struct addrmap *edit_addrmap(struct rcu_object **objs,
 					   const struct addrmap *om, int idx,

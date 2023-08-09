@@ -66,6 +66,7 @@ build obj/zbus/rx.o:        cc zbus/rx.c
 build obj/zbus/sub.o:       cc zbus/sub.c
 build obj/zbus/sys.o:       cc zbus/sys.c
 build obj/zbus/tx.o:        cc zbus/tx.c
+build obj/zbus/txmap.o: cc zbus/txmap.c
 build obj/zbus/vector.o: cc zbus/vector.c
 build obj/zbus/zbus.o:      cc zbus/zbus.c
 
@@ -80,6 +81,7 @@ build bin/zbus: ld $
         obj/zbus/sub.o $
         obj/zbus/sys.o $
         obj/zbus/tx.o $
+        obj/zbus/txmap.o $
         obj/zbus/vector.o $
         obj/zbus/zbus.o $
         obj/vendor/c-rbtree.o $

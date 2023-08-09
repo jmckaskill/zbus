@@ -1,4 +1,5 @@
 #pragma once
+#include "rcu.h"
 #include "dbus/encode.h"
 #include <threads.h>
 #include <stdatomic.h>
@@ -8,8 +9,11 @@
 #include <sys/socket.h>
 
 #define NO_REPLY_SERIAL 2U
+#define MAX_NUM_REQUESTS 32
 
-struct tx_msg {
+struct rx;
+
+struct txmsg {
 	struct message m;
 	struct {
 		char *buf;
@@ -26,7 +30,7 @@ struct request {
 struct requests {
 	cnd_t cnd;
 	uint32_t avail;
-	struct request v[32];
+	struct request v[MAX_NUM_REQUESTS];
 };
 
 struct tx {
@@ -51,11 +55,11 @@ struct tx {
 struct tx *new_tx(int fd, int id);
 static struct tx *ref_tx(struct tx *t);
 void deref_tx(struct tx *t);
-void close_tx(struct tx *t);
-int send_message(struct tx *t, bool block, struct tx_msg *m);
-int send_data(struct tx *t, bool block, struct tx_msg *m, char *buf, int sz);
-int route_request(struct tx *client, struct tx *srv, struct tx_msg *m);
-int route_reply(struct tx *server, struct tx_msg *m);
+void unregister_tx(struct rx *r);
+int send_message(struct tx *t, bool block, struct txmsg *m);
+int send_data(struct tx *t, bool block, struct txmsg *m, char *buf, int sz);
+int route_request(struct rx *r, struct tx *srv, struct txmsg *m);
+int route_reply(struct rx *r, struct txmsg *m);
 
 /////////////////////////////////////
 // inline

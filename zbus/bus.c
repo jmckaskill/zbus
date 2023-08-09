@@ -49,13 +49,13 @@ destroy_mutex:
 static void free_addrmap(struct addrmap *m)
 {
 	for (int i = 0, n = vector_len(&m->hdr); i < n; i++) {
-		const struct address *a = m->v[i];
+		struct address *a = (struct address *)m->v[i];
 		assert(!a->subs);
 		assert(!a->tx);
 		// the only reason we should still have the address is if it's
 		// got a configuration
 		assert(a->in_config);
-		free_address(&((struct address *)a)->rcu);
+		free_address(a);
 	}
 	free_vector(&m->hdr);
 }
@@ -80,7 +80,7 @@ static struct rcu_data *edit_rcu_data(struct rcu_object **objs,
 	struct rcu_data *nd = fmalloc(sizeof(*nd));
 	*nd = *od;
 	static_assert(offsetof(struct rcu_data, rcu) == 0, "");
-	rcu_on_commit(objs, (rcu_fn)&free, &od->rcu);
+	rcu_register_gc(objs, (rcu_fn)&free, &od->rcu);
 	return nd;
 }
 
@@ -93,7 +93,7 @@ static void notify_name_changed(struct bus *bus, struct rx *r, bool acquired,
 	int id = r->tx->id;
 
 	// send the NameAcquired/NameLost Signal
-	struct tx_msg m;
+	struct txmsg m;
 	init_message(&m.m, MSG_SIGNAL, NO_REPLY_SERIAL);
 	m.m.path = BUS_PATH;
 	m.m.interface = BUS_INTERFACE;
@@ -148,7 +148,7 @@ static void notify_name_changed(struct bus *bus, struct rx *r, bool acquired,
 		struct tx *to = subs->v[i]->tx;
 		if (send_data(to, false, &m, r->buf, sz)) {
 			ERROR("failed to send NameOwnerChanged message,name:%s,txid:%d",
-			      name->p, txid(to));
+			      name->p, to->id);
 		}
 	}
 }
@@ -170,13 +170,12 @@ int register_remote(struct bus *b, struct rx *r, const str8_t *name,
 	reply_string(r, serial, name);
 
 	// then release the new name to everyone else
-	struct rcu_object objs;
+	struct rcu_object *objs = NULL;
 	struct rcu_data *nd = edit_rcu_data(&objs, od);
 	struct txmap *nm = edit_txmap(&objs, od->remotes, idx, 1);
-	ref_tx(r->tx);
-	nm->v[idx] = r->tx;
+	nm->v[idx] = ref_tx(r->tx);
 	nd->remotes = nm;
-	rcu_commit(b->rcu, nd, &objs);
+	rcu_commit(b->rcu, nd, objs);
 
 	notify_name_changed(b, r, true, name);
 
@@ -197,12 +196,12 @@ int unregister_remote(struct bus *b, struct rx *r, const str8_t *name,
 	}
 	assert(r->tx == od->remotes->v[idx]);
 
-	struct rcu_object objs;
+	struct rcu_object *objs = NULL;
 	struct rcu_data *nd = edit_rcu_data(&objs, od);
 	struct txmap *nm = edit_txmap(&objs, od->remotes, idx, -1);
-	rcu_on_commit(&objs, (rcu_fn)&deref_tx, &r->tx->rcu);
+	rcu_register_gc(&objs, (rcu_fn)&deref_tx, &r->tx->rcu);
 	nd->remotes = nm;
-	rcu_commit(b->rcu, nd, &objs);
+	rcu_commit(b->rcu, nd, objs);
 
 	notify_name_changed(b, r, false, name);
 	return 0;
@@ -248,7 +247,6 @@ int request_name(struct bus *b, struct rx *r, const str8_t *name,
 		struct address *na = edit_address(&objs, oa);
 		struct addrmap *nm = edit_addrmap(&objs, om, idx, 0);
 		na->tx = r->tx;
-		ref_tx(r->tx);
 		nm->v[idx] = na;
 		nd->destinations = nm;
 
@@ -295,7 +293,6 @@ int release_name(struct bus *b, struct rx *r, const str8_t *name,
 		nd = edit_rcu_data(&objs, od);
 		struct address *na = edit_address(&objs, oa);
 		struct addrmap *nm = edit_addrmap(&objs, om, idx, 0);
-		deref_tx(na->tx);
 		na->tx = NULL;
 		nm->v[idx] = na;
 		nd->destinations = nm;
@@ -885,7 +882,7 @@ static void free_tree(CRBTree *t)
 	while (n) {
 		CRBNode *next = c_rbnode_next_postorder(n);
 		struct address *a = node_to_addr(n);
-		free_address(&a->rcu);
+		free_address(a);
 		n = next;
 	}
 }
@@ -908,7 +905,7 @@ void load_config(struct config_loader *c, struct bus *b)
 	struct rcu_object *objs = NULL;
 	const struct rcu_data *od = rcu_root(b->rcu);
 	struct rcu_data *nd = edit_rcu_data(&objs, od);
-	rcu_on_commit(&objs, &free_config, &nd->config->rcu);
+	rcu_register_gc(&objs, &free_config, &nd->config->rcu);
 	nd->config = c->global;
 	nd->destinations =
 		merge_addresses(&objs, nd->destinations, &c->addresses);

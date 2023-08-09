@@ -24,7 +24,6 @@ struct rx *new_rx(struct bus *bus, struct tx *tx, int fd)
 	memset(r, 0, sizeof(*r));
 	r->bus = bus;
 	r->tx = tx;
-	ref_tx(tx);
 	r->fd = fd;
 	r->addr.len = id_to_address(r->addr.p, tx->id);
 	return r;
@@ -33,8 +32,6 @@ struct rx *new_rx(struct bus *bus, struct tx *tx, int fd)
 void free_rx(struct rx *r)
 {
 	if (r) {
-		shutdown(r->fd, SHUT_RD);
-		// deref_tx may close the fd so do this last
 		deref_tx(r->tx);
 		assert(!r->names);
 		assert(!r->subs);
@@ -160,13 +157,12 @@ static void unregister_with_bus(struct rx *r)
 	unregister_remote(r->bus, r, &r->addr, r->reader);
 	r->reader = NULL;
 	mtx_unlock(&r->bus->lk);
-
-	close_tx(r->tx);
+	unregister_tx(r);
 }
 
 static int read_message(struct rx *r, struct msg_stream *s)
 {
-	struct tx_msg m;
+	struct txmsg m;
 
 	for (;;) {
 		int sts = stream_next(s, &m.m);
@@ -235,7 +231,7 @@ static int read_message(struct rx *r, struct msg_stream *s)
 	case MSG_ERROR:
 		if (!build_reply(r, &m)) {
 			// ignore errors
-			route_reply(r->tx, &m);
+			route_reply(r, &m);
 		}
 		break;
 	default:

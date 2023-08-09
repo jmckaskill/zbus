@@ -41,7 +41,7 @@ static int addmatch(struct rx *r, struct message *req, struct iterator *ii)
 	mtx_unlock(&r->bus->lk);
 
 	if (err) {
-		free_subscription(&s->h.rcu);
+		free_subscription(s);
 		return err;
 	}
 
@@ -76,7 +76,7 @@ static int rmmatch(struct rx *r, struct message *req, struct iterator *ii)
 	// free our local copy
 	struct subscription *s = *ps;
 	*ps = s->h.next;
-	free_subscription(&s->h.rcu);
+	free_subscription(s);
 	r->num_subs--;
 
 	return err;
@@ -87,7 +87,7 @@ void rm_all_matches_locked(struct rx *r)
 	for (struct subscription *s = r->subs; s != NULL;) {
 		struct subscription *n = s->h.next;
 		update_sub(r->bus, false, r->tx, s->mstr, s->m, 0);
-		free_subscription(&s->h.rcu);
+		free_subscription(s);
 		s = n;
 	}
 	r->num_subs = 0;
@@ -99,7 +99,7 @@ void rm_all_matches_locked(struct rx *r)
 
 #define SIGNAL_HDR_CAP sizeof(((struct rx *)0)->buf)
 
-static int build_signal(struct tx_msg *m)
+static int build_signal(struct txmsg *m)
 {
 	// keep path
 	// keep interface
@@ -124,7 +124,7 @@ static int build_signal(struct tx_msg *m)
 }
 
 static int send_signal(bool iface_checked, const struct submap *subs,
-		       struct tx_msg *m)
+		       struct txmsg *m)
 {
 	// signals are required to specify: member, interface & path
 
@@ -166,7 +166,7 @@ static const struct address *get_address(const struct addrmap *m,
 	return m->v[idx];
 }
 
-int broadcast(struct rx *r, struct tx_msg *m)
+int broadcast(struct rx *r, struct txmsg *m)
 {
 	// only encode the header if we have a valid subscription and
 	// only encode it once
@@ -317,7 +317,7 @@ static void encode_names(struct builder *b, struct array_data ad,
 
 static int list_names(struct rx *r, uint32_t request_serial)
 {
-	struct tx_msg m;
+	struct txmsg m;
 	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
 	m.m.reply_serial = request_serial;
 	m.m.signature = "as";
@@ -362,7 +362,7 @@ static int get_name_owner(struct rx *r, struct message *req,
 		return ERR_BAD_ARGUMENT;
 	}
 
-	struct tx_msg m;
+	struct txmsg m;
 	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
 	m.m.reply_serial = req->serial;
 	m.m.signature = "s";
@@ -373,7 +373,7 @@ static int get_name_owner(struct rx *r, struct message *req,
 	int idx = bsearch_address(d->destinations, name);
 	int err = 0;
 	if (idx >= 0 && d->destinations->v[idx]->tx) {
-		append_id_address(&b, txid(d->destinations->v[idx]->tx));
+		append_id_address(&b, d->destinations->v[idx]->tx->id);
 	} else {
 		err = ERR_NAME_HAS_NO_OWNER;
 	}
@@ -515,8 +515,7 @@ static int ref_named_tx(struct rx *r, const str8_t *name, bool should_autostart,
 			const struct address *a = d->destinations->v[idx];
 			activatable = a->activatable;
 			if (a->tx) {
-				tx = a->tx;
-				ref_tx(tx);
+				tx = ref_tx(a->tx);
 			}
 		}
 		rcu_unlock(r->reader);
@@ -531,15 +530,14 @@ static int ref_named_tx(struct rx *r, const str8_t *name, bool should_autostart,
 	const struct address *addr;
 	int err = autolaunch_service(r->bus, name, &addr);
 	if (!err) {
-		*ptx = addr->tx;
-		ref_tx(*ptx);
+		*ptx = ref_tx(addr->tx);
 	}
 	mtx_unlock(&r->bus->lk);
 
 	return err;
 }
 
-int unicast(struct rx *r, struct tx_msg *m)
+int unicast(struct rx *r, struct txmsg *m)
 {
 	struct tx *tx;
 	bool should_autostart = (m->m.flags & FLAG_NO_AUTO_START) == 0;
@@ -563,6 +561,7 @@ int unicast(struct rx *r, struct tx_msg *m)
 	size_t bsz = m->body[0].len + m->body[1].len;
 	int sz = write_header(r->buf, sizeof(r->buf), &m->m, bsz);
 	if (sz < 0) {
+		deref_tx(tx);
 		return -1;
 	}
 	m->hdr.buf = r->buf;
@@ -578,7 +577,7 @@ int unicast(struct rx *r, struct tx_msg *m)
 	return err;
 }
 
-int build_reply(struct rx *r, struct tx_msg *m)
+int build_reply(struct rx *r, struct txmsg *m)
 {
 	assert(m->m.reply_serial &&
 	       (m->m.type == MSG_REPLY || m->m.type == MSG_ERROR));

@@ -10,6 +10,8 @@ struct subscription {
 		struct rcu_object rcu;
 		struct subscription *next;
 	} h;
+	// tx ptr here does not contain an active ref. This is covered by the
+	// ref in the txmap.
 	struct tx *tx;
 	struct match m;
 	uint32_t serial;
@@ -22,7 +24,6 @@ struct submap {
 };
 
 struct subscription *new_subscription(const char *mstr, struct match m);
-void free_subscription(struct rcu_object *o);
 
 static void free_submap(struct submap *m);
 static struct submap *edit_submap(struct rcu_object **objs,
@@ -41,7 +42,10 @@ int bsearch_subscription(const struct submap *s, struct tx *tx, const char *str,
 
 ///////////////////////
 // inline
-
+static inline void free_subscription(struct subscription *s)
+{
+	free(s);
+}
 static inline void free_submap(struct submap *m)
 {
 	free_vector(&m->hdr);

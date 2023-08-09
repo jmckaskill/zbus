@@ -10,13 +10,9 @@
 ///////////////////////////
 // address data management
 
-void free_address(struct rcu_object *o)
+static inline void collect_address(struct rcu_object **objs, struct address *a)
 {
-	struct address *a = container_of(o, struct address, rcu);
-	if (a) {
-		deref_tx(a->tx);
-		free(a);
-	}
+	rcu_register_gc(objs, (rcu_fn)&free, &a->rcu);
 }
 
 struct address *new_address(const str8_t *name)
@@ -31,8 +27,7 @@ struct address *edit_address(struct rcu_object **objs, const struct address *oa)
 {
 	struct address *na = fmalloc(sizeof(*na) + oa->name.len);
 	memcpy(na, oa, sizeof(*oa) + oa->name.len);
-	ref_tx(na->tx);
-	rcu_on_commit(objs, &free_address, &oa->rcu);
+	collect_address(objs, oa);
 	return na;
 }
 
@@ -136,7 +131,7 @@ struct addrmap *merge_addresses(struct rcu_object **objs,
 
 			if (oa->in_config && !oa->tx && !oa->subs) {
 				// was in the config previously and not in use
-				rcu_on_commit(objs, &free_address, &oa->rcu);
+				collect_address(objs, oa);
 
 			} else if (oa->in_config) {
 				// was in the config previously and is in use,
@@ -160,7 +155,7 @@ struct addrmap *merge_addresses(struct rcu_object **objs,
 			memcpy(na, oa, sizeof(*na));
 			copy_config(na, &tmp);
 
-			rcu_on_commit(objs, &free_address, &oa->rcu);
+			collect_address(objs, oa);
 			nm->v[nidx++] = na;
 
 			oidx++;

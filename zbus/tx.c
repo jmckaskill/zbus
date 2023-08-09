@@ -1,6 +1,8 @@
 #define _GNU_SOURCE
 #include "tx.h"
+#include "rx.h"
 #include "sys.h"
+#include "busmsg.h"
 #include "dbus/encode.h"
 #include "lib/logmsg.h"
 #include "lib/log.h"
@@ -8,6 +10,9 @@
 #include <strings.h>
 #include <errno.h>
 #include <sys/socket.h>
+
+static void cancel_client_requests(struct tx *client);
+static void cancel_server_requests(struct rx *r, struct tx *srv);
 
 struct tx *new_tx(int fd, int id)
 {
@@ -51,31 +56,33 @@ void deref_tx(struct tx *t)
 		cnd_destroy(&t->send_cnd);
 		cnd_destroy(&t->client.cnd);
 		cnd_destroy(&t->server.cnd);
+		close(t->fd);
 		free(t);
 	}
 }
 
-static void remove_requests_unlocked(struct tx *t, bool server);
-
-void close_tx(struct tx *t)
+void unregister_tx(struct rx *r)
 {
+	struct tx *t = r->tx;
 	mtx_lock(&t->lk);
 	t->shutdown = true;
 	t->closed = true;
+	t->stalled = false;
 	if (t->send_waiters) {
 		cnd_broadcast(&t->send_cnd);
 	}
 	mtx_unlock(&t->lk);
-	// TODO would be nicer to send error messages for the server requests
-	remove_requests_unlocked(t, true);
-	remove_requests_unlocked(t, false);
-	cnd_broadcast(&t->client.cnd);
-	cnd_broadcast(&t->server.cnd);
-	close(t->fd);
-	t->fd = -1;
+	cancel_client_requests(t);
+	cancel_server_requests(r, t);
+	if (!t->client.avail) {
+		cnd_broadcast(&t->client.cnd);
+	}
+	if (!t->server.avail) {
+		cnd_broadcast(&t->server.cnd);
+	}
 }
 
-static int send_locked(struct tx *t, bool block, struct tx_msg *m)
+static int send_locked(struct tx *t, bool block, struct txmsg *m)
 {
 	assert(m->hdr.len);
 
@@ -110,13 +117,13 @@ static int send_locked(struct tx *t, bool block, struct tx_msg *m)
 			cnd_wait(&t->send_cnd, &t->lk);
 		} while (t->stalled && !t->shutdown);
 		t->send_waiters--;
-
-		if (t->shutdown) {
-			return -1;
-		}
 	}
 
 	for (;;) {
+		if (t->shutdown) {
+			return -1;
+		}
+
 		struct iovec v[3];
 		v[0].iov_base = m->hdr.buf;
 		v[0].iov_len = m->hdr.len;
@@ -154,9 +161,7 @@ static int send_locked(struct tx *t, bool block, struct tx_msg *m)
 				mtx_lock(&t->lk);
 				t->stalled = false;
 
-				if (t->shutdown) {
-					return -1;
-				} else if (err) {
+				if (err) {
 					ERROR("poll,errno:%m,fd:%d", t->fd);
 					goto shutdown;
 				}
@@ -191,12 +196,15 @@ static int send_locked(struct tx *t, bool block, struct tx_msg *m)
 
 shutdown:
 	if (!t->shutdown) {
+		t->shutdown = true;
+		t->stalled = false;
 		shutdown(t->fd, SHUT_WR);
+		cnd_broadcast(&t->send_cnd);
 	}
 	return -1;
 }
 
-int send_message(struct tx *t, bool block, struct tx_msg *m)
+int send_message(struct tx *t, bool block, struct txmsg *m)
 {
 	mtx_lock(&t->lk);
 	int err = send_locked(t, block, m);
@@ -204,7 +212,7 @@ int send_message(struct tx *t, bool block, struct tx_msg *m)
 	return err;
 }
 
-int send_data(struct tx *t, bool block, struct tx_msg *m, char *buf, int sz)
+int send_data(struct tx *t, bool block, struct txmsg *m, char *buf, int sz)
 {
 	if (sz < 0) {
 		return -1;
@@ -221,10 +229,13 @@ int send_data(struct tx *t, bool block, struct tx_msg *m, char *buf, int sz)
 ///////////////////////////////////////
 // request/reply routing
 
-static int acquire_request(struct requests *s, mtx_t *lk)
+static int acquire_request(struct tx *t, struct requests *s, mtx_t *lk)
 {
-	while (!s->avail) {
+	while (!s->avail && !t->closed) {
 		cnd_wait(&s->cnd, lk);
+	}
+	if (t->closed) {
+		return -1;
 	}
 	int idx = ffs(s->avail) - 1;
 	assert(0 <= idx && idx < 32);
@@ -256,8 +267,9 @@ static void release_request(struct requests *s, int idx)
 	}
 }
 
-int route_request(struct tx *client, struct tx *srv, struct tx_msg *m)
+int route_request(struct rx *r, struct tx *srv, struct txmsg *m)
 {
+	struct tx *client = r->tx;
 	assert(m->m.type == MSG_METHOD &&
 	       !(m->m.flags & FLAG_NO_REPLY_EXPECTED));
 
@@ -268,11 +280,20 @@ int route_request(struct tx *client, struct tx *srv, struct tx_msg *m)
 	// inside or the server thread which doesn't know about this request
 	// yet.
 	mtx_lock(&client->lk);
-	int cidx = acquire_request(&client->client, &client->lk);
+	int cidx = acquire_request(client, &client->client, &client->lk);
+	// this shouldn't fail as we are calling from the client thread, which
+	// shouldn't call this function after shutting down
+	assert(cidx >= 0);
 	mtx_unlock(&client->lk);
 
 	mtx_lock(&srv->lk);
-	int sidx = acquire_request(&srv->server, &srv->lk);
+	int sidx = acquire_request(srv, &srv->server, &srv->lk);
+	if (sidx < 0) {
+		// server has shutdown
+		release_request(&client->client, cidx);
+		mtx_unlock(&srv->lk);
+		return -1;
+	}
 	struct request *sreq = &srv->server.v[sidx];
 	sreq->remote = client;
 	sreq->reqidx = cidx;
@@ -298,8 +319,9 @@ int route_request(struct tx *client, struct tx *srv, struct tx_msg *m)
 	return err;
 }
 
-int route_reply(struct tx *srv, struct tx_msg *m)
+int route_reply(struct rx *r, struct txmsg *m)
 {
+	struct tx *srv = r->tx;
 	uint32_t serial = m->m.reply_serial;
 
 	mtx_lock(&srv->lk);
@@ -318,35 +340,53 @@ int route_reply(struct tx *srv, struct tx_msg *m)
 
 	mtx_lock(&client->lk);
 	struct request *creq = &client->client.v[cidx];
-	if (client->closed || creq->remote != srv || creq->reqidx != sidx) {
-		// client canceled or shutdown
-		mtx_unlock(&client->lk);
-		return -1;
+	int err = -1;
+	if (!client->closed && creq->remote == srv && creq->reqidx == sidx) {
+		// only release the client request if it matches
+		set_reply_serial(m->hdr.buf, creq->serial);
+		release_request(&client->client, cidx);
+		err = send_locked(client, false, m);
 	}
-	set_reply_serial(m->hdr.buf, creq->serial);
-	release_request(&client->client, cidx);
-	int err = send_locked(client, false, m);
 	mtx_unlock(&client->lk);
-
 	deref_tx(client);
 	return err;
 }
 
-static void remove_requests_unlocked(struct tx *t, bool server)
+static void cancel_client_requests(struct tx *client)
 {
-	assert(t->closed);
-	struct requests *s = server ? &t->server : &t->client;
-	for (int i = 0; i < sizeof(s->v) / sizeof(s->v[0]); i++) {
-		struct request *r = &s->v[i];
-		struct tx *o = r->remote;
-		if (o) {
-			mtx_lock(&o->lk);
-			struct requests *os = server ? &o->client : &o->server;
-			struct request * or = &os->v[r->reqidx];
-			if (!o->closed && or->remote == t && or->reqidx == i) {
-				release_request(os, r->reqidx);
-			}
-			mtx_unlock(&o->lk);
+	for (int cidx = 0; cidx < MAX_NUM_REQUESTS; cidx++) {
+		struct request *cr = &client->client.v[cidx];
+		struct tx *srv = cr->remote;
+		if (!srv) {
+			continue;
 		}
+		mtx_lock(&srv->lk);
+		struct request *sr = &srv->server.v[cr->reqidx];
+		if (!srv->closed && sr->remote == client &&
+		    sr->reqidx == cidx) {
+			release_request(&srv->server, cr->reqidx);
+		}
+		mtx_unlock(&srv->lk);
+		cr->remote = NULL;
+	}
+}
+
+static void cancel_server_requests(struct rx *r, struct tx *srv)
+{
+	for (int sidx = 0; sidx < MAX_NUM_REQUESTS; sidx++) {
+		struct request *sr = &srv->server.v[sidx];
+		struct tx *client = sr->remote;
+		if (!client) {
+			continue;
+		}
+		mtx_lock(&client->lk);
+		struct request *cr = &client->client.v[sr->reqidx];
+		if (!client->closed && cr->remote == srv &&
+		    cr->reqidx == sidx) {
+			release_request(&client->client, sr->reqidx);
+			reply_error(r, cr->serial, ERR_DISCONNECT);
+		}
+		mtx_unlock(&client->lk);
+		sr->remote = NULL;
 	}
 }

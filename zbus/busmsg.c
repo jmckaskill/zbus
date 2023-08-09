@@ -1,5 +1,6 @@
 #include "busmsg.h"
 #include "tx.h"
+#include "rx.h"
 #include "dbus/encode.h"
 
 static const char *errors[] = {
@@ -16,6 +17,7 @@ static const char *errors[] = {
 	[ERR_BAD_ARGUMENT] = "\046org.freedesktop.DBus.Error.BadArgument",
 	[ERR_LAUNCH_FAILED] = "\047org.freedesktop.DBus.Error.LaunchFailed",
 	[ERR_TIMED_OUT] = "\043org.freedesktop.DBus.Error.TimedOut",
+	[ERR_DISCONNECT] = "\045org.freedesktop.DBus.Error.Disconnect",
 };
 
 int reply_error(struct rx *r, uint32_t serial, int err)
@@ -28,7 +30,7 @@ int reply_error(struct rx *r, uint32_t serial, int err)
 	const str8_t *error = (const str8_t *)errors[err];
 	assert(error->len == strlen(error->p));
 
-	struct tx_msg m;
+	struct txmsg m;
 	init_message(&m.m, MSG_ERROR, NO_REPLY_SERIAL);
 	m.m.flags = FLAG_NO_REPLY_EXPECTED;
 	m.m.reply_serial = serial;
@@ -41,7 +43,7 @@ int reply_error(struct rx *r, uint32_t serial, int err)
 static int _reply_uint32(struct rx *r, uint32_t serial, const char *sig,
 			 uint32_t value)
 {
-	struct tx_msg m;
+	struct txmsg m;
 	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
 	m.m.flags = FLAG_NO_REPLY_EXPECTED;
 	m.m.reply_serial = serial;
@@ -65,7 +67,7 @@ int reply_bool(struct rx *r, uint32_t serial, bool value)
 
 int reply_string(struct rx *r, uint32_t serial, const str8_t *str)
 {
-	struct tx_msg m;
+	struct txmsg m;
 	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
 	m.m.reply_serial = serial;
 	m.m.signature = "s";
@@ -78,7 +80,7 @@ int reply_string(struct rx *r, uint32_t serial, const str8_t *str)
 
 int reply_empty(struct rx *r, uint32_t serial)
 {
-	struct tx_msg m;
+	struct txmsg m;
 	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
 	m.m.reply_serial = serial;
 

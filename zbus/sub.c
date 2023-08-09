@@ -16,7 +16,7 @@ static int cmp_subkey_subscription(const void *key, const void *element)
 
 	// sort by tx id then full match string
 
-	int diff = k->txid - txid(s->tx);
+	int diff = k->txid - s->tx->id;
 	if (diff) {
 		return diff;
 	}
@@ -24,13 +24,9 @@ static int cmp_subkey_subscription(const void *key, const void *element)
 	return diff ? diff : memcmp(k->mstr, s->mstr, k->len);
 }
 
-void free_subscription(struct rcu_object *o)
+void collect_subscription(struct rcu_object **objs, struct subscription *s)
 {
-	struct subscription *s = container_of(o, struct subscription, h.rcu);
-	if (s) {
-		deref_tx(s->tx);
-		free(s);
-	}
+	rcu_register_gc(objs, (rcu_fn)&free, &s->h.rcu);
 }
 
 struct subscription *new_subscription(const char *mstr, struct match m)
@@ -59,7 +55,6 @@ struct submap *add_subscription(struct rcu_object **objs,
 	struct submap *nm = edit_submap(objs, om, idx, 1);
 	struct subscription *s = new_subscription(str, match);
 	s->tx = tx;
-	ref_tx(s->tx);
 	s->serial = serial;
 	nm->v[idx] = s;
 	return nm;
@@ -70,7 +65,7 @@ struct submap *rm_subscription(struct rcu_object **objs,
 {
 	const struct subscription *os = om->v[idx];
 	struct submap *nm = edit_submap(objs, om, idx, -1);
-	rcu_on_commit(objs, &free_subscription, &os->h.rcu);
+	collect_subscription(objs, os);
 	return nm;
 }
 
@@ -78,7 +73,7 @@ int bsearch_subscription(const struct submap *s, struct tx *tx, const char *str,
 			 struct match m)
 {
 	struct subkey key;
-	key.txid = txid(tx);
+	key.txid = tx->id;
 	key.mstr = str;
 	key.len = m.len;
 
