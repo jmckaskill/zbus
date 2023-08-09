@@ -37,7 +37,7 @@ static int addmatch(struct rx *r, struct message *req, struct iterator *ii)
 	struct subscription *s = new_subscription(str, m);
 
 	mtx_lock(&r->bus->lk);
-	int err = update_sub(r->bus, true, r->tx, str, m, req->serial);
+	int err = update_sub(r->bus, true, r, str, m, req->serial);
 	mtx_unlock(&r->bus->lk);
 
 	if (err) {
@@ -70,7 +70,7 @@ static int rmmatch(struct rx *r, struct message *req, struct iterator *ii)
 
 	// remove it from the bus
 	mtx_lock(&r->bus->lk);
-	int err = update_sub(r->bus, false, r->tx, str, (*ps)->m, 0);
+	int err = update_sub(r->bus, false, r, str, (*ps)->m, 0);
 	mtx_unlock(&r->bus->lk);
 
 	// free our local copy
@@ -86,7 +86,7 @@ void rm_all_matches_locked(struct rx *r)
 {
 	for (struct subscription *s = r->subs; s != NULL;) {
 		struct subscription *n = s->h.next;
-		update_sub(r->bus, false, r->tx, s->mstr, s->m, 0);
+		update_sub(r->bus, false, r, s->mstr, s->m, 0);
 		free_subscription(s);
 		s = n;
 	}
@@ -112,7 +112,10 @@ static int build_signal(struct txmsg *m)
 	m->m.serial = NO_REPLY_SERIAL;
 	m->m.reply_serial = 0; // will be overwritten before each send
 	assert(m->m.type == MSG_SIGNAL);
-	// keep flags
+	m->m.flags &= FLAG_MASK;
+	// keep body[0] and body[1]
+	m->control.buf = NULL;
+	m->control.len = 0;
 
 	size_t bsz = m->body[0].len + m->body[1].len;
 	int sz = write_header(m->hdr.buf, SIGNAL_HDR_CAP, &m->m, bsz);
@@ -177,7 +180,8 @@ int broadcast(struct rx *r, struct txmsg *m)
 	// send to broadcast subscriptions
 	const struct rcu_data *d = rcu_lock(r->reader);
 	const struct address *a = get_address(d->interfaces, m->m.interface);
-	if (a && send_signal(true, a->subs, m)) {
+	if (a && has_group(r->tx->pid, a->gid_owner) &&
+	    send_signal(true, a->subs, m)) {
 		goto error;
 	}
 
@@ -288,103 +292,205 @@ void rm_all_names_locked(struct rx *r)
 	r->num_names = 0;
 }
 
+/////////////////////////////////////////
+// name lookup
+
+static int ref_named(struct rx *r, const str8_t *name, bool should_autostart,
+		     struct tx **ptx)
+{
+	struct tx *tx = NULL;
+	int err = 0;
+
+	if (!name) {
+		return ERR_BAD_ARGUMENT;
+	}
+
+	{
+		const struct rcu_data *d = rcu_lock(r->reader);
+		int idx = bsearch_address(d->destinations, name);
+		if (idx < 0) {
+			err = ERR_NO_REMOTE;
+		} else {
+			const struct address *a = d->destinations->v[idx];
+			if (!has_group(r->tx->pid, a->gid_access)) {
+				err = ERR_NOT_ALLOWED;
+			} else if (a->tx) {
+				tx = ref_tx(a->tx);
+			} else if (!a->activatable || !should_autostart) {
+				err = ERR_NO_REMOTE;
+			}
+		}
+		rcu_unlock(r->reader);
+	}
+
+	if (tx) {
+		*ptx = tx;
+		return 0;
+	} else if (err) {
+		return err;
+	}
+
+	mtx_lock(&r->bus->lk);
+	const struct address *a;
+	err = autolaunch_service(r->bus, name, &a);
+	if (!err) {
+		assert(a->tx);
+		if (!has_group(r->tx->pid, a->gid_access)) {
+			// config may have changed while we were launching the
+			// service
+			err = ERR_NOT_ALLOWED;
+		} else {
+			*ptx = ref_tx(a->tx);
+		}
+	}
+	mtx_unlock(&r->bus->lk);
+
+	return err;
+}
+
+static int ref_remote(struct rx *r, const str8_t *name, struct tx **ptx)
+{
+	if (!name) {
+		return ERR_BAD_ARGUMENT;
+	}
+
+	const struct rcu_data *d = rcu_lock(r->reader);
+	int id = address_to_id(name);
+	int err = 0;
+	if (id >= 0) {
+		int idx = bsearch_tx(d->remotes, id);
+		if (idx >= 0) {
+			*ptx = ref_tx(d->remotes->v[idx]);
+		} else {
+			err = ERR_NO_REMOTE;
+		}
+	} else {
+		int idx = bsearch_address(d->destinations, name);
+		if (idx >= 0 && d->destinations->v[idx]->tx) {
+			*ptx = ref_tx(d->destinations->v[idx]->tx);
+		} else {
+			err = ERR_NO_REMOTE;
+		}
+	}
+	rcu_unlock(r->reader);
+	return err;
+}
+
 ///////////////////////////////////////////
 // ListNames
 
-static int bufsz_names(const struct addrmap *m)
-{
-	int ret = 0;
-	for (int i = 0, n = vector_len(&m->hdr); i < n; i++) {
-		const struct address *a = m->v[i];
-		if (a->tx) {
-			ret += a->name.len + BUFSZ_STRING;
-		}
-	}
-	return ret;
-}
-
 static void encode_names(struct builder *b, struct array_data ad,
-			 const struct addrmap *m)
+			 const struct addrmap *m, bool only_activatable)
 {
 	for (int i = 0, n = vector_len(&m->hdr); i < n; i++) {
 		const struct address *a = m->v[i];
-		if (a->tx) {
+		if (only_activatable ? a->activatable : (a->tx != NULL)) {
 			start_array_entry(b, ad);
 			append_string8(b, &a->name);
 		}
 	}
 }
 
-static int list_names(struct rx *r, uint32_t request_serial)
+static void encode_unique_names(struct builder *b, struct array_data ad,
+				const struct txmap *m)
+{
+	for (int i = 0, n = vector_len(&m->hdr); i < n; i++) {
+		start_array_entry(b, ad);
+		append_id_address(b, m->v[i]->id);
+	}
+}
+
+static int list_names(struct rx *r, uint32_t request_serial, bool activatable)
 {
 	struct txmsg m;
 	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
 	m.m.reply_serial = request_serial;
 	m.m.signature = "as";
 
-	const struct rcu_data *d = rcu_lock(r->reader);
-	int bufsz = BUFSZ_REPLY + BUFSZ_ARRAY + bufsz_names(d->destinations);
-	char *buf = fmalloc(bufsz);
-
-	struct builder b = start_message(buf, bufsz, &m.m);
+	struct builder b = start_message(r->buf, sizeof(r->buf), &m.m);
 	struct array_data ad = start_array(&b);
-	encode_names(&b, ad, d->destinations);
+
+	const struct rcu_data *d = rcu_lock(r->reader);
+	encode_names(&b, ad, d->destinations, activatable);
+	if (!activatable) {
+		encode_unique_names(&b, ad, d->remotes);
+	}
+	rcu_unlock(r->reader);
+
 	end_array(&b, ad);
 	int sz = end_message(b);
-	rcu_unlock(r->reader);
-
-	int err = send_data(r->tx, true, &m, buf, sz);
-	free(buf);
-	return err;
+	return send_data(r->tx, true, &m, r->buf, sz);
 }
 
-static int name_has_owner(struct rx *r, struct message *req,
-			  struct iterator *ii)
+///////////////////////////////////
+// credentials
+
+static int get_credentials(struct rx *r, uint32_t serial, const str8_t *name)
 {
-	const str8_t *name = parse_string8(ii);
-	if (!name || iter_error(ii)) {
-		return ERR_BAD_ARGUMENT;
+	struct tx *tx = NULL;
+	int err = ref_remote(r, name, &tx);
+	if (err) {
+		return err;
+	} else if (!tx->pid) {
+		deref_tx(tx);
+		return ERR_INTERNAL;
 	}
 
-	const struct rcu_data *d = rcu_lock(r->reader);
-	int idx = bsearch_address(d->destinations, name);
-	bool res = (idx >= 0) && (d->destinations->v[idx]->tx != NULL);
-	rcu_unlock(r->reader);
-
-	return reply_bool(r, req->serial, res);
-}
-
-static int get_name_owner(struct rx *r, struct message *req,
-			  struct iterator *ii)
-{
-	const str8_t *name = parse_string8(ii);
-	if (!name || iter_error(ii)) {
-		return ERR_BAD_ARGUMENT;
-	}
+	struct pidinfo *p = tx->pid;
 
 	struct txmsg m;
 	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
-	m.m.reply_serial = req->serial;
-	m.m.signature = "s";
+	m.m.reply_serial = serial;
+	m.m.signature = "a{sv}";
 
 	struct builder b = start_message(r->buf, sizeof(r->buf), &m.m);
+	struct dict_data dd = start_dict(&b);
+	struct variant_data vd;
 
-	const struct rcu_data *d = rcu_lock(r->reader);
-	int idx = bsearch_address(d->destinations, name);
-	int err = 0;
-	if (idx >= 0 && d->destinations->v[idx]->tx) {
-		append_id_address(&b, d->destinations->v[idx]->tx->id);
-	} else {
-		err = ERR_NAME_HAS_NO_OWNER;
+	start_dict_entry(&b, dd);
+	append_string8(&b, S8("\012UnixUserID"));
+	vd = start_variant(&b, "u");
+	append_uint32(&b, p->uid);
+	end_variant(&b, vd);
+
+	start_dict_entry(&b, dd);
+	append_string8(&b, S8("\011ProcessID"));
+	vd = start_variant(&b, "u");
+	append_uint32(&b, p->pid);
+	end_variant(&b, vd);
+
+	start_dict_entry(&b, dd);
+	append_string8(&b, S8("\014UnixGroupIDs"));
+	vd = start_variant(&b, "au");
+	struct array_data ad = start_array(&b);
+	for (int i = 0; i < p->groups.n; i++) {
+		start_array_entry(&b, ad);
+		append_uint32(&b, p->groups.v[i]);
 	}
-	rcu_unlock(r->reader);
+	end_array(&b, ad);
+	end_variant(&b, vd);
 
+	end_dict(&b, dd);
+
+	deref_tx(tx);
+	int sz = end_message(b);
+	return send_data(r->tx, true, &m, r->buf, sz);
+}
+
+static int get_unix_pid(struct rx *r, uint32_t serial, const str8_t *name,
+			bool want_uid)
+{
+	struct tx *tx = NULL;
+	int err = ref_remote(r, name, &tx);
 	if (err) {
 		return err;
+	} else if (!tx->pid) {
+		deref_tx(tx);
+		return ERR_INTERNAL;
 	}
-
-	int sz = end_message(b);
-	return send_data(r->tx, false, &m, r->buf, sz);
+	int id = want_uid ? tx->pid->uid : tx->pid->pid;
+	deref_tx(tx);
+	return reply_uint32(r, serial, id);
 }
 
 ///////////////////////////////////
@@ -405,6 +511,8 @@ int bus_method(struct rx *r, struct message *m, struct iterator *ii)
 		switch (m->member->len) {
 		case 5:
 			if (str8eq(m->member, METHOD_GET_ID)) {
+				return reply_string(r, m->serial,
+						    &r->bus->busid);
 			} else if (str8eq(m->member, METHOD_HELLO)) {
 				return reply_string(r, m->serial, &r->addr);
 			}
@@ -416,7 +524,7 @@ int bus_method(struct rx *r, struct message *m, struct iterator *ii)
 			break;
 		case 9:
 			if (str8eq(m->member, METHOD_LIST_NAMES)) {
-				return list_names(r, m->serial);
+				return list_names(r, m->serial, false);
 			}
 			break;
 		case 11:
@@ -430,59 +538,87 @@ int bus_method(struct rx *r, struct message *m, struct iterator *ii)
 			break;
 		case 12:
 			if (str8eq(m->member, METHOD_GET_NAME_OWNER)) {
-				return get_name_owner(r, m, ii);
+				struct tx *tx = NULL;
+				int err = ref_remote(r, parse_string8(ii), &tx);
+				if (!err) {
+					err = reply_id_address(r, m->serial,
+							       tx->id);
+					deref_tx(tx);
+				}
+				return err;
+
 			} else if (str8eq(m->member, METHOD_NAME_HAS_OWNER)) {
-				return name_has_owner(r, m, ii);
+				struct tx *tx = NULL;
+				int err = ref_remote(r, parse_string8(ii), &tx);
+				deref_tx(tx);
+				return reply_bool(r, m->serial, err == 0);
 			}
 			break;
 		case 16:
 
 			if (str8eq(m->member, METHOD_LIST_QUEUED_OWNERS)) {
+				return ERR_NOT_SUPPORTED;
 			}
 			break;
 		case 18:
 
 			if (str8eq(m->member, METHOD_START_SERVICE)) {
+				struct tx *tx = NULL;
+				int err = ref_named(r, parse_string8(ii), true,
+						    &tx);
+				deref_tx(tx);
+				return err;
 			}
 			break;
 		case 20:
 
 			if (str8eq(m->member, METHOD_LIST_ACTIVATABLE_NAMES)) {
+				return list_names(r, m->serial, true);
 			}
 			break;
 		case 21:
 
 			if (str8eq(m->member, METHOD_GET_UNIX_USER)) {
+				return get_unix_pid(r, m->serial,
+						    parse_string8(ii), true);
 			}
 			break;
 		case 22:
 
 			if (str8eq(m->member, METHOD_GET_ADT)) {
+				return ERR_NOT_SUPPORTED;
 			}
 			break;
 		case 24:
 
 			if (str8eq(m->member, METHOD_GET_CREDENTIALS)) {
+				return get_credentials(r, m->serial,
+						       parse_string8(ii));
 			}
 			break;
 		case 26:
 
 			if (str8eq(m->member, METHOD_GET_UNIX_PROCESS_ID)) {
+				return get_unix_pid(r, m->serial,
+						    parse_string8(ii), false);
 			}
 			break;
 		case 27:
 
 			if (str8eq(m->member, METHOD_UPDATE_ENVIRONMENT)) {
+				return ERR_NOT_SUPPORTED;
 			}
 			break;
 		case 35:
 
 			if (str8eq(m->member, METHOD_GET_SELINUX)) {
+				return ERR_NOT_SUPPORTED;
 			}
 			break;
 		}
 
 	} else if (str8eq(m->interface, MONITORING_INTERFACE)) {
+		return ERR_NOT_SUPPORTED;
 	}
 	return ERR_NOT_FOUND;
 }
@@ -502,46 +638,22 @@ int peer_method(struct rx *r, struct message *m)
 /////////////////////////////////
 // Unicast signals and requests
 
-static int ref_named_tx(struct rx *r, const str8_t *name, bool should_autostart,
-			struct tx **ptx)
+static void setup_control(struct rx *r, struct txmsg *m, int hdrsz)
 {
-	struct tx *tx = NULL;
-	bool activatable = false;
-
-	{
-		const struct rcu_data *d = rcu_lock(r->reader);
-		int idx = bsearch_address(d->destinations, name);
-		if (idx >= 0) {
-			const struct address *a = d->destinations->v[idx];
-			activatable = a->activatable;
-			if (a->tx) {
-				tx = ref_tx(a->tx);
-			}
-		}
-		rcu_unlock(r->reader);
+	if (write_cmsg(&m->control.buf, &m->control.len, r->buf + hdrsz,
+		       sizeof(r->buf) - hdrsz, r->unix_fds.v, m->m.fdnum)) {
+		WARN("failed to write fd cmsg");
+		m->control.buf = NULL;
+		m->control.len = 0;
+		m->m.fdnum = 0;
 	}
-
-	if (tx || !should_autostart || !activatable) {
-		*ptx = tx;
-		return tx ? 0 : ERR_NO_REMOTE;
-	}
-
-	mtx_lock(&r->bus->lk);
-	const struct address *addr;
-	int err = autolaunch_service(r->bus, name, &addr);
-	if (!err) {
-		*ptx = ref_tx(addr->tx);
-	}
-	mtx_unlock(&r->bus->lk);
-
-	return err;
 }
 
 int unicast(struct rx *r, struct txmsg *m)
 {
 	struct tx *tx;
 	bool should_autostart = (m->m.flags & FLAG_NO_AUTO_START) == 0;
-	int err = ref_named_tx(r, m->m.destination, should_autostart, &tx);
+	int err = ref_named(r, m->m.destination, should_autostart, &tx);
 	if (err) {
 		return err;
 	}
@@ -554,7 +666,7 @@ int unicast(struct rx *r, struct txmsg *m)
 	m->m.destination = NULL;
 	// keep sender - previously overwritten
 	// keep signature
-	m->m.fdnum = 0;
+	// keep fdnum
 	m->m.serial = NO_REPLY_SERIAL; // this may get overwritten later
 	m->m.flags &= FLAG_MASK;
 
@@ -564,9 +676,11 @@ int unicast(struct rx *r, struct txmsg *m)
 		deref_tx(tx);
 		return -1;
 	}
+
 	m->hdr.buf = r->buf;
 	m->hdr.len = sz;
-	// keep body[0] and body[1]
+	// keep body[0], body[1]
+	setup_control(r, m, sz);
 
 	if (m->m.type == MSG_METHOD && !(m->m.flags & FLAG_NO_REPLY_EXPECTED)) {
 		err = route_request(r, tx, m);
@@ -592,17 +706,21 @@ int build_reply(struct rx *r, struct txmsg *m)
 	m->m.destination = NULL;
 	// keep sender - previously overwritten
 	// keep signature
-	m->m.fdnum = 0;
+	// keep fdnum
 	m->m.serial = NO_REPLY_SERIAL;
 	// keep reply_serial - will be overwritten later
 	m->m.flags &= FLAG_MASK;
 
 	size_t bsz = m->body[0].len + m->body[1].len;
 	int sz = write_header(r->buf, sizeof(r->buf), &m->m, bsz);
+	if (sz < 0) {
+		return -1;
+	}
 
 	m->hdr.buf = r->buf;
 	m->hdr.len = sz;
-	// keep body[0] and body[1]
+	// keep body[0], body[1]
+	setup_control(r, m, sz);
 
-	return sz > 0;
+	return 0;
 }

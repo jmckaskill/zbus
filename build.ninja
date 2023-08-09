@@ -40,6 +40,7 @@ build obj/dbus.a: ar $
 # lib
 
 build obj/lib/log.o: cc lib/log.c
+build obj/lib/print.o: cc lib/print.c
 build obj/lib/logmsg.o: cc lib/logmsg.c
 build obj/lib/sys.o: cc lib/sys.c
 
@@ -52,6 +53,7 @@ build bin/tester: ld $
         obj/tester/client.o $
         obj/tester/tester.o $
         obj/lib/log.o $
+        obj/lib/print.o $
         obj/lib/logmsg.o $
         obj/dbus.a $
 
@@ -61,6 +63,8 @@ build obj/zbus/bus.o:       cc zbus/bus.c
 build obj/zbus/busmsg.o: cc zbus/busmsg.c
 build obj/zbus/config.o: cc zbus/config.c
 build obj/zbus/dispatch.o:  cc zbus/dispatch.c
+build obj/zbus/fd-unix.o: cc zbus/fd-unix.c
+build obj/zbus/pid-unix.o: cc zbus/pid-unix.c
 build obj/zbus/rcu.o:       cc zbus/rcu.c
 build obj/zbus/rx.o:        cc zbus/rx.c
 build obj/zbus/sub.o:       cc zbus/sub.c
@@ -76,6 +80,8 @@ build bin/zbus: ld $
         obj/zbus/busmsg.o $
         obj/zbus/config.o $
         obj/zbus/dispatch.o $
+        obj/zbus/fd-unix.o $
+        obj/zbus/pid-unix.o $
         obj/zbus/rcu.o $
         obj/zbus/rx.o $
         obj/zbus/sub.o $
@@ -86,6 +92,7 @@ build bin/zbus: ld $
         obj/zbus/zbus.o $
         obj/vendor/c-rbtree.o $
         obj/lib/log.o $
+        obj/lib/print.o $
         obj/lib/logmsg.o $
         obj/lib/sys.o $
         obj/dbus.a $
@@ -95,6 +102,7 @@ build obj/gcc-ci-parser.o: cc gcc-ci-parser/gcc-ci-parser.c
 build bin/gcc-ci-parser: ld $
         obj/gcc-ci-parser.o $
         obj/lib/log.o $
+        obj/lib/print.o $
         obj/lib/sys.o $
 
 

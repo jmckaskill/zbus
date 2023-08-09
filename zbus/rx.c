@@ -32,6 +32,7 @@ struct rx *new_rx(struct bus *bus, int fd, int id)
 void free_rx(struct rx *r)
 {
 	if (r) {
+		close_all_fds(&r->unix_fds);
 		deref_tx(r->tx);
 		assert(!r->names);
 		assert(!r->subs);
@@ -40,7 +41,8 @@ void free_rx(struct rx *r)
 	}
 }
 
-static ssize_t recv_one(int fd, char *p1, size_t n1, char *p2, size_t n2)
+static ssize_t recv_one(int fd, char *p1, size_t n1, char *p2, size_t n2,
+			char *ctrl, size_t *cn)
 {
 	for (;;) {
 		struct iovec v[2];
@@ -53,7 +55,9 @@ static ssize_t recv_one(int fd, char *p1, size_t n1, char *p2, size_t n2)
 		memset(&m, 0, sizeof(m));
 		m.msg_iov = v;
 		m.msg_iovlen = n2 ? 2 : 1;
-		ssize_t n = recvmsg(fd, &m, 0);
+		m.msg_control = ctrl;
+		m.msg_controllen = *cn;
+		ssize_t n = recvmsg(fd, &m, MSG_CMSG_CLOEXEC);
 		if (n < 0 && errno == EINTR) {
 			continue;
 		} else if (n < 0 && errno == EAGAIN) {
@@ -67,17 +71,19 @@ static ssize_t recv_one(int fd, char *p1, size_t n1, char *p2, size_t n2)
 		} else if (n == 0) {
 			ERROR("recv early EOF,fd:%d", fd);
 			return -1;
-		} else {
-			struct logbuf lb;
-			if (start_debug(&lb, "recv")) {
-				log_int(&lb, "fd", fd);
-				log_bytes(&lb, "data1", p1, (n > n1) ? n1 : n);
-				log_bytes(&lb, "data2", p2,
-					  (n > n1) ? (n - n1) : 0);
-				finish_log(&lb);
-			}
-			return n;
 		}
+
+		struct logbuf lb;
+		if (start_debug(&lb, "recv")) {
+			log_int(&lb, "fd", fd);
+			log_bytes(&lb, "data1", p1, (n > n1) ? n1 : n);
+			log_bytes(&lb, "data2", p2, (n > n1) ? (n - n1) : 0);
+			finish_log(&lb);
+		}
+
+		*cn = m.msg_controllen;
+
+		return n;
 	}
 }
 
@@ -113,8 +119,9 @@ static int authenticate(struct rx *r)
 	char outbuf[64];
 
 	for (;;) {
+		size_t cn = 0;
 		int n = recv_one(r->fd, inbuf + insz, sizeof(inbuf) - insz,
-				 NULL, 0);
+				 NULL, 0, NULL, &cn);
 		if (n < 0) {
 			return -1;
 		}
@@ -174,9 +181,13 @@ static int read_message(struct rx *r, struct msg_stream *s)
 		char *p1, *p2;
 		size_t n1, n2;
 		stream_buffers(s, &p1, &n1, &p2, &n2);
-		ssize_t n = recv_one(r->fd, p1, n1, p2, n2);
+		size_t cn = sizeof(r->buf);
+		ssize_t n = recv_one(r->fd, p1, n1, p2, n2, r->buf, &cn);
 		if (n < 0) {
 			return -1;
+		}
+		if (cn && parse_cmsg(&r->unix_fds, r->buf, cn)) {
+			ERROR("failed to parse cmsg data,fd:%d", r->fd);
 		}
 		s->have += n;
 	}
@@ -199,6 +210,12 @@ static int read_message(struct rx *r, struct msg_stream *s)
 		}
 		finish_log(&lb);
 	}
+
+	if (m.m.fdnum > r->unix_fds.n) {
+		WARN("message requests more fds than we have");
+		m.m.fdnum = r->unix_fds.n;
+	}
+	int fdnum = m.m.fdnum;
 
 	switch (m.m.type) {
 	case MSG_METHOD: {
@@ -237,6 +254,12 @@ static int read_message(struct rx *r, struct msg_stream *s)
 	default:
 		// drop everything else
 		break;
+	}
+
+	if (s->have == s->used) {
+		close_all_fds(&r->unix_fds);
+	} else if (fdnum) {
+		close_fds(&r->unix_fds, fdnum);
 	}
 
 	return 0;

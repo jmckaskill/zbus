@@ -50,7 +50,6 @@ struct dict_data;
 #define DBUS_MIN_MSG_SIZE 16
 #define DBUS_MAX_MSG_SIZE 0x8000000U
 #define DBUS_MAX_VALUE_SIZE 0x4000000U
-#define MAX_UNIX_FDS 16
 
 #define BUFSZ_REPLY 64 // 16B hdr, 32B sender, 8B serial, 8B sig
 #define BUFSZ_STRING 8 // 3B padding, 4B length, 1B nul

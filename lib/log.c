@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "log.h"
+#include "print.h"
 #include <stdint.h>
 #include <threads.h>
 #include <unistd.h>
@@ -50,10 +51,6 @@ static const char *prefix[] = {
 #define STR_END_TEXT ""
 #define SUFFIX_JSON "}\n"
 #define SUFFIX_TEXT ("\n" CLEAR)
-#define ENCODE_INT32_LEN 11 // -2147483648
-#define ENCODE_UINT32_LEN 10 // 4294967295
-#define ENCODE_INT64_LEN 20 // -9223372036854775808
-#define ENCODE_UINT64_LEN 20 // 18446744073709551615
 #define ENCODE_CHAR_LEN 6 // \u1234
 
 // enough for a field open, field seperator, number and closing brace/newline
@@ -164,34 +161,12 @@ static void write_nstring(struct logbuf *b, const char *str, size_t len)
 
 static int append_uint64(char *buf, int off, uint64_t num)
 {
-	char e[ENCODE_UINT64_LEN];
-	char *p = e + sizeof(e);
-	do {
-		*--p = '0' + (num % 10);
-		num /= 10;
-	} while (num);
-	size_t len = e + sizeof(e) - p;
-	return append(buf, off, p, len);
+	return off + print_uint64(buf, num);
 }
 
 static int append_int64(char *buf, int off, int64_t num)
 {
-	char e[ENCODE_INT64_LEN];
-	char *p = e + sizeof(e);
-	int sign = 0;
-	if (num < 0) {
-		sign = 1;
-		num = -num;
-	}
-	do {
-		*--p = '0' + (num % 10);
-		num /= 10;
-	} while (num);
-	if (sign) {
-		*--p = '-';
-	}
-	size_t len = e + sizeof(e) - p;
-	return append(buf, off, p, len);
+	return off + print_int64(buf, num);
 }
 
 static int append_padded(char *buf, int off, unsigned num, int len)

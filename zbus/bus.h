@@ -37,10 +37,8 @@ struct rcu_data {
 };
 
 struct bus {
-	struct {
-		char len;
-		char p[BUSID_BUFLEN];
-	} busid;
+	str8_t busid;
+	char idbuf[BUSID_BUFLEN];
 
 	mtx_t lk;
 	cnd_t launch;
@@ -70,7 +68,7 @@ int release_name(struct bus *b, struct rx *r, const str8_t *name,
 #define DBUS_RELEASE_NAME_REPLY_NON_EXISTENT 2
 #define DBUS_RELEASE_NAME_REPLY_NOT_OWNER 3
 
-int update_sub(struct bus *b, bool add, struct tx *tx, const char *str,
+int update_sub(struct bus *b, bool add, struct rx *r, const char *str,
 	       struct match m, uint32_t serial);
 
 #define MAX_ARGUMENTS 32

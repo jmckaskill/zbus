@@ -6,7 +6,7 @@
 struct bus;
 
 #define BUSID_BUFLEN 33
-int generate_busid(char *busid);
+int generate_busid(str8_t *busid);
 int bind_bus(const char *sockpn);
 int setup_signals(void);
 int poll_one(int fd, bool read, bool write);

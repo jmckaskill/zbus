@@ -1,4 +1,5 @@
 #include "txmap.h"
+#include "lib/print.h"
 
 ////////////////////////////////////
 // Unique address encode/decode
@@ -6,21 +7,18 @@
 size_t id_to_address(char *buf, int id)
 {
 	assert(id >= 0);
-	size_t pfxlen = strlen(UNIQ_ADDR_PREFIX);
-	memcpy(buf, UNIQ_ADDR_PREFIX, pfxlen);
-	char *p = buf + UNIQ_ADDR_BUFLEN - 1;
-	do {
-		*(--p) = (id % 10) + '0';
-		id /= 10;
-	} while (id);
-	size_t n = buf + UNIQ_ADDR_BUFLEN - 1 - p;
-	memmove(buf + pfxlen, p, n);
-	buf[pfxlen + n] = 0;
-	return pfxlen + n;
+	size_t n = strlen(UNIQ_ADDR_PREFIX);
+	memcpy(buf, UNIQ_ADDR_PREFIX, n);
+	n += print_uint32(buf + n, id);
+	buf[n] = 0;
+	return n;
 }
 
 int address_to_id(const str8_t *s)
 {
+	if (!strncmp(s->p, UNIQ_ADDR_PREFIX, strlen(UNIQ_ADDR_PREFIX))) {
+		return -1;
+	}
 	const char *p = s->p + strlen(UNIQ_ADDR_PREFIX);
 	int len = s->len - strlen(UNIQ_ADDR_PREFIX);
 	int id = 0;

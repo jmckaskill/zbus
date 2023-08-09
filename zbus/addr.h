@@ -2,6 +2,7 @@
 #include "rcu.h"
 #include "tx.h"
 #include "vector.h"
+#include "pid-unix.h"
 #include "dbus/types.h"
 #include "dbus/str8.h"
 #include "vendor/c-rbtree-3.1.0/src/c-rbtree.h"
@@ -20,6 +21,12 @@ struct address {
 	bool running;
 	bool activatable;
 	bool in_config;
+	// for destinations, who can own it
+	// for interfaces, who can publish to it
+	int gid_owner;
+	// for destinations, who can subscribe or communicate to the address
+	// for interfaces, who can subscribe to it
+	int gid_access;
 	str8_t name;
 };
 

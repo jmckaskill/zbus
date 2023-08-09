@@ -23,4 +23,5 @@ int reply_error(struct rx *r, uint32_t serial, int errcode);
 int reply_uint32(struct rx *r, uint32_t serial, uint32_t value);
 int reply_bool(struct rx *r, uint32_t serial, bool value);
 int reply_string(struct rx *r, uint32_t serial, const str8_t *str);
+int reply_id_address(struct rx *r, uint32_t serial, int id);
 int reply_empty(struct rx *r, uint32_t serial);

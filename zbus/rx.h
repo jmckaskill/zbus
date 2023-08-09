@@ -2,6 +2,8 @@
 #include "tx.h"
 #include "rcu.h"
 #include "bus.h"
+#include "pid-unix.h"
+#include "fd-unix.h"
 #include "dbus/str8.h"
 
 struct rxname {
@@ -18,7 +20,8 @@ struct rx {
 	int num_subs;
 	struct rxname *names;
 	struct subscription *subs;
-	char buf[256];
+	struct unix_fds unix_fds;
+	char buf[CBUF_UNIX_FDS + 255];
 	str8_t addr;
 };
 

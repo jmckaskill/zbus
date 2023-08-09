@@ -10,9 +10,19 @@
 ///////////////////////////
 // address data management
 
-static inline void collect_address(struct rcu_object **objs, const struct address *a)
+static inline void collect_address(struct rcu_object **objs,
+				   const struct address *a)
 {
 	rcu_register_gc(objs, (rcu_fn)&free, &a->rcu);
+}
+
+// copy_config copies the config items in oa into na. If oa is NULL it resets
+// the config in na to defaults.
+static void copy_config(struct address *na, const struct address *oa)
+{
+	na->activatable = oa ? oa->activatable : false;
+	na->gid_access = oa ? oa->gid_access : 0;
+	na->gid_owner = oa ? oa->gid_owner : 0;
 }
 
 struct address *new_address(const str8_t *name)
@@ -20,6 +30,7 @@ struct address *new_address(const str8_t *name)
 	struct address *a = fmalloc(sizeof(*a) + name->len);
 	memset(a, 0, sizeof(*a));
 	str8cpy(&a->name, name);
+	copy_config(a, NULL);
 	return a;
 }
 
@@ -29,11 +40,6 @@ struct address *edit_address(struct rcu_object **objs, const struct address *oa)
 	memcpy(na, oa, sizeof(*oa) + oa->name.len);
 	collect_address(objs, oa);
 	return na;
-}
-
-static void copy_config(struct address *na, const struct address *oa)
-{
-	na->activatable = oa ? oa->activatable : false;
 }
 
 ///////////////////////////////////

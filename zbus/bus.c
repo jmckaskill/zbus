@@ -24,12 +24,9 @@ int init_bus(struct bus *b)
 	if (cnd_init(&b->launch) != thrd_success) {
 		goto destroy_mutex;
 	}
-
-	int n = generate_busid(b->busid.p);
-	if (n < 0) {
+	if (generate_busid(&b->busid)) {
 		goto destroy_cnd;
 	}
-	b->busid.len = (char)n;
 
 	b->rcu = new_rcu_writer();
 
@@ -231,6 +228,9 @@ int request_name(struct bus *b, struct rx *r, const str8_t *name,
 	int sts;
 	const struct addrmap *om = od->destinations;
 	const struct address *oa = om->v[idx];
+	if (!has_group(r->tx->pid, oa->gid_owner)) {
+		return ERR_NOT_ALLOWED;
+	}
 	if (oa->tx == r->tx) {
 		sts = DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER;
 	} else if (oa->tx) {
@@ -433,9 +433,10 @@ static int update_bus_sub(struct bus *b, bool add, struct tx *tx,
 	return 0;
 }
 
-int update_sub(struct bus *b, bool add, struct tx *tx, const char *str,
+int update_sub(struct bus *b, bool add, struct rx *r, const char *str,
 	       struct match match, uint32_t serial)
 {
+	struct tx *t = r->tx;
 	const str8_t *iface = match_interface(str, match);
 	const str8_t *sender = match_sender(str, match);
 	const str8_t *mbr = match_member(str, match);
@@ -446,7 +447,7 @@ int update_sub(struct bus *b, bool add, struct tx *tx, const char *str,
 		    !str8eq(mbr, SIGNAL_NAME_OWNER_CHANGED)) {
 			return ERR_NOT_FOUND;
 		}
-		return update_bus_sub(b, add, tx, str, match, serial);
+		return update_bus_sub(b, add, t, str, match, serial);
 	}
 
 	// lookup the address in the current RCU data
@@ -460,8 +461,12 @@ int update_sub(struct bus *b, bool add, struct tx *tx, const char *str,
 	const struct address *oa = om->v[aidx];
 	const struct submap *os = oa->subs;
 
+	if (add && !has_group(t->pid, oa->gid_access)) {
+		return ERR_NOT_ALLOWED;
+	}
+
 	int sidx;
-	if (!add && (sidx = bsearch_subscription(os, tx, str, match)) < 0) {
+	if (!add && (sidx = bsearch_subscription(os, t, str, match)) < 0) {
 		return ERR_NOT_FOUND;
 	}
 
@@ -471,7 +476,7 @@ int update_sub(struct bus *b, bool add, struct tx *tx, const char *str,
 	struct address *na = edit_address(&objs, oa);
 	struct addrmap *nm = edit_addrmap(&objs, om, aidx, 0);
 	struct submap *ns =
-		add ? add_subscription(&objs, os, tx, str, match, serial) :
+		add ? add_subscription(&objs, os, t, str, match, serial) :
 		      rm_subscription(&objs, os, sidx);
 
 	na->subs = ns;
@@ -574,6 +579,7 @@ static struct address *get_address(CRBTree *t, char *key, size_t klen,
 #define CFG_OVERLONG -3
 #define CFG_READ_FILE -4
 #define CFG_OPEN_DIR -5
+#define CFG_GROUP -6
 
 static int parse_global_config(struct config *c, const char *key,
 			       const char *val)
@@ -657,6 +663,7 @@ static int parse_address_config(struct address *a, const char *key,
 {
 	if (!strcmp(key, "description")) {
 		return 0;
+
 	} else if (!strcmp(key, "activatable")) {
 		if (!strcasecmp(val, "true")) {
 			a->activatable = true;
@@ -666,6 +673,31 @@ static int parse_address_config(struct address *a, const char *key,
 			return CFG_VALUE;
 		}
 		return 0;
+
+	} else if (!strcmp(key, "owner_gid")) {
+		a->gid_owner = atoi(val);
+		return a->gid_owner >= 0 ? 0 : CFG_GROUP;
+
+	} else if (!strcmp(key, "owner_group")) {
+		if (!strcmp(val, "any")) {
+			a->gid_owner = -1;
+			return 0;
+		}
+		a->gid_owner = lookup_group(val);
+		return a->gid_owner >= 0 ? 0 : CFG_GROUP;
+
+	} else if (!strcmp(key, "access_gid")) {
+		a->gid_access = atoi(val);
+		return a->gid_access >= 0 ? 0 : CFG_GROUP;
+
+	} else if (!strcmp(key, "access_group")) {
+		if (!strcmp(val, "any")) {
+			a->gid_access = -1;
+			return 0;
+		}
+		a->gid_access = lookup_group(val);
+		return a->gid_access >= 0 ? 0 : CFG_GROUP;
+
 	} else {
 		return CFG_KEY;
 	}
@@ -676,6 +708,31 @@ static int parse_interface_config(struct address *a, const char *key,
 {
 	if (!strcmp(key, "description")) {
 		return 0;
+
+	} else if (!strcmp(key, "subscribe_gid")) {
+		a->gid_access = atoi(val);
+		return a->gid_access >= 0 ? 0 : CFG_GROUP;
+
+	} else if (!strcmp(key, "subscribe_group")) {
+		if (!strcmp(val, "any")) {
+			a->gid_access = -1;
+			return 0;
+		}
+		a->gid_access = lookup_group(val);
+		return a->gid_access >= 0 ? 0 : CFG_GROUP;
+
+	} else if (!strcmp(key, "publish_gid")) {
+		a->gid_owner = atoi(val);
+		return a->gid_owner >= 0 ? 0 : CFG_GROUP;
+
+	} else if (!strcmp(key, "publish_group")) {
+		if (!strcmp(val, "any")) {
+			a->gid_owner = -1;
+			return 0;
+		}
+		a->gid_owner = lookup_group(val);
+		return a->gid_owner >= 0 ? 0 : CFG_GROUP;
+
 	} else {
 		return CFG_KEY;
 	}
@@ -837,6 +894,9 @@ static int do_parse(struct parse_stack *p, struct config *cfg, CRBTree *taddr,
 			ERROR("unknown config value,file:%s,line:%d,key:%s,val:%s",
 			      s->fn, lineno, key, val);
 			return -1;
+		case CFG_GROUP:
+			ERROR("failed to lookup group in config file,file:%s,line:%d,group:%s",
+			      s->fn, lineno, val);
 		default:
 			return -1;
 		}

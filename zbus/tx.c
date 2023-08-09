@@ -30,6 +30,7 @@ struct tx *new_tx(int fd, int id)
 	if (cnd_init(&t->server.cnd) != thrd_success) {
 		goto destroy_client_cnd;
 	}
+	new_socket_pidinfo(fd, &t->pid);
 	atomic_store_explicit(&t->refcnt, 1, memory_order_relaxed);
 	t->fd = fd;
 	t->id = id;
@@ -56,6 +57,7 @@ void deref_tx(struct tx *t)
 		cnd_destroy(&t->send_cnd);
 		cnd_destroy(&t->client.cnd);
 		cnd_destroy(&t->server.cnd);
+		free_pidinfo(t->pid);
 		close(t->fd);
 		free(t);
 	}
@@ -141,6 +143,8 @@ static int send_locked(struct tx *t, bool block, struct txmsg *m)
 		memset(&msg, 0, sizeof(msg));
 		msg.msg_iov = v + (m->hdr.len ? 0 : (m->body[0].len ? 1 : 2));
 		msg.msg_iovlen = num;
+		msg.msg_control = m->control.buf;
+		msg.msg_controllen = m->control.len;
 
 		int w = sendmsg(t->fd, &msg, 0);
 		if (w >= total) {
@@ -171,7 +175,11 @@ static int send_locked(struct tx *t, bool block, struct txmsg *m)
 				ERROR("send,errno:%m,fd:%d", t->fd);
 				goto shutdown;
 			}
-		} else if (w <= m->hdr.len) {
+		}
+
+		// partial write - update pointers to figure out next chunk
+
+		if (w <= m->hdr.len) {
 			m->hdr.buf += w;
 			m->hdr.len -= w;
 		} else if (w <= m->hdr.len + m->body[0].len) {
@@ -186,6 +194,9 @@ static int send_locked(struct tx *t, bool block, struct txmsg *m)
 			m->body[1].buf += w;
 			m->body[1].len -= w;
 		}
+
+		m->control.buf = NULL;
+		m->control.len = 0;
 	}
 
 	if (t->send_waiters) {
@@ -215,7 +226,7 @@ int send_message(struct tx *t, bool block, struct txmsg *m)
 int send_data(struct tx *t, bool block, struct txmsg *m, char *buf, int sz)
 {
 	if (sz < 0) {
-		return -1;
+		return ERR_INTERNAL;
 	}
 	// buf may actually contain some body, but we treat it is all in the
 	// header so that we send it as one chunk to the kernel.
@@ -223,6 +234,8 @@ int send_data(struct tx *t, bool block, struct txmsg *m, char *buf, int sz)
 	m->hdr.len = sz;
 	m->body[0].len = 0;
 	m->body[1].len = 0;
+	m->control.buf = NULL;
+	m->control.len = 0;
 	return send_message(t, block, m);
 }
 

@@ -22,7 +22,7 @@
 #include <dirent.h>
 #include <sys/types.h>
 
-int generate_busid(char *busid)
+int generate_busid(str8_t *s)
 {
 	static const char hex_enc[] = "0123456789abcdef";
 	uint8_t rand[16];
@@ -31,11 +31,13 @@ int generate_busid(char *busid)
 		return -1;
 	}
 	for (int i = 0; i < sizeof(rand); i++) {
-		busid[2 * i] = hex_enc[rand[i] >> 4];
-		busid[2 * i + 1] = hex_enc[rand[i] & 15];
+		s->p[2 * i] = hex_enc[rand[i] >> 4];
+		s->p[2 * i + 1] = hex_enc[rand[i] & 15];
 	}
-	busid[2 * sizeof(rand)] = 0;
-	return 2 * sizeof(rand);
+	size_t n = 2 * sizeof(rand);
+	s->len = n;
+	s->p[n] = 0;
+	return 0;
 }
 
 int bind_bus(const char *sockpn)

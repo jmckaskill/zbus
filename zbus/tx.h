@@ -18,7 +18,7 @@ struct txmsg {
 	struct {
 		char *buf;
 		size_t len;
-	} hdr, body[2];
+	} hdr, body[2], control;
 };
 
 struct request {
@@ -39,6 +39,7 @@ struct tx {
 	// data that can be used without the lock
 	atomic_int refcnt;
 	int id;
+	struct pidinfo *pid;
 
 	// data that requires the lock be held
 	mtx_t lk;
@@ -66,8 +67,6 @@ int route_reply(struct rx *r, struct txmsg *m);
 
 static inline struct tx *ref_tx(struct tx *t)
 {
-	if (t) {
-		atomic_fetch_add_explicit(&t->refcnt, 1, memory_order_relaxed);
-	}
+	atomic_fetch_add_explicit(&t->refcnt, 1, memory_order_relaxed);
 	return t;
 }

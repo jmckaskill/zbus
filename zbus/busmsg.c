@@ -32,7 +32,6 @@ int reply_error(struct rx *r, uint32_t serial, int err)
 
 	struct txmsg m;
 	init_message(&m.m, MSG_ERROR, NO_REPLY_SERIAL);
-	m.m.flags = FLAG_NO_REPLY_EXPECTED;
 	m.m.reply_serial = serial;
 	m.m.error = error;
 
@@ -45,7 +44,6 @@ static int _reply_uint32(struct rx *r, uint32_t serial, const char *sig,
 {
 	struct txmsg m;
 	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
-	m.m.flags = FLAG_NO_REPLY_EXPECTED;
 	m.m.reply_serial = serial;
 	m.m.signature = sig;
 
@@ -74,6 +72,19 @@ int reply_string(struct rx *r, uint32_t serial, const str8_t *str)
 
 	struct builder b = start_message(r->buf, sizeof(r->buf), &m.m);
 	append_string8(&b, str);
+	int sz = end_message(b);
+	return send_data(r->tx, false, &m, r->buf, sz);
+}
+
+int reply_id_address(struct rx *r, uint32_t serial, int id)
+{
+	struct txmsg m;
+	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
+	m.m.reply_serial = serial;
+	m.m.signature = "s";
+
+	struct builder b = start_message(r->buf, sizeof(r->buf), &m.m);
+	append_id_address(&b, id);
 	int sz = end_message(b);
 	return send_data(r->tx, false, &m, r->buf, sz);
 }
