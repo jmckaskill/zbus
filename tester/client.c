@@ -1,6 +1,6 @@
 #include "client.h"
-#include "lib/auth.h"
-#include "lib/log.h"
+#include "dbus/auth.h"
+#include "lib/logmsg.h"
 #include <stdint.h>
 #include <unistd.h>
 #include <errno.h>
@@ -92,18 +92,16 @@ error:
 	return -1;
 }
 
-static slice_t get_user_id(char *buf, size_t sz)
+static const char *get_user_id(char *buf, size_t sz)
 {
 	char *puid = buf + sz;
 	int id = getuid();
-	if (id < 0) {
-		return make_slice(NULL, 0);
-	}
+	*(--puid) = 0;
 	do {
 		*(--puid) = (id % 10) + '0';
 		id /= 10;
 	} while (id);
-	return make_slice(puid, buf + sz - puid);
+	return puid;
 }
 
 struct client *open_client(const char *sockpn)
@@ -116,7 +114,7 @@ struct client *open_client(const char *sockpn)
 	}
 
 	char uidbuf[16];
-	slice_t uid = get_user_id(uidbuf, sizeof(uidbuf));
+	const char *uid = get_user_id(uidbuf, sizeof(uidbuf));
 
 	char inbuf[256], outbuf[256];
 	size_t insz = 0;
@@ -124,24 +122,26 @@ struct client *open_client(const char *sockpn)
 	uint32_t serial;
 
 	for (;;) {
-		size_t outsz = sizeof(outbuf);
-		slice_t in = make_slice(inbuf, insz);
-		int err = step_client_auth(&state, &in, outbuf, &outsz, uid,
-					   &serial);
+		char *in = inbuf;
+		char *out = outbuf;
+		int err = step_client_auth(&state, &in, insz, &out,
+					   sizeof(outbuf), uid, &serial);
 
-		if (write_all(fd, outbuf, outsz, "auth,state:%d", state)) {
+		if (write_all(fd, outbuf, out - outbuf, "state:%d", state)) {
 			goto error;
 		}
+
 		if (err == AUTH_OK) {
 			break;
 		} else if (err != AUTH_READ_MORE) {
 			goto error;
 		}
 
-		memmove(inbuf, in.p, in.len);
-		insz = in.len;
+		int n = inbuf + insz - in;
+		memmove(inbuf, in, n);
+		insz = n;
 
-		int n = read_one(fd, inbuf + insz, sizeof(inbuf) - insz);
+		n = read_one(fd, inbuf + insz, sizeof(inbuf) - insz);
 		if (n < 0) {
 			goto error;
 		}
@@ -150,10 +150,7 @@ struct client *open_client(const char *sockpn)
 
 	size_t msgsz = 4096;
 	size_t defrag = 1024;
-	c = malloc(sizeof(*c) + msgsz + defrag);
-	if (!c) {
-		goto error;
-	}
+	c = fmalloc(sizeof(*c) + msgsz + defrag);
 	c->fd = fd;
 	c->cb_available = UINT16_MAX;
 	memset(&c->cbs, 0, sizeof(c->cbs));
@@ -165,11 +162,11 @@ struct client *open_client(const char *sockpn)
 	    m.reply_serial != serial) {
 		goto error;
 	}
-	slice_t addr = parse_string(&ii);
+	const str8_t *addr = parse_string8(&ii);
 	if (iter_error(&ii)) {
 		goto error;
 	}
-	NOTICE("connected,address:%.*s", S_PRI(addr));
+	LOG("connected,address:%s", addr->p);
 	return c;
 
 error:
@@ -206,8 +203,8 @@ void unregister_cb(struct client *c, uint32_t serial)
 	c->cbs[serial - 1].udata = NULL;
 }
 
-int vsend_signal(struct client *c, slice_t path, slice_t iface, slice_t mbr,
-		 const char *sig, va_list ap)
+int vsend_signal(struct client *c, const str8_t *path, const str8_t *iface,
+		 const str8_t *mbr, const char *sig, va_list ap)
 {
 	struct message m;
 	init_message(&m, MSG_SIGNAL, UINT32_MAX);
@@ -227,15 +224,16 @@ int vsend_signal(struct client *c, slice_t path, slice_t iface, slice_t mbr,
 		return -1;
 	}
 	if (write_all(c->fd, buf, sz,
-		      "send_signal,path:%.*s,iface:%.*s,mbr:%.*s", S_PRI(path),
-		      S_PRI(iface), S_PRI(mbr))) {
+		      "send_signal,path:%.*s,iface:%.*s,mbr:%.*s", S_PRI(*path),
+		      S_PRI(*iface), S_PRI(*mbr))) {
 		return -1;
 	}
 	return 0;
 }
 
-int vcall_method(struct client *c, uint32_t serial, slice_t dst, slice_t path,
-		 slice_t iface, slice_t mbr, const char *sig, va_list ap)
+int vcall_method(struct client *c, uint32_t serial, const str8_t *dst,
+		 const str8_t *path, const str8_t *iface, const str8_t *mbr,
+		 const char *sig, va_list ap)
 {
 	struct message m;
 	init_message(&m, MSG_METHOD, serial ? serial : UINT32_MAX);
@@ -257,7 +255,7 @@ int vcall_method(struct client *c, uint32_t serial, slice_t dst, slice_t path,
 		return -1;
 	}
 	if (write_all(c->fd, buf, sz, "dst:%.*s,path:%.*s,iface:%.*s,mbr:%.*s",
-		      S_PRI(dst), S_PRI(path), S_PRI(iface), S_PRI(mbr))) {
+		      S_PRI(*dst), S_PRI(*path), S_PRI(*iface), S_PRI(*mbr))) {
 		return -1;
 	}
 	return 0;
@@ -283,13 +281,13 @@ int vsend_reply(struct client *c, const struct message *req, const char *sig,
 		return -1;
 	}
 	if (write_all(c->fd, buf, sz, "type:%s,request:%x,dst:%.*s", "reply(2)",
-		      req->serial, S_PRI(req->sender))) {
+		      req->serial, S_PRI(*req->sender))) {
 		return -1;
 	}
 	return 0;
 }
 
-int send_error(struct client *c, uint32_t request_serial, slice_t error)
+int send_error(struct client *c, uint32_t request_serial, const str8_t *error)
 {
 	struct message m;
 	init_message(&m, MSG_ERROR, UINT32_MAX);
@@ -305,22 +303,23 @@ int send_error(struct client *c, uint32_t request_serial, slice_t error)
 		return -1;
 	}
 	if (write_all(c->fd, buf, sz, "send_error,request:%u,error:%.*s",
-		      request_serial, S_PRI(error))) {
+		      request_serial, S_PRI(*error))) {
 		return -1;
 	}
 	return 0;
 }
 
-int send_signal(struct client *c, slice_t path, slice_t iface, slice_t mbr,
-		const char *sig, ...)
+int send_signal(struct client *c, const str8_t *path, const str8_t *iface,
+		const str8_t *mbr, const char *sig, ...)
 {
 	va_list ap;
 	va_start(ap, sig);
 	return vsend_signal(c, path, iface, mbr, sig, ap);
 }
 
-int call_method(struct client *c, uint32_t serial, slice_t dst, slice_t path,
-		slice_t iface, slice_t mbr, const char *sig, ...)
+int call_method(struct client *c, uint32_t serial, const str8_t *dst,
+		const str8_t *path, const str8_t *iface, const str8_t *mbr,
+		const char *sig, ...)
 {
 	va_list ap;
 	va_start(ap, sig);
@@ -335,21 +334,20 @@ int send_reply(struct client *c, const struct message *req, const char *sig,
 	return vsend_reply(c, req, sig, ap);
 }
 
-int call_bus_method(struct client *c, uint32_t serial, slice_t member,
+int call_bus_method(struct client *c, uint32_t serial, const str8_t *member,
 		    const char *sig, ...)
 {
 	va_list ap;
 	va_start(ap, sig);
-	return vcall_method(c, serial, S("org.freedesktop.DBus"),
-			    S("/org/freedesktop/DBus"),
-			    S("org.freedesktop.DBus"), member, sig, ap);
+	return vcall_method(c, serial, S8("\024org.freedesktop.DBus"),
+			    S8("\025/org/freedesktop/DBus"),
+			    S8("\024org.freedesktop.DBus"), member, sig, ap);
 }
 
 int read_message(struct client *c, struct message *msg, struct iterator *body)
 {
 	for (;;) {
-		slice_t b1, b2;
-		int err = stream_next(&c->in, msg, &b1, &b2);
+		int err = stream_next(&c->in, msg);
 
 		if (err == STREAM_MORE) {
 			char *p1, *p2;
@@ -368,11 +366,7 @@ int read_message(struct client *c, struct message *msg, struct iterator *body)
 				log_message(&lb, msg);
 				finish_log(&lb);
 			}
-			if (defragment_body(&c->in, &b1, &b2)) {
-				return -1;
-			}
-			init_iterator(body, msg->signature, b1.p, b1.len);
-			return 0;
+			return defragment_body(&c->in, msg, body);
 		} else {
 			return -1;
 		}

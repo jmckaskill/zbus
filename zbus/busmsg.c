@@ -1,99 +1,87 @@
 #include "busmsg.h"
 #include "tx.h"
-#include "lib/encode.h"
+#include "dbus/encode.h"
 
-#define X(X)                     \
-	{                        \
-		X, sizeof(X) - 1 \
-	}
-
-static const slice_t error_names[] = {
-	[-(ERR_INTERNAL + 1)] = X("org.freedesktop.DBus.Error.Internal"),
-	[-(ERR_OOM + 1)] = X("org.freedesktop.DBus.Error.OutOfMemory"),
-	[-(ERR_NOT_ALLOWED + 1)] = X("org.freedesktop.DBus.Error.AccessDenied"),
-	[-(ERR_NOT_FOUND + 1)] = X("org.freedesktop.DBus.Error.NotFound"),
-	[-(ERR_NOT_SUPPORTED + 1)] =
-		X("org.freedesktop.DBUs.Error.NotSupported"),
-	[-(ERR_NO_REMOTE + 1)] = X("org.freedesktop.DBus.Error.NoRemote"),
-	[-(ERR_REMOTE_FAILED + 1)] =
-		X("org.freedesktop.DBus.Error.RemoteNotResponsive"),
-	[-(ERR_NAME_HAS_NO_OWNER + 1)] =
-		X("org.freedesktop.DBus.Error.NameHasNoOwner"),
-	[-(ERR_BAD_ARGUMENT + 1)] = X("org.freedesktop.DBus.Error.BadArgument"),
-	[-(ERR_LAUNCH_FAILED + 1)] =
-		X("org.freedesktop.DBus.Error.LaunchFailed"),
-	[-(ERR_TIMED_OUT + 1)] = X("org.freedesktop.DBus.Error.TimedOut"),
+static const char *errors[] = {
+	[ERR_INTERNAL] = "\043org.freedesktop.DBus.Error.Internal",
+	[ERR_OOM] = "\046org.freedesktop.DBus.Error.OutOfMemory",
+	[ERR_NOT_ALLOWED] = "\047org.freedesktop.DBus.Error.AccessDenied",
+	[ERR_NOT_FOUND] = "\043org.freedesktop.DBus.Error.NotFound",
+	[ERR_NOT_SUPPORTED] = "\047org.freedesktop.DBUs.Error.NotSupported",
+	[ERR_NO_REMOTE] = "\043org.freedesktop.DBus.Error.NoRemote",
+	[ERR_REMOTE_FAILED] =
+		"\056org.freedesktop.DBus.Error.RemoteNotResponsive",
+	[ERR_NAME_HAS_NO_OWNER] =
+		"\051org.freedesktop.DBus.Error.NameHasNoOwner",
+	[ERR_BAD_ARGUMENT] = "\046org.freedesktop.DBus.Error.BadArgument",
+	[ERR_LAUNCH_FAILED] = "\047org.freedesktop.DBus.Error.LaunchFailed",
+	[ERR_TIMED_OUT] = "\043org.freedesktop.DBus.Error.TimedOut",
 };
 
-#undef X
-
-int reply_error(struct tx *to, uint32_t request_serial, int errcode)
+int reply_error(struct rx *r, uint32_t serial, int err)
 {
-	int idx = -(errcode + 1);
-	if (idx < 0 || idx > sizeof(error_names) / sizeof(error_names[0])) {
-		return -1;
+	if (err < 0 || err > sizeof(errors) / sizeof(errors[0]) ||
+	    !errors[err]) {
+		err = ERR_INTERNAL;
 	}
 
-	char buf[256];
-	struct message m;
-	init_message(&m, MSG_ERROR, NO_REPLY_SERIAL);
-	m.flags = FLAG_NO_REPLY_EXPECTED;
-	m.reply_serial = request_serial;
-	m.error = error_names[idx];
+	const str8_t *error = (const str8_t *)errors[err];
+	assert(error->len == strlen(error->p));
 
-	int sz = write_header(buf, sizeof(buf), &m, 0);
-	return sz < 0 || send_data(to, true, buf, sz);
+	struct tx_msg m;
+	init_message(&m.m, MSG_ERROR, NO_REPLY_SERIAL);
+	m.m.flags = FLAG_NO_REPLY_EXPECTED;
+	m.m.reply_serial = serial;
+	m.m.error = error;
+
+	int sz = write_header(r->buf, sizeof(r->buf), &m.m, 0);
+	return send_data(r->tx, false, &m, r->buf, sz);
 }
 
-static int _reply_uint32(struct tx *to, uint32_t request_serial,
-			 const char *sig, uint32_t value)
+static int _reply_uint32(struct rx *r, uint32_t serial, const char *sig,
+			 uint32_t value)
 {
-	struct message m;
-	init_message(&m, MSG_REPLY, NO_REPLY_SERIAL);
-	m.flags = FLAG_NO_REPLY_EXPECTED;
-	m.reply_serial = request_serial;
-	m.signature = sig;
+	struct tx_msg m;
+	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
+	m.m.flags = FLAG_NO_REPLY_EXPECTED;
+	m.m.reply_serial = serial;
+	m.m.signature = sig;
 
-	char buf[256];
-	struct builder b = start_message(buf, sizeof(buf), &m);
+	struct builder b = start_message(r->buf, sizeof(r->buf), &m.m);
 	_append4(&b, value, *sig);
 	int sz = end_message(b);
-	return sz < 0 ? ERR_OOM : send_data(to, true, buf, sz);
+	return send_data(r->tx, false, &m, r->buf, sz);
 }
 
-int reply_uint32(struct tx *to, uint32_t request_serial, uint32_t value)
+int reply_uint32(struct rx *r, uint32_t serial, uint32_t value)
 {
-	return _reply_uint32(to, request_serial, "u", value);
+	return _reply_uint32(r, serial, "u", value);
 }
 
-int reply_bool(struct tx *to, uint32_t request_serial, bool value)
+int reply_bool(struct rx *r, uint32_t serial, bool value)
 {
-	return _reply_uint32(to, request_serial, "b", value);
+	return _reply_uint32(r, serial, "b", value);
 }
 
-int reply_string(struct tx *to, uint32_t request_serial, slice_t str)
+int reply_string(struct rx *r, uint32_t serial, const str8_t *str)
 {
-	struct message m;
-	init_message(&m, MSG_REPLY, NO_REPLY_SERIAL);
-	m.flags = FLAG_NO_REPLY_EXPECTED;
-	m.reply_serial = request_serial;
-	m.signature = "s";
+	struct tx_msg m;
+	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
+	m.m.reply_serial = serial;
+	m.m.signature = "s";
 
-	char buf[256];
-	struct builder b = start_message(buf, sizeof(buf), &m);
-	append_string(&b, str);
+	struct builder b = start_message(r->buf, sizeof(r->buf), &m.m);
+	append_string8(&b, str);
 	int sz = end_message(b);
-	return sz < 0 ? ERR_OOM : send_data(to, true, buf, sz);
+	return send_data(r->tx, false, &m, r->buf, sz);
 }
 
-int reply_empty(struct tx *to, uint32_t request_serial)
+int reply_empty(struct rx *r, uint32_t serial)
 {
-	struct message m;
-	init_message(&m, MSG_REPLY, NO_REPLY_SERIAL);
-	m.flags = FLAG_NO_REPLY_EXPECTED;
-	m.reply_serial = request_serial;
+	struct tx_msg m;
+	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
+	m.m.reply_serial = serial;
 
-	char buf[256];
-	int sz = write_header(buf, sizeof(buf), &m, 0);
-	return sz < 0 ? ERR_OOM : send_data(to, true, buf, sz);
+	int sz = write_header(r->buf, sizeof(r->buf), &m.m, 0);
+	return send_data(r->tx, false, &m, r->buf, sz);
 }

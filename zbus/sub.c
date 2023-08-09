@@ -1,177 +1,86 @@
 #include "sub.h"
-#include "algo.h"
 #include "busmsg.h"
-#include "dmem/common.h"
+#include "lib/algo.h"
+#include "lib/log.h"
 
-static int insert_compare(const void *key, const void *element)
+struct subkey {
+	int txid;
+	const char *mstr;
+	size_t len;
+};
+
+static int cmp_subkey_subscription(const void *key, const void *element)
 {
-	const struct subscription *k = key;
-	const struct subscription *e = *(struct subscription **)element;
+	const struct subkey *k = key;
+	const struct subscription *s = element;
 
-	// sort by interface length
-	int dsz = k->match.interface_len - e->match.interface_len;
-	if (dsz) {
-		return dsz;
-	}
+	// sort by tx id then full match string
 
-	// then interface string
-	int cmp = memcmp(k->match.base + k->match.interface_off,
-			 e->match.base + e->match.interface_off,
-			 k->match.interface_len);
-	if (cmp) {
-		return cmp;
-	}
-
-	// then tx pointer
-	int diff = (int)(k->tx - e->tx);
+	int diff = k->txid - txid(s->tx);
 	if (diff) {
 		return diff;
 	}
-
-	// then the full match string length
-	dsz = k->match.str_len - e->match.str_len;
-	if (dsz) {
-		return dsz;
-	}
-
-	// then the match string itself
-	return memcmp(k->match.base, e->match.base, k->match.str_len);
+	diff = k->len - s->m.len;
+	return diff ? diff : memcmp(k->mstr, s->mstr, k->len);
 }
 
-static int find_compare(const void *key, const void *element)
+void free_subscription(struct rcu_object *o)
 {
-	const slice_t *k = key;
-	const struct subscription *e = *(struct subscription **)element;
-	int dsz = k->len - e->match.interface_len;
-	if (dsz) {
-		return dsz;
-	}
-	return memcmp(k->p, e->match.base + e->match.interface_off, k->len);
-}
-
-static void free_sub(struct subscription *s)
-{
+	struct subscription *s = container_of(o, struct subscription, h.rcu);
 	if (s) {
 		deref_tx(s->tx);
 		free(s);
 	}
 }
 
-void free_subscription_map(struct subscription_map *m)
+struct subscription *new_subscription(const char *mstr, struct match m)
 {
-	if (m) {
-		for (int i = 0; i < m->len; i++) {
-			free_sub(m->v[i]);
-		}
-		free(m);
-	}
+	struct subscription *s = fmalloc(sizeof(*s) + m.len);
+	memset(s, 0, sizeof(*s));
+	s->m = m;
+	memcpy(s->mstr, mstr, m.len);
+	return s;
 }
 
-static int add_subscription(struct rcu_writer *w,
-			    struct subscription_map **pmap,
-			    const struct match *match, struct tx *tx,
-			    uint32_t serial, struct circ_list *owner)
+struct submap *add_subscription(struct rcu_object **objs,
+				const struct submap *om, struct tx *tx,
+				const char *str, struct match match,
+				uint32_t serial)
 {
-	struct subscription key;
-	key.match = *match;
-	key.tx = tx;
-
-	struct subscription_map *old = *pmap;
-	size_t esz = sizeof(old->v[0]);
-	int n = old ? old->len : 0;
-	int idx = lower_bound(&key, old->v, n, esz, &insert_compare);
-
+	int idx = bsearch_subscription(om, tx, str, match);
 	if (idx < 0) {
 		// new subscription
 		idx = -(idx + 1);
 	} else {
-		// subscription is already in the list. Add it before the
-		// existing item.
+		// subscription is already in the list. Add a duplicate before
+		// the existing item.
 	}
 
-	struct subscription_map *m = malloc(sizeof(*m) + (n + 1) * esz);
-	struct subscription *s = malloc(sizeof(*s) + match->str_len);
-	if (!m || !s) {
-		free(m);
-		free(s);
-		return ERR_OOM;
-	}
-	// copy the match across
-	s->match = *match;
-	memcpy(s->mstr, match->base, match->str_len);
-	s->match.base = s->mstr;
+	struct submap *nm = edit_submap(objs, om, idx, 1);
+	struct subscription *s = new_subscription(str, match);
 	s->tx = tx;
-	s->serial = serial;
 	ref_tx(s->tx);
 	s->serial = serial;
-	circ_add(&s->owner, owner);
-
-	// copy the subscriptions across
-	m->len = n + 1;
-	memcpy(m->v, old->v, idx * esz);
-	m->v[idx] = s;
-	memcpy(m->v + idx + 1, old->v + idx, (n - idx) * esz);
-
-	// collect the old list
-	rcu_collect(w, old, &free);
-	*pmap = m;
-	return 0;
+	nm->v[idx] = s;
+	return nm;
 }
 
-static int rm_subscription(struct rcu_writer *w, struct subscription_map **pmap,
-			   const struct match *match, struct tx *tx)
+struct submap *rm_subscription(struct rcu_object **objs,
+			       const struct submap *om, int idx)
 {
-	struct subscription key;
-	key.match = *match;
-	key.tx = tx;
-
-	struct subscription_map *old = *pmap;
-	size_t esz = sizeof(old->v[0]);
-	int n = old ? old->len : 0;
-	int idx = lower_bound(&key, old->v, n, esz, &insert_compare);
-	if (idx < 0) {
-		return ERR_NOT_FOUND;
-	}
-
-	struct subscription *s = old->v[idx];
-	struct subscription_map *m = malloc(sizeof(*m) + (n - 1) * esz);
-	if (!m) {
-		return ERR_OOM;
-	}
-	m->len = n - 1;
-	memcpy(m->v, old->v, idx * esz);
-	memcpy(m->v + idx, old->v + idx + 1, (n - idx - 1) * esz);
-
-	circ_remove(&s->owner);
-	rcu_collect(w, s, (rcu_free_fn)&free_sub);
-	rcu_collect(w, old, (rcu_free_fn)&free);
-	*pmap = m;
-	return 0;
+	const struct subscription *os = om->v[idx];
+	struct submap *nm = edit_submap(objs, om, idx, -1);
+	rcu_on_commit(objs, &free_subscription, &os->h.rcu);
+	return nm;
 }
 
-int addrm_subscription(struct rcu_writer *w, struct subscription_map **pmap,
-		       bool add, const struct match *m, struct tx *tx,
-		       uint32_t serial, struct circ_list *o)
+int bsearch_subscription(const struct submap *s, struct tx *tx, const char *str,
+			 struct match m)
 {
-	if (add) {
-		return add_subscription(w, pmap, m, tx, serial, o);
-	} else {
-		return rm_subscription(w, pmap, m, tx);
-	}
-}
+	struct subkey key;
+	key.txid = txid(tx);
+	key.mstr = str;
+	key.len = m.len;
 
-int find_subscriptions(struct subscription_map *m, slice_t iface,
-		       struct subscription ***pfirst)
-{
-	int n = m ? m->len : 0;
-	int idx = lower_bound(&iface, m->v, n, sizeof(m->v[0]), &find_compare);
-	if (idx < 0) {
-		return 0;
-	}
-	*pfirst = &m->v[idx];
-	int j = 0;
-	while (idx + j < n && !find_compare(&iface, &m->v[idx + j])) {
-		j++;
-	}
-	return j;
+	return lower_bound(&s->hdr, &key, &cmp_subkey_subscription);
 }

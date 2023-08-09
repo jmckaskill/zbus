@@ -309,7 +309,7 @@ CRBNode *c_rbnode_prev_postorder(CRBNode *n)
  */
 CRBNode *c_rbtree_first(CRBTree *t)
 {
-	c_assert(t);
+	assert(t);
 	return c_rbnode_leftmost(t->root);
 }
 
@@ -326,7 +326,7 @@ CRBNode *c_rbtree_first(CRBTree *t)
  */
 CRBNode *c_rbtree_last(CRBTree *t)
 {
-	c_assert(t);
+	assert(t);
 	return c_rbnode_rightmost(t->root);
 }
 
@@ -347,7 +347,7 @@ CRBNode *c_rbtree_last(CRBTree *t)
  */
 CRBNode *c_rbtree_first_postorder(CRBTree *t)
 {
-	c_assert(t);
+	assert(t);
 	return c_rbnode_leftdeepest(t->root);
 }
 
@@ -367,7 +367,7 @@ CRBNode *c_rbtree_first_postorder(CRBTree *t)
  */
 CRBNode *c_rbtree_last_postorder(CRBTree *t)
 {
-	c_assert(t);
+	assert(t);
 	return t->root;
 }
 
@@ -393,9 +393,9 @@ static inline void c_rbtree_store(CRBNode **ptr, CRBNode *addr)
  * function is provided.
  */
 static inline void c_rbnode_set_parent_and_flags(CRBNode *n, CRBNode *p,
-						 unsigned long flags)
+						 uintptr_t flags)
 {
-	n->__parent_and_flags = (unsigned long)p | flags;
+	n->__parent_and_flags = (uintptr_t)p | flags;
 }
 
 /*
@@ -436,7 +436,7 @@ static inline CRBTree *c_rbnode_push_root(CRBNode *n, CRBTree *t)
 {
 	if (t) {
 		if (n)
-			n->__parent_and_flags = (unsigned long)t |
+			n->__parent_and_flags = (uintptr_t)t |
 						c_rbnode_flags(n) |
 						C_RBNODE_ROOT;
 		c_rbtree_store(&t->root, n);
@@ -490,11 +490,12 @@ void c_rbtree_move(CRBTree *to, CRBTree *from)
 {
 	CRBTree *t;
 
-	c_assert(!to->root);
+	assert(!to->root);
 
 	if (from->root) {
 		t = c_rbnode_pop_root(from->root);
-		c_assert(t == from);
+		assert(t == from);
+		(void)t;
 
 		to->root = from->root;
 		from->root = NULL;
@@ -522,10 +523,10 @@ static inline void c_rbtree_paint_terminal(CRBNode *n)
 	g = c_rbnode_parent(p);
 	gg = c_rbnode_parent(g);
 
-	c_assert(c_rbnode_is_red(p));
-	c_assert(c_rbnode_is_black(g));
-	c_assert(p == g->left || !g->left || c_rbnode_is_black(g->left));
-	c_assert(p == g->right || !g->right || c_rbnode_is_black(g->right));
+	assert(c_rbnode_is_red(p));
+	assert(c_rbnode_is_black(g));
+	assert(p == g->left || !g->left || c_rbnode_is_black(g->left));
+	assert(p == g->right || !g->right || c_rbnode_is_black(g->right));
 
 	if (p == g->left) {
 		if (n == p->right) {
@@ -726,10 +727,10 @@ static inline void c_rbtree_paint(CRBNode *n)
  */
 void c_rbnode_link(CRBNode *p, CRBNode **l, CRBNode *n)
 {
-	c_assert(p);
-	c_assert(l);
-	c_assert(n);
-	c_assert(l == &p->left || l == &p->right);
+	assert(p);
+	assert(l);
+	assert(n);
+	assert(l == &p->left || l == &p->right);
 
 	c_rbnode_set_parent_and_flags(n, p, C_RBNODE_RED);
 	c_rbtree_store(&n->left, NULL);
@@ -792,11 +793,11 @@ void c_rbnode_link(CRBNode *p, CRBNode **l, CRBNode *n)
  */
 void c_rbtree_add(CRBTree *t, CRBNode *p, CRBNode **l, CRBNode *n)
 {
-	c_assert(t);
-	c_assert(l);
-	c_assert(n);
-	c_assert(!p || l == &p->left || l == &p->right);
-	c_assert(p || l == &t->root);
+	assert(t);
+	assert(l);
+	assert(n);
+	assert(!p || l == &p->left || l == &p->right);
+	assert(p || l == &t->root);
 
 	c_rbnode_set_parent_and_flags(n, p, C_RBNODE_RED);
 	c_rbtree_store(&n->left, NULL);
@@ -852,7 +853,7 @@ static inline void c_rbnode_rebalance_terminal(CRBNode *p, CRBNode *previous)
 				 * Note that the parent must be red, otherwise
 				 * it must have been handled by our caller.
 				 */
-				c_assert(c_rbnode_is_red(p));
+				assert(c_rbnode_is_red(p));
 				c_rbnode_set_parent_and_flags(
 					s, p, c_rbnode_flags(s) | C_RBNODE_RED);
 				c_rbnode_set_parent_and_flags(
@@ -923,7 +924,7 @@ static inline void c_rbnode_rebalance_terminal(CRBNode *p, CRBNode *previous)
 		if (!x || c_rbnode_is_black(x)) {
 			y = s->right;
 			if (!y || c_rbnode_is_black(y)) {
-				c_assert(c_rbnode_is_red(p));
+				assert(c_rbnode_is_red(p));
 				c_rbnode_set_parent_and_flags(
 					s, p, c_rbnode_flags(s) | C_RBNODE_RED);
 				c_rbnode_set_parent_and_flags(
@@ -1045,8 +1046,8 @@ void c_rbnode_unlink_stale(CRBNode *n)
 {
 	CRBTree *t;
 
-	c_assert(n);
-	c_assert(c_rbnode_is_linked(n));
+	assert(n);
+	assert(c_rbnode_is_linked(n));
 
 	/*
 	 * There are three distinct cases during node removal of a tree:

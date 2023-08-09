@@ -1,52 +1,69 @@
 #pragma once
-#include "lib/slice.h"
-#include "lib/encode.h"
+#include "dbus/encode.h"
 #include <threads.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <limits.h>
+#include <sys/socket.h>
 
-#define NO_REPLY_SERIAL UINT32_MAX
-#define MAX_REQUEST_NUM (sizeof(unsigned) * CHAR_BIT)
+#define NO_REPLY_SERIAL 2U
 
-struct tx_request {
-	struct tx *client;
+struct tx_msg {
+	struct message m;
+	struct {
+		char *buf;
+		size_t len;
+	} hdr, body[2];
+};
+
+struct request {
+	struct tx *remote;
+	uint32_t reqidx;
 	uint32_t serial;
-	uint16_t count;
+};
+
+struct requests {
+	cnd_t cnd;
+	uint32_t avail;
+	struct request v[32];
 };
 
 struct tx {
+	struct rcu_object rcu;
+
+	// data that can be used without the lock
 	atomic_int refcnt;
+	int id;
+
+	// data that requires the lock be held
 	mtx_t lk;
-	int fd;
 	cnd_t send_cnd;
+	int fd;
 	int send_waiters;
 	bool stalled;
 	bool shutdown;
-	int request_waiters;
-	cnd_t request_cnd;
-	// bit mask of which reply entries are available
-	unsigned request_available;
-	struct tx_request requests[MAX_REQUEST_NUM];
+	bool closed;
+	struct requests client;
+	struct requests server;
 };
 
-struct rope {
-	struct rope *next;
-	slice_t data;
-};
+struct tx *new_tx(int fd, int id);
+static struct tx *ref_tx(struct tx *t);
+void deref_tx(struct tx *t);
+void close_tx(struct tx *t);
+int send_message(struct tx *t, bool block, struct tx_msg *m);
+int send_data(struct tx *t, bool block, struct tx_msg *m, char *buf, int sz);
+int route_request(struct tx *client, struct tx *srv, struct tx_msg *m);
+int route_reply(struct tx *server, struct tx_msg *m);
 
-size_t rope_size(struct rope *r);
-struct rope *rope_skip(struct rope *r, size_t len);
-const char *defrag_rope(char *buf, size_t bufsz, struct rope *r, size_t need);
+/////////////////////////////////////
+// inline
 
-struct tx *new_tx(int fd);
-void ref_tx(struct tx *tx);
-void deref_tx(struct tx *tx);
-int send_data(struct tx *tx, bool block, const char *p, size_t sz);
-int send_rope(struct tx *tx, bool block, struct rope *r);
-int send_shutdown(struct tx *tx);
-int send_request(struct tx *from, struct tx *to, slice_t sender,
-		 const struct message *m, struct rope *body);
-int send_reply(struct tx *from, slice_t sender, const struct message *m,
-	       struct rope *body);
+static inline struct tx *ref_tx(struct tx *t)
+{
+	if (t) {
+		atomic_fetch_add_explicit(&t->refcnt, 1, memory_order_relaxed);
+	}
+	return t;
+}

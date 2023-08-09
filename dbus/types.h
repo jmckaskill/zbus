@@ -1,6 +1,6 @@
 #pragma once
 #define _GNU_SOURCE
-#include "slice.h"
+#include "str8.h"
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -82,6 +82,7 @@ struct dict_data;
 #define FLAG_NO_REPLY_EXPECTED 1
 #define FLAG_NO_AUTO_START 2
 #define FLAG_ALLOW_INTERACTIVE_AUTHORIZATION 4
+#define FLAG_MASK 7
 
 enum msg_type {
 	MSG_METHOD = 1,
@@ -91,14 +92,17 @@ enum msg_type {
 };
 
 struct message {
-	slice_t path;
-	slice_t interface;
-	slice_t member;
-	slice_t error;
-	slice_t destination;
-	slice_t sender;
+	// NULL pointer indicates lack of the field
+	const str8_t *path;
+	const str8_t *interface;
+	const str8_t *member;
+	const str8_t *error;
+	const str8_t *destination;
+	const str8_t *sender;
+	// signature must be non NULL
 	const char *signature;
 	uint32_t fdnum;
+	// 0 is the invalid serial value
 	uint32_t serial;
 	uint32_t reply_serial;
 	uint8_t type;
@@ -123,7 +127,7 @@ struct array_data {
 };
 
 struct iterator {
-	const char *base;
+	char *base;
 	const char *sig;
 	uint32_t next;
 	uint32_t end;
@@ -148,8 +152,10 @@ struct variant {
 		int64_t i64;
 		uint64_t u64;
 		double d;
-		slice_t str;
-		slice_t path;
+		struct {
+			const char *p;
+			size_t len;
+		} str, path;
 		const char *sig;
 		struct iterator record;
 		struct iterator array;

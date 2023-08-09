@@ -1,14 +1,15 @@
 #define _GNU_SOURCE
 #include "sys.h"
 #include "bus.h"
-#include "dmem/log.h"
-#include "dmem/common.h"
+#include "lib/log.h"
+#include "lib/algo.h"
 #include "vendor/klib-master/khash.h"
 #include <errno.h>
 #include <unistd.h>
 #include <sys/un.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <stdint.h>
 #include <fcntl.h>
 #include <string.h>
@@ -17,6 +18,9 @@
 #include <pthread.h>
 #include <time.h>
 #include <threads.h>
+#include <stdatomic.h>
+#include <dirent.h>
+#include <sys/types.h>
 
 int generate_busid(char *busid)
 {
@@ -30,6 +34,7 @@ int generate_busid(char *busid)
 		busid[2 * i] = hex_enc[rand[i] >> 4];
 		busid[2 * i + 1] = hex_enc[rand[i] & 15];
 	}
+	busid[2 * sizeof(rand)] = 0;
 	return 2 * sizeof(rand);
 }
 
@@ -75,10 +80,7 @@ static void wakeup(int)
 struct child_info {
 	struct bus *bus;
 	pid_t pid;
-	struct {
-		int len;
-		char p[0];
-	} name;
+	str8_t name;
 };
 
 KHASH_MAP_INIT_INT(child_info, struct child_info *);
@@ -122,15 +124,15 @@ static int child_listener(void *)
 			ERROR("child exited with error,pid:%d,code:%d,name:%.*s",
 			      pid, WEXITSTATUS(sts), c->name.len, c->name.p);
 		} else if (WIFEXITED(sts)) {
-			NOTICE("child exited,pid:%d,name:%.*s", pid,
-			       c->name.len, c->name.p);
+			LOG("child exited,pid:%d,name:%.*s", pid, c->name.len,
+			    c->name.p);
 		}
 
 		kh_del(child_info, &children, ii);
 		mtx_unlock(&child_lk);
 
 		mtx_lock(&c->bus->lk);
-		service_exited(c->bus, to_slice(c->name));
+		service_exited(c->bus, &c->name);
 		mtx_unlock(&c->bus->lk);
 
 		free(c);
@@ -139,14 +141,8 @@ static int child_listener(void *)
 	return 0;
 }
 
-int launch_service(struct bus *bus, slice_t name)
+int launch_service(struct bus *bus, const str8_t *name)
 {
-	struct child_info *c = malloc(sizeof(*c) + name.len);
-	memcpy(c->name.p, name.p, name.len);
-	c->name.len = name.len;
-	c->bus = bus;
-
-	mtx_lock(&child_lk);
 	pid_t pid = fork();
 	if (pid < 0) {
 		ERROR("fork,errno:%m");
@@ -155,7 +151,16 @@ int launch_service(struct bus *bus, slice_t name)
 
 	if (pid) {
 		// parent
+		struct child_info *c = malloc(sizeof(*c) + name->len);
+		if (!c) {
+			return -1;
+		}
+
+		str8cpy(&c->name, name);
+		c->bus = bus;
 		c->pid = pid;
+
+		mtx_lock(&child_lk);
 		int sts;
 		khint_t ii = kh_put(child_info, &children, pid, &sts);
 		if (!sts) {
@@ -163,26 +168,19 @@ int launch_service(struct bus *bus, slice_t name)
 		}
 		kh_val(&children, ii) = c;
 		mtx_unlock(&child_lk);
-		// parent
-		return pid < 0;
+		return 0;
 	} else {
 		// child
-		char buf[256];
-		if (name.len + 1 > sizeof(buf)) {
-			return -1;
-		}
-		memcpy(buf, name.p, name.len);
-		buf[name.len] = 0;
-
 		char *args[] = {
 			"zbus-launch",
-			buf,
+			(char *)name->p,
 			NULL,
 		};
 
 		close(0);
 		close(1);
 		// leave stderr open
+
 		execvp("zbus-launch", args);
 		ERROR("execvp failed in child,errno:%m");
 		exit(112);
@@ -231,9 +229,11 @@ void kill_services(void)
 	mtx_unlock(&child_lk);
 }
 
-int set_non_blocking(int fd)
+void must_set_non_blocking(int fd)
 {
-	return fcntl(fd, F_SETFL, O_NONBLOCK);
+	if (fcntl(fd, F_SETFL, O_NONBLOCK)) {
+		FATAL("failed to set fd non-nonblocking,errno:%m");
+	}
 }
 
 int poll_one(int fd, bool read, bool write)
@@ -250,11 +250,9 @@ try_again:
 	return n <= 0;
 }
 
-void set_thread_name(slice_t s)
+#ifndef NDEBUG
+void set_thread_name(const char *s)
 {
-	char buf[256];
-	size_t n = (s.len < sizeof(buf)) ? s.len : (sizeof(buf) - 1);
-	memcpy(buf, s.p, n);
-	buf[n] = '\0';
-	pthread_setname_np(pthread_self(), buf);
+	pthread_setname_np(pthread_self(), s);
 }
+#endif

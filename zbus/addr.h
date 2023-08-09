@@ -1,59 +1,58 @@
 #pragma once
 #include "rcu.h"
 #include "tx.h"
-#include "algo.h"
+#include "vector.h"
+#include "dbus/types.h"
+#include "dbus/str8.h"
+#include "vendor/c-rbtree-3.1.0/src/c-rbtree.h"
+#include "vendor/klib-master/khash.h"
 #include <limits.h>
 #include <time.h>
 
-struct autostart {
-	cnd_t wait;
+struct address {
+	struct rcu_object rcu;
+	struct CRBNode rb;
+	struct submap *subs;
+	struct tx *tx;
 	time_t last_launch;
 	bool running;
-	int waiters;
+	bool activatable;
+	bool in_config;
+	str8_t name;
 };
 
-struct address {
-	struct rcu_object obj;
-	struct rcu_reader *subs_reader; // struct subscription_map
-	struct rcu_writer *subs_writer;
-	struct tx *tx;
-	struct circ_list owner_list;
-	int owner_id;
-	struct autostart *autostart;
-	struct {
-		int len;
-		char p[0];
-	} name;
+struct addrmap {
+	struct vector hdr;
+	const struct address *v[0];
 };
 
-struct address_map {
-	struct rcu_object obj;
-	int len;
-	struct address *v[0];
-};
+struct address *new_address(const str8_t *name);
+void free_address(struct rcu_object *o);
+struct address *edit_address(struct rcu_object **objs,
+			     const struct address *oa);
 
-struct autostart *new_autostart(void);
-void free_autostart(struct autostart *a);
+static struct addrmap *edit_addrmap(struct rcu_object **objs,
+				    const struct addrmap *om, int idx,
+				    int insert);
+int bsearch_address(const struct addrmap *m, const str8_t *name);
 
-void free_address_map(struct address_map *m);
+// merge_addresses merges the address in the tree into the addrmap updating
+// it in the process. All address in the tree are consumed.
+struct addrmap *merge_addresses(struct rcu_object **objs,
+				const struct addrmap *om, CRBTree *t);
 
-struct address *update_address(struct rcu_writer *w, struct address_map **pmap,
-			       int idx);
-struct address *add_address(struct rcu_writer *w, struct address_map **pmap,
-			    int idx, slice_t name);
-int remove_address(struct rcu_writer *w, struct address_map **pmap, int idx);
+//////////////////////////////
+// inline implementations
 
-int find_unique_address(struct address_map *m, int id);
-int find_named_address(struct address_map *m, slice_t name);
+static inline struct addrmap *edit_addrmap(struct rcu_object **objs,
+					   const struct addrmap *om, int idx,
+					   int insert)
+{
+	struct vector *v = edit_vector(objs, &om->hdr, idx, insert);
+	return container_of(v, struct addrmap, hdr);
+}
 
-#define STRINGIZE(X) #X
-#define RESOLVE(X) (X)
-#define STRLEN(X) (sizeof(X) - 1)
-
-#define UNIQ_ADDR_PREFIX ":1."
-#define UNIQ_ADDR_MAXLEN \
-	(STRLEN(UNIQ_ADDR_PREFIX) + STRLEN(STRINGIZE(RESOLVE(INT_MAX))))
-
-// buffer must be at least UNIX_ADDR_MAXLEN long
-size_t id_to_address(char *buf, int id);
-int address_to_id(slice_t s);
+static inline struct address *node_to_addr(CRBNode *n)
+{
+	return container_of(n, struct address, rb);
+}

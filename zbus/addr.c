@@ -2,214 +2,171 @@
 #include "sub.h"
 #include "rcu.h"
 #include "busmsg.h"
-#include "dmem/common.h"
+#include "lib/algo.h"
+#include "lib/log.h"
 #include <limits.h>
 #include <string.h>
 
-struct address *update_address(struct rcu_writer *w, struct address_map **pmap,
-			       int idx)
+///////////////////////////
+// address data management
+
+void free_address(struct rcu_object *o)
 {
-	struct address_map *old = *pmap;
-	struct address *oa = old->v[idx];
-	int n = old->len;
-	size_t esz = sizeof(old->v[0]);
-
-	struct address_map *m = malloc(sizeof(*m) + n * esz);
-	struct address *a = malloc(sizeof(*a) + oa->name.len);
-	if (!m || !a) {
-		free(m);
-		free(a);
-		return NULL;
-	}
-
-	// copy the address info across and fix up pointers
-	memcpy(a, oa, sizeof(*a) + oa->name.len);
-	if (a->owner_list.next) {
-		a->owner_list.prev->next = &a->owner_list;
-		a->owner_list.next->prev = &a->owner_list;
-	}
-
-	// copy the map data across, replacing the address of interest
-	m->len = old->len;
-	memcpy(m->v, old->v, n * esz);
-	m->v[idx] = a;
-
-	// just a shallow free not deep (free_address) as we've copied all the
-	// contents to the new structs
-	rcu_collect(w, oa, &free);
-	rcu_collect(w, old, &free);
-	*pmap = m;
-	return a;
-}
-
-struct address *add_address(struct rcu_writer *w, struct address_map **pmap,
-			    int idx, slice_t name)
-{
-	struct address_map *old = *pmap;
-	int n = old ? old->len : 0;
-	size_t esz = sizeof(old->v[0]);
-
-	if (idx < 0 || idx > n) {
-		return NULL;
-	}
-
-	struct address_map *m = malloc(sizeof(*m) + (n + 1) * esz);
-	struct address *a = malloc(sizeof(*a) + name.len);
-	struct rcu_writer *subw = new_rcu_writer();
-	struct rcu_reader *subr = new_rcu_reader(subw);
-	if (!m || !a || !subw || !subr) {
-		free_rcu_reader(subw, subr);
-		free_rcu_writer(subw);
-		free(m);
-		free(a);
-		return NULL;
-	}
-
-	// setup the new address
-	a->subs_reader = subr;
-	a->subs_writer = subw;
-	a->tx = NULL;
-	circ_init(&a->owner_list);
-	a->owner_id = -1;
-	a->autostart = NULL;
-	memcpy(&a->name.p, name.p, name.len);
-	a->name.len = name.len;
-
-	// copy the old map data across, inserting the new record
-	m->len = n + 1;
-	memcpy(m->v, old->v, idx * esz);
-	m->v[idx] = a;
-	memcpy(m->v + idx + 1, old->v + idx, (n - idx) * esz);
-
-	*pmap = m;
-	rcu_collect(w, old, &free);
-
-	return a;
-}
-
-struct autostart *new_autostart(void)
-{
-	struct autostart *a = malloc(sizeof(*a));
-	if (!a || cnd_init(&a->wait)) {
-		free(a);
-		return NULL;
-	}
-	a->last_launch = (time_t)0;
-	a->waiters = 0;
-	return a;
-}
-
-void free_autostart(struct autostart *a)
-{
+	struct address *a = container_of(o, struct address, rcu);
 	if (a) {
-		cnd_destroy(&a->wait);
-		free(a);
-	}
-}
-
-static void free_address(struct address *a)
-{
-	if (a) {
-		free_autostart(a->autostart);
-		free_rcu_reader(a->subs_writer, a->subs_reader);
-		free_rcu_writer(a->subs_writer);
 		deref_tx(a->tx);
-		circ_remove(&a->owner_list);
 		free(a);
 	}
 }
 
-void free_address_map(struct address_map *m)
+struct address *new_address(const str8_t *name)
 {
-	if (m) {
-		for (int i = 0; i < m->len; i++) {
-			free_address(m->v[i]);
+	struct address *a = fmalloc(sizeof(*a) + name->len);
+	memset(a, 0, sizeof(*a));
+	str8cpy(&a->name, name);
+	return a;
+}
+
+struct address *edit_address(struct rcu_object **objs, const struct address *oa)
+{
+	struct address *na = fmalloc(sizeof(*na) + oa->name.len);
+	memcpy(na, oa, sizeof(*oa) + oa->name.len);
+	ref_tx(na->tx);
+	rcu_on_commit(objs, &free_address, &oa->rcu);
+	return na;
+}
+
+static void copy_config(struct address *na, const struct address *oa)
+{
+	na->activatable = oa ? oa->activatable : false;
+}
+
+///////////////////////////////////
+// lookup
+
+static int cmp_slice_address(const void *key, const void *element)
+{
+	const str8_t *k = key;
+	const struct address *a = element;
+	return str8cmp(k, &a->name);
+}
+
+int bsearch_address(const struct addrmap *m, const str8_t *name)
+{
+	return lower_bound(&m->hdr, name, &cmp_slice_address);
+}
+
+///////////////////////////////////
+// config updates
+
+static int cmp_node_address(CRBNode *n, const struct addrmap *m, int idx)
+{
+	// treat the end condition for each list as equivalent to an infinitely
+	// large value
+	if (n == NULL) {
+		// equiv to INF - x
+		return 1;
+	} else if (idx == vector_len(&m->hdr)) {
+		// equiv to x - INF
+		return -1;
+	} else {
+		struct address *an = node_to_addr(n);
+		const struct address *am = m->v[idx];
+		return str8cmp(&an->name, &am->name);
+	}
+}
+
+static int new_merged_size(const struct addrmap *om, CRBTree *t)
+{
+	// first figure out how big the new map is going to be
+	int oidx = 0;
+	int nlen = 0;
+	int olen = vector_len(&om->hdr);
+	CRBNode *n = c_rbtree_first(t);
+	while (n != NULL || oidx < olen) {
+		int cmp = cmp_node_address(n, om, oidx);
+		if (cmp < 0) {
+			// only in new config
+			nlen++;
+			n = c_rbnode_next(n);
+		} else if (cmp > 0) {
+			// only in old config
+			const struct address *a = om->v[oidx];
+			if (a->tx || a->subs) {
+				// keep addresses that are otherwise in use
+				nlen++;
+			}
+			oidx++;
+		} else {
+			// in new and old config
+			nlen++;
+			oidx++;
+			n = c_rbnode_next(n);
 		}
-		free(m);
 	}
+	return nlen;
 }
 
-int remove_address(struct rcu_writer *w, struct address_map **pmap, int idx)
+struct addrmap *merge_addresses(struct rcu_object **objs,
+				const struct addrmap *om, CRBTree *t)
 {
-	struct address_map *old = *pmap;
-	if (!old || idx < 0) {
-		return ERR_NO_REMOTE;
-	}
-	int n = old->len;
-	size_t esz = sizeof(old->v[0]);
+	int nlen = new_merged_size(om, t);
+	int olen = vector_len(&om->hdr);
+	int nidx = 0;
+	int oidx = 0;
+	CRBNode *n = c_rbtree_first(t);
 
-	struct address *a = old->v[idx];
-	struct address_map *m = malloc(sizeof(*m) + (n - 1) * esz);
-	if (!m) {
-		return ERR_OOM;
-	}
+	struct addrmap *nm = edit_addrmap(objs, om, 0, nlen - olen);
 
-	// clean up the address record
-	rcu_collect(w, a, (rcu_free_fn)&free_address);
+	while (n != NULL || oidx < olen) {
+		int cmp = cmp_node_address(n, om, oidx);
+		if (cmp < 0) {
+			// only in new config
+			struct address *na = node_to_addr(n);
+			nm->v[nidx++] = na;
+			n = c_rbnode_next(n);
 
-	// copy the old map data across, removing the record
-	m->len = n - 1;
-	memcpy(m->v, old->v, idx * esz);
-	memcpy(m->v + idx, old->v + idx + 1, (n - idx - 1) * esz);
-	*pmap = m;
-	rcu_collect(w, old, &free);
+		} else if (cmp > 0) {
+			// only in old config, keep if in use, but reset the
+			// configuration to defaults
+			const struct address *oa = om->v[oidx];
 
-	return 0;
-}
+			// there has to be a reason why this address exists
+			assert(oa->in_config || oa->tx || oa->subs);
 
-static int compare_id(const void *key, const void *element)
-{
-	int id = (int)(uintptr_t)key;
-	const struct address *addr = *(struct address **)element;
-	return id - addr->owner_id;
-}
+			if (oa->in_config && !oa->tx && !oa->subs) {
+				// was in the config previously and not in use
+				rcu_on_commit(objs, &free_address, &oa->rcu);
 
-int find_unique_address(struct address_map *m, int id)
-{
-	return lower_bound((void *)(uintptr_t)id, m->v, m ? m->len : 0,
-			   sizeof(m->v[0]), &compare_id);
-}
+			} else if (oa->in_config) {
+				// was in the config previously and is in use,
+				// reset config to defaults
+				struct address *na = edit_address(objs, oa);
+				copy_config(na, NULL);
+				nm->v[nidx++] = na;
+			} else {
+				// was not in the config previously, leave as is
+				nm->v[nidx++] = oa;
+			}
+			oidx++;
+		} else {
+			// in old and new. Use the node address in the RCU
+			// vector, but copy all the non-config items over.
+			const struct address *oa = om->v[oidx];
+			struct address *na = node_to_addr(n);
 
-static int compare_name(const void *key, const void *element)
-{
-	slice_t k = *(slice_t *)key;
-	const struct address *addr = *(struct address **)element;
-	int dsz = k.len - addr->name.len;
-	return dsz ? dsz : memcmp(k.p, addr->name.p, k.len);
-}
+			struct address tmp;
+			copy_config(&tmp, na);
+			memcpy(na, oa, sizeof(*na));
+			copy_config(na, &tmp);
 
-int find_named_address(struct address_map *m, slice_t name)
-{
-	return lower_bound(&name, m->v, m ? m->len : 0, sizeof(m->v[0]),
-			   &compare_name);
-}
+			rcu_on_commit(objs, &free_address, &oa->rcu);
+			nm->v[nidx++] = na;
 
-size_t id_to_address(char *buf, int id)
-{
-	assert(id >= 0);
-	size_t pfxlen = strlen(UNIQ_ADDR_PREFIX);
-	memcpy(buf, UNIQ_ADDR_PREFIX, pfxlen);
-	char *p = buf + UNIQ_ADDR_MAXLEN;
-	do {
-		*(--p) = (id % 10) + '0';
-		id /= 10;
-	} while (id);
-	size_t n = buf + UNIQ_ADDR_MAXLEN - p;
-	memmove(buf + pfxlen, p, n);
-	return pfxlen + n;
-}
-
-int address_to_id(slice_t s)
-{
-	const char *p = s.p + strlen(UNIQ_ADDR_PREFIX);
-	int len = s.len - strlen(UNIQ_ADDR_PREFIX);
-	int id = 0;
-	for (int i = 0; i < len; i++) {
-		char start = (i || len == 1) ? '0' : '1';
-		if (p[i] < start || p[i] > '9' || id >= (INT_MAX / 10)) {
-			return -1;
+			oidx++;
+			n = c_rbnode_next(n);
 		}
-		id = (id * 10) | (p[i] - '0');
 	}
-	return id;
+	assert(nidx == nlen);
+	return nm;
 }

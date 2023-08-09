@@ -1,149 +1,142 @@
 #define _GNU_SOURCE
 #include "config.h"
-#include <sys/types.h>
-#include <dirent.h>
-#include <errno.h>
+#include "lib/log.h"
 #include <fcntl.h>
 #include <unistd.h>
-
-struct readbuf {
-	size_t off;
-	size_t have;
-	char buf[256];
-};
-
-static int get_line(struct readbuf *b, int fd, slice_t *pline)
-{
-	if (b->have == SIZE_MAX) {
-		return 1;
-	}
-	for (;;) {
-		slice_t rest;
-		slice_t in = make_slice(b->buf + b->off, b->have - b->off);
-		if (!split_slice(in, '\n', pline, &rest)) {
-			b->off = rest.p - b->buf;
-			return 0;
-		}
-
-		if (b->off == b->have) {
-			// overlong line
-			return -1;
-		}
-
-		// compress
-		if (b->off) {
-			memmove(b->buf, b->buf + b->off, b->have - b->off);
-			b->have -= b->off;
-			b->off = 0;
-		}
-
-		// and read some more
-		int r = read(fd, b->buf + b->have, sizeof(b->buf) - b->have);
-		if (r < 0 && errno == EINTR) {
-			continue;
-		} else if (r < 0) {
-			return -1;
-		} else if (r == 0 && in.len) {
-			// No trailing newline. Take the rest of the buffer as
-			// the line.
-			b->have = SIZE_MAX;
-			b->off = b->have;
-			*pline = in;
-			return 0;
-		} else if (r == 0) {
-			return 1;
-		}
-
-		// Have more data. Let's reparse
-		b->have += r;
-	}
-}
 
 static bool is_space(char ch)
 {
 	return ch == ' ' || ch == '\t' || ch == '\r';
 }
 
-static slice_t trim_left_space(slice_t s)
+static const char *trim_left_space(const char *b, const char *e)
 {
-	while (s.len && is_space(s.p[0])) {
-		s.p++;
-		s.len--;
+	while (b < e && is_space(b[0])) {
+		b++;
 	}
-	return s;
+	return b;
 }
 
-static slice_t trim_right_space(slice_t s)
+static const char *trim_right_space(const char *b, const char *e)
 {
-	while (s.len && is_space(s.p[s.len - 1])) {
-		s.len--;
+	while (b < e && is_space(e[-1])) {
+		e--;
 	}
-	return s;
+	return e;
 }
 
-static slice_t trim_space(slice_t s)
+static const char *trim_left_dots(const char *b, const char *e)
 {
-	return trim_left_space(trim_right_space(s));
-}
-
-struct config_item {
-	struct {
-		char len;
-		char p[255];
-	} section;
-};
-
-static int get_config_item(struct readbuf *b, int fd, struct config_item *ci)
-{
-}
-
-static int parse_config(struct bus *b, int fd, slice_t name)
-{
-	struct readbuf buf;
-	buf.have = 0;
-	buf.off = 0;
-}
-
-int load_config(struct bus *b, const char *dir)
-{
-	int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-	if (dfd < 0) {
-		start_error("failed to open config directory", errno);
-		log_cstring("dir", dir);
-		finish_log();
-		return -1;
+	while (b < e && *b == '.') {
+		b++;
 	}
+	return b;
+}
 
-	DIR *d = fdopendir(dfd);
-	if (!d) {
-		close(dfd);
-		return -1;
+static const char *trim_right_dots(const char *b, const char *e)
+{
+	while (b < e && e[-1] == '.') {
+		e--;
 	}
+	return e;
+}
 
-	int err = 0;
-	struct dirent *e;
-	while (!err && (e = readdir(d)) != NULL) {
-		if (e->d_name[0] == '.' || e->d_type == DT_DIR) {
-			continue;
+static const char *find_line(const char *p, const char *e, const char **pnl)
+{
+	while (p < e) {
+		switch (*p++) {
+		case '\n':
+			*pnl = p - 1;
+			return p;
+		case ';':
+		case '#':
+			*pnl = p - 1;
+			const char *nl = memchr(p, '\n', e - p);
+			return nl ? (nl + 1) : e;
+		case '\0':
+			return NULL;
 		}
-		slice_t fn = cstr_slice(e->d_name);
-		if (!slice_has_suffix(fn, S(".service"))) {
-			continue;
-		}
-		slice_t name = make_slice(fn.p, fn.len - strlen(".service"));
-		int fd = openat(dfd, fn.p, O_RDONLY | O_CLOEXEC);
-		if (fd < 0) {
-			start_error("failed to open config file", errno);
-			log_cstring("dir", dir);
-			log_nstring("file", S_PRI(fn));
-			finish_log();
-			continue;
+	}
+	*pnl = e;
+	return p;
+}
+
+void init_ini(struct ini_reader *p, const char *data, size_t sz)
+{
+	p->data = data;
+	p->end = data + sz;
+	p->lineno = 0;
+	p->section = NULL;
+	p->seclen = 0;
+}
+
+int read_ini(struct ini_reader *p, char *key, char *val)
+{
+	while (p->data < p->end) {
+		const char *e;
+		const char *s = p->data;
+		p->data = find_line(s, p->end, &e);
+		if (!p->data) {
+			return INI_ERROR;
 		}
 
-		err = parse_config(b, fd, name);
-		close(fd);
+		p->lineno++;
+		s = trim_left_space(s, e);
+		e = trim_right_space(s, e);
+
+		if (s == e) {
+			continue;
+		} else if (*s == '[') {
+			const char *close = memchr(s, ']', e - s);
+			if (!close) {
+				return INI_ERROR;
+			}
+			s++;
+			e = close;
+			s = trim_left_space(s, e);
+			e = trim_right_space(s, e);
+			s = trim_left_dots(s, e);
+			e = trim_right_dots(s, e);
+			p->seclen = 0;
+			size_t n = e - s;
+			if (n == 0 || n > INI_BUFLEN - 16) {
+				return INI_ERROR;
+			}
+			p->section = s;
+			p->seclen = n;
+			continue;
+		} else {
+			const char *equals = memchr(s, '=', e - s);
+			if (!equals) {
+				return INI_ERROR;
+			}
+			const char *ks = s;
+			const char *ke = trim_right_space(ks, equals);
+			size_t kn = ke - ks;
+			const char *vs = trim_left_space(equals + 1, e);
+			const char *ve = e;
+			size_t vn = ve - vs;
+			if (!kn || p->seclen + 1 + kn + 1 > INI_BUFLEN ||
+			    vn + 1 > INI_BUFLEN) {
+				return INI_ERROR;
+			}
+
+			if (p->seclen) {
+				memcpy(key, p->section, p->seclen);
+				key[p->seclen] = '.';
+				memcpy(key + p->seclen + 1, ks, kn);
+				key[p->seclen + 1 + kn] = 0;
+			} else {
+				memcpy(key, ks, kn);
+				key[kn] = 0;
+			}
+
+			memcpy(val, vs, vn);
+			val[vn] = 0;
+
+			return INI_OK;
+		}
 	}
 
-	closedir(d);
-	return err;
+	return INI_EOF;
 }

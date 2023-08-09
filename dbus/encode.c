@@ -131,20 +131,24 @@ void _append8(struct builder *b, uint64_t u, char type)
 	}
 }
 
-void _append_string(struct builder *b, slice_t str, char type)
+int _append_string(struct builder *b, const char *str, size_t len, char type)
 {
 	uint32_t lenoff = align4(b->base, b->next);
 	uint32_t stroff = lenoff + 4;
-	uint32_t nuloff = stroff + str.len;
+	uint32_t nuloff = stroff + len;
 	b->next = nuloff + 1;
-	if (*b->sig != type || str.len > DBUS_MAX_VALUE_SIZE) {
+	if (*b->sig != type || len > DBUS_MAX_VALUE_SIZE) {
 		b->next = b->end + 1;
+		return -1;
 	} else if (b->next <= b->end) {
-		uint32_t len32 = str.len;
+		uint32_t len32 = len;
 		memcpy(b->base + lenoff, &len32, 4);
-		memcpy(b->base + stroff, str.p, str.len);
+		memcpy(b->base + stroff, str, len);
 		b->base[nuloff] = 0;
 		b->sig++;
+		return 0;
+	} else {
+		return -1;
 	}
 }
 
@@ -230,7 +234,7 @@ void append_variant(struct builder *b, const struct variant *v)
 		break;
 	case TYPE_STRING:
 	case TYPE_PATH:
-		_append_string(b, v->u.str, type);
+		_append_string(b, v->u.str.p, v->u.str.len, type);
 		break;
 	case TYPE_SIGNATURE:
 		append_signature(b, v->u.sig);
@@ -409,9 +413,11 @@ void append_multiv(struct builder *b, const char *sig, va_list ap)
 			append_double(b, va_arg(ap, double));
 			break;
 		case TYPE_PATH:
-		case TYPE_STRING:
-			_append_string(b, va_arg(ap, slice_t), type);
+		case TYPE_STRING: {
+			const char *str = va_arg(ap, const char *);
+			_append_string(b, str, strlen(str), type);
 			break;
+		}
 		case TYPE_SIGNATURE:
 			append_signature(b, va_arg(ap, const char *));
 			break;
@@ -489,20 +495,19 @@ static void append_uint32_field(struct builder *b, uint32_t tag, uint32_t v)
 	}
 }
 
-static void append_string_field(struct builder *b, uint32_t tag, slice_t str)
+static void append_string_field(struct builder *b, uint32_t tag,
+				const str8_t *str)
 {
 	align_buffer_8(b);
 	uint32_t tagoff = b->next;
 	uint32_t lenoff = tagoff + 4;
 	uint32_t stroff = lenoff + 4;
-	uint32_t nuloff = stroff + str.len;
-	b->next = nuloff + 1;
+	b->next = stroff + str->len + 1;
 	if (b->next <= b->end) {
-		uint32_t len32 = str.len;
+		uint32_t len32 = str->len;
 		write_little_4(b->base + tagoff, tag);
 		memcpy(b->base + lenoff, &len32, 4);
-		memcpy(b->base + stroff, str.p, str.len);
-		b->base[nuloff] = 0;
+		memcpy(b->base + stroff, str->p, str->len + 1);
 	}
 }
 
@@ -587,22 +592,22 @@ static int append_header(struct builder *b, const struct message *m,
 	if (*m->signature) {
 		append_signature_field(b, FTAG_SIGNATURE, m->signature);
 	}
-	if (m->path.len) {
+	if (m->path) {
 		append_string_field(b, FTAG_PATH, m->path);
 	}
-	if (m->interface.len) {
+	if (m->interface) {
 		append_string_field(b, FTAG_INTERFACE, m->interface);
 	}
-	if (m->member.len) {
+	if (m->member) {
 		append_string_field(b, FTAG_MEMBER, m->member);
 	}
-	if (m->error.len) {
+	if (m->error) {
 		append_string_field(b, FTAG_ERROR_NAME, m->error);
 	}
-	if (m->destination.len) {
+	if (m->destination) {
 		append_string_field(b, FTAG_DESTINATION, m->destination);
 	}
-	if (m->sender.len) {
+	if (m->sender) {
 		append_string_field(b, FTAG_SENDER, m->sender);
 	}
 

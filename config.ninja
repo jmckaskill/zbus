@@ -1,7 +1,7 @@
 cc = musl-gcc
 ld = musl-gcc
 ar = ar rcs
-cflags = -Wstrict-prototypes -fcallgraph-info=su -fdiagnostics-color -g -Wall -Werror -I. $
+cflags = -Wstrict-prototypes -fstack-usage -fcallgraph-info=su -fdiagnostics-color -g -Wall -Werror -I. $
  -Ivendor/c-stdaux-1.4.0/src
 
 ldflags =  -fdiagnostics-color -g -Wall -Werror

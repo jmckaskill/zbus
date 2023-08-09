@@ -1,9 +1,9 @@
 #define _GNU_SOURCE
 #include "client.h"
-#include "lib/encode.h"
-#include "lib/decode.h"
-#include "lib/stream.h"
-#include "dmem/log.h"
+#include "dbus/encode.h"
+#include "dbus/decode.h"
+#include "dbus/stream.h"
+#include "lib/log.h"
 #include <getopt.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -26,13 +26,13 @@ static int on_list_names(void *udata, struct client *c, struct message *m,
 {
 	unregister_cb(c, m->reply_serial);
 
-	if (m->error.len) {
-		ERROR("ListNames,error:%.*s", S_PRI(m->error));
+	if (m->error) {
+		ERROR("ListNames,error:%s", m->error->p);
 	} else {
 		struct array_data ad = parse_array(ii);
 		while (array_has_more(ii, &ad)) {
-			slice_t str = parse_string(ii);
-			VERBOSE("ListName,name:%.*s", S_PRI(str));
+			const str8_t *str = parse_string8(ii);
+			VERBOSE("ListName,name:%s", str->p);
 		}
 	}
 	must(iter_error(ii), "parse ListNames reply");
@@ -45,17 +45,18 @@ static int on_test_signal(void *udata, struct client *c, struct message *m,
 	const char *match = udata;
 	switch (m->type) {
 	case MSG_REPLY:
-		NOTICE("TestSignal registered,match:%s", match);
+		LOG("TestSignal registered,match:%s", match);
 		break;
 	case MSG_ERROR:
-		ERROR("failed to register TestSignal,error:%.*s,match:%s",
-		      S_PRI(m->error), match);
+		ERROR("failed to register TestSignal,error:%s,match:%s",
+		      m->error->p, match);
 		break;
 	case MSG_SIGNAL: {
 		uint32_t u = parse_uint32(ii);
-		slice_t str = parse_string(ii);
-		NOTICE("recv TestSignal,number:%u,string:%.*s,match:%s", u,
-		       S_PRI(str), match);
+		size_t sz;
+		const char *str = parse_string(ii, &sz);
+		LOG("recv TestSignal,number:%u,string:%.*s,match:%s", u,
+		    (int)sz, str, match);
 		break;
 	}
 	}
@@ -67,14 +68,15 @@ static int on_test_method(void *, struct client *c, struct message *m,
 {
 	unregister_cb(c, m->reply_serial);
 
-	if (m->error.len) {
-		ERROR("TestMethod,error:%.*s", S_PRI(m->error));
+	if (m->error) {
+		ERROR("TestMethod,error:%s", m->error->p);
 	} else {
 		uint32_t u = parse_uint32(ii);
-		slice_t str = parse_string(ii);
+		size_t sz;
+		const char *str = parse_string(ii, &sz);
 		int err = iter_error(ii);
-		NOTICE("TestMethod reply,number:%u,string:%.*s,parse:%d", u,
-		       S_PRI(str), err);
+		LOG("TestMethod reply,number:%u,string:%.*s,parse:%d", u,
+		    (int)sz, str, err);
 	}
 
 	return 0;
@@ -85,10 +87,10 @@ static int on_autostart(void *, struct client *c, struct message *m,
 {
 	unregister_cb(c, m->reply_serial);
 
-	if (m->error.len) {
-		ERROR("Autostart,error:%.*s", S_PRI(m->error));
+	if (m->error) {
+		ERROR("Autostart,error:%.*s", S_PRI(*m->error));
 	} else {
-		NOTICE("autostart hello");
+		LOG("autostart hello");
 	}
 
 	return 0;
@@ -102,36 +104,36 @@ static int run_client(void *udata)
 
 	uint32_t list_names = register_cb(c, &on_list_names, NULL);
 	must(!list_names, "register ListNames");
-	must(call_bus_method(c, list_names, S("ListNames"), ""),
+	must(call_bus_method(c, list_names, S8("\011ListNames"), ""),
 	     "send ListNames");
 
-	slice_t ucast = S("sender='com.example.Service',"
-			  "interface='com.example.Service',"
-			  "member='TestSignal'");
-	uint32_t test_signal = register_cb(c, &on_test_signal, (void *)ucast.p);
+	const char *ucast = "sender='com.example.Service',"
+			    "interface='com.example.Service',"
+			    "member='TestSignal'";
+	uint32_t test_signal = register_cb(c, &on_test_signal, (void *)ucast);
 	must(!test_signal, "register TestSignal");
-	must(call_bus_method(c, test_signal, S("AddMatch"), "s", ucast),
+	must(call_bus_method(c, test_signal, S8("\010AddMatch"), "s", ucast),
 	     "send AddMatch");
 
-	slice_t bcast = S("interface='com.example.Service',"
-			  "member='TestSignal2'");
-	uint32_t test_signal2 =
-		register_cb(c, &on_test_signal, (void *)bcast.p);
+	const char *bcast = "interface='com.example.Service',"
+			    "member='TestSignal2'";
+	uint32_t test_signal2 = register_cb(c, &on_test_signal, (void *)bcast);
 	must(!test_signal2, "register TestSignal");
-	must(call_bus_method(c, test_signal2, S("AddMatch"), "s", bcast),
+	must(call_bus_method(c, test_signal2, S8("\010AddMatch"), "s", bcast),
 	     "send AddMatch");
 
 	uint32_t test_method = register_cb(c, &on_test_method, NULL);
 	must(!test_method, "register TestMethod");
-	must(call_method(c, test_method, S("com.example.Service"), S("/"),
-			 S("com.example.Service"), S("TestMethod"), "us", 0,
-			 S("TestString")),
+	must(call_method(c, test_method, S8("\023com.example.Service"),
+			 S8("\001/"), S8("\023com.example.Service"),
+			 S8("\012TestMethod"), "us", 0, "TestString"),
 	     "send TestMethod");
 
 	uint32_t test_autostart = register_cb(c, &on_autostart, NULL);
 	must(!test_autostart, "register autostart");
-	must(call_method(c, test_autostart, S("com.example.Autostart"), S("/"),
-			 S("com.example.Service"), S("Hello"), ""),
+	must(call_method(c, test_autostart, S8("\025com.example.Autostart"),
+			 S8("\001/"), S8("\023com.example.Service"),
+			 S8("\005Hello"), ""),
 	     "send autostart");
 
 	struct message m;
@@ -153,8 +155,8 @@ static int on_request_name(void *, struct client *c, struct message *m,
 {
 	unregister_cb(c, m->reply_serial);
 
-	if (m->error.len) {
-		FATAL("RequestName failed,error:%.*s", S_PRI(m->error));
+	if (m->error) {
+		FATAL("RequestName failed,error:%.*s", S_PRI(*m->error));
 	} else {
 		int errcode = parse_uint32(ii);
 		if (errcode != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
@@ -169,8 +171,8 @@ static struct client *start_server(const char *sockpn)
 	struct client *c = open_client(sockpn);
 
 	uint32_t request_name = register_cb(c, &on_request_name, NULL);
-	must(call_bus_method(c, request_name, S("RequestName"), "su",
-			     S("com.example.Service"), (uint32_t)0),
+	must(call_bus_method(c, request_name, S8("\013RequestName"), "su",
+			     "com.example.Service", (uint32_t)0),
 	     "send RequestName");
 
 	for (;;) {
@@ -189,20 +191,22 @@ static struct client *start_server(const char *sockpn)
 static void server_message(struct client *c, const struct message *m,
 			   struct iterator *ii)
 {
-	if (slice_eq(m->member, S("TestMethod"))) {
+	if (str8eq(m->member, S8("\012TestMethod"))) {
 		uint32_t u = parse_uint32(ii);
-		slice_t str = parse_string(ii);
-		NOTICE("server TestMethod,number:%d,string:%.*s", u,
-		       S_PRI(str));
-		int err = send_reply(c, m, "us", u + 1, S("response"));
+		size_t sz;
+		const char *str = parse_string(ii, &sz);
+		LOG("server TestMethod,number:%d,string:%.*s", u, (int)sz, str);
+		int err = send_reply(c, m, "us", u + 1, "response");
 		must(err, "send TestMethod reply");
 
-		err = send_signal(c, S("/"), S("com.example.Service"),
-				  S("TestSignal"), "su", S("TestString"), 14);
+		err = send_signal(c, S8("\001/"), S8("\023com.example.Service"),
+				  S8("\012TestSignal"), "su", "TestString", 14);
 		must(err, "send TestSignal");
 
-		err = send_signal(c, S("/path"), S("com.example.Service"),
-				  S("TestSignal2"), "su", S("TestString2"), 15);
+		err = send_signal(c, S8("\005/path"),
+				  S8("\023com.example.Service"),
+				  S8("\013TestSignal2"), "su", "TestString2",
+				  15);
 		must(err, "send TestSignal2");
 	}
 }
@@ -225,10 +229,10 @@ int main(int argc, char *argv[])
 			readypn = optarg;
 			break;
 		case 'q':
-			log_quiet_flag = 1;
+			g_log_level = LOG_WARNING;
 			break;
 		case 'v':
-			log_verbose_flag = 1;
+			g_log_level = LOG_VERBOSE;
 			break;
 		case 'h':
 		case '?':
@@ -247,13 +251,13 @@ int main(int argc, char *argv[])
 	VERBOSE("startup");
 
 	if (readypn != NULL) {
-		NOTICE("waiting for server ready,fifopn:%s", readypn);
+		LOG("waiting for server ready,fifopn:%s", readypn);
 		int rfd = open(readypn, O_RDONLY);
 		must(rfd < 0, "open ready fifo");
 		close(rfd);
 	}
 
-	NOTICE("opening dbus socket,path:%s", sockpn);
+	LOG("opening dbus socket,path:%s", sockpn);
 
 	struct client *c = start_server(sockpn);
 	(void)c;
@@ -267,8 +271,8 @@ int main(int argc, char *argv[])
 	struct message m;
 	struct iterator ii;
 	while (!read_message(c, &m, &ii)) {
-		if (m.type == MSG_METHOD &&
-		    slice_eq(m.interface, S("com.example.Service"))) {
+		if (m.type == MSG_METHOD && m.interface &&
+		    str8eq(m.interface, S8("\023com.example.Service"))) {
 			server_message(c, &m, &ii);
 		}
 	}

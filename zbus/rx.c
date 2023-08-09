@@ -5,12 +5,13 @@
 #include "addr.h"
 #include "busmsg.h"
 #include "dispatch.h"
-#include "lib/stream.h"
-#include "lib/encode.h"
-#include "lib/decode.h"
-#include "lib/auth.h"
-#include "lib/log.h"
-#include "dmem/common.h"
+#include "txmap.h"
+#include "dbus/stream.h"
+#include "dbus/encode.h"
+#include "dbus/decode.h"
+#include "dbus/auth.h"
+#include "lib/logmsg.h"
+#include "lib/algo.h"
 #include <sys/socket.h>
 #include <unistd.h>
 #include <poll.h>
@@ -19,17 +20,13 @@
 
 struct rx *new_rx(struct bus *bus, struct tx *tx, int fd)
 {
-	struct rx *r = malloc(sizeof(*r));
-	if (r) {
-		r->bus = bus;
-		r->tx = tx;
-		r->names = NULL;
-		circ_clear(&r->owned);
-		circ_clear(&r->subs);
-		r->fd = fd;
-		r->addr.len = id_to_address(r->addr.p, rxid(r));
-		ref_tx(tx);
-	}
+	struct rx *r = fmalloc(sizeof(*r) + UNIQ_ADDR_BUFLEN);
+	memset(r, 0, sizeof(*r));
+	r->bus = bus;
+	r->tx = tx;
+	ref_tx(tx);
+	r->fd = fd;
+	r->addr.len = id_to_address(r->addr.p, tx->id);
 	return r;
 }
 
@@ -39,6 +36,9 @@ void free_rx(struct rx *r)
 		shutdown(r->fd, SHUT_RD);
 		// deref_tx may close the fd so do this last
 		deref_tx(r->tx);
+		assert(!r->names);
+		assert(!r->subs);
+		assert(!r->reader);
 		free(r);
 	}
 }
@@ -96,7 +96,7 @@ static int send_all(int fd, const char *p, size_t sz)
 			}
 			continue;
 		} else if (n <= 0) {
-			ERROR("send,errno:%m");
+			ERROR("send,errno:%m,fd:%d", fd);
 			return -1;
 		} else {
 			p += n;
@@ -109,26 +109,27 @@ static int send_all(int fd, const char *p, size_t sz)
 
 static int authenticate(struct rx *r)
 {
-	slice_t busid = to_slice(r->bus->busid);
 	uint32_t serial;
 	int state = 0;
 	size_t insz = 0;
-	char ib[256];
-	char ob[64];
+	char inbuf[256];
+	char outbuf[64];
 
 	for (;;) {
-		int n = recv_one(r->fd, ib + insz, sizeof(ib) - insz, NULL, 0);
+		int n = recv_one(r->fd, inbuf + insz, sizeof(inbuf) - insz,
+				 NULL, 0);
 		if (n < 0) {
 			return -1;
 		}
 		insz += n;
 
-		size_t outsz = sizeof(ob);
-		slice_t in = make_slice(ib, insz);
-		int err = step_server_auth(&state, &in, ob, &outsz, busid,
+		char *in = inbuf;
+		char *out = outbuf;
+		int err = step_server_auth(&state, &in, insz, &out,
+					   sizeof(outbuf), r->bus->busid.p,
 					   &serial);
 
-		if (send_all(r->fd, ob, outsz)) {
+		if (send_all(r->fd, outbuf, out - outbuf)) {
 			return -1;
 		}
 
@@ -139,29 +140,16 @@ static int authenticate(struct rx *r)
 		}
 
 		// compact any remaining input data
-		memmove(ib, in.p, in.len);
-		insz = in.len;
+		n = inbuf + insz - in;
+		memmove(inbuf, in, n);
+		insz = n;
 	}
 
+	// register_remote will send the Hello reply
 	mtx_lock(&r->bus->lk);
-	int err = register_remote(r->bus, rxid(r), to_slice(r->addr), r->tx,
-				  &r->owned, &r->names);
+	int err = register_remote(r->bus, r, &r->addr, serial, &r->reader);
 	mtx_unlock(&r->bus->lk);
-
-	if (err) {
-		return err;
-	}
-
-	struct message m;
-	init_message(&m, MSG_REPLY, NO_REPLY_SERIAL);
-	m.signature = "s";
-	m.reply_serial = serial;
-
-	struct builder b = start_message(ib, sizeof(ib), &m);
-	append_string(&b, to_slice(r->addr));
-	int n = end_message(b);
-
-	return n < 0 || send_all(r->fd, ib, n);
+	return err;
 }
 
 static void unregister_with_bus(struct rx *r)
@@ -169,17 +157,19 @@ static void unregister_with_bus(struct rx *r)
 	mtx_lock(&r->bus->lk);
 	rm_all_names_locked(r);
 	rm_all_matches_locked(r);
-	unregister_remote(r->bus, rxid(r));
+	unregister_remote(r->bus, r, &r->addr, r->reader);
+	r->reader = NULL;
 	mtx_unlock(&r->bus->lk);
+
+	close_tx(r->tx);
 }
 
 static int read_message(struct rx *r, struct msg_stream *s)
 {
-	struct message m;
-	struct rope r1, r2;
+	struct tx_msg m;
 
 	for (;;) {
-		int sts = stream_next(s, &m, &r1.data, &r2.data);
+		int sts = stream_next(s, &m.m);
 		if (sts == STREAM_ERROR) {
 			return -1;
 		} else if (sts == STREAM_OK) {
@@ -195,55 +185,91 @@ static int read_message(struct rx *r, struct msg_stream *s)
 		s->have += n;
 	}
 
+	m.m.sender = &r->addr;
+	m.hdr.buf = NULL;
+	m.hdr.len = 0;
+	stream_body(s, &m.body[0].buf, &m.body[0].len, &m.body[1].buf,
+		    &m.body[1].len);
+
 	struct logbuf lb;
 	if (start_debug(&lb, "read")) {
 		log_int(&lb, "fd", r->fd);
-		log_message(&lb, &m);
-		log_bytes(&lb, "body", r1.data.p, r1.data.len);
-		if (r2.data.len) {
-			log_bytes(&lb, "body2", r2.data.p, r2.data.len);
+		log_message(&lb, &m.m);
+		if (m.body[0].len) {
+			log_bytes(&lb, "body", m.body[0].buf, m.body[0].len);
+		}
+		if (m.body[1].len) {
+			log_bytes(&lb, "body1", m.body[1].buf, m.body[1].len);
 		}
 		finish_log(&lb);
 	}
 
-	if (m.type == MSG_METHOD && slice_eq(m.destination, BUS_DESTINATION)) {
-		defragment_body(s, &r1.data, &r2.data);
+	switch (m.m.type) {
+	case MSG_METHOD: {
+		int err;
+		struct iterator ii;
+		if (!m.m.destination) {
+			err = peer_method(r, &m.m);
+		} else if (!str8eq(m.m.destination, BUS_DESTINATION)) {
+			err = unicast(r, &m);
+		} else if (defragment_body(s, &m.m, &ii)) {
+			err = ERR_OOM;
+		} else {
+			err = bus_method(r, &m.m, &ii);
+		}
+
+		if (err && !(m.m.flags & FLAG_NO_REPLY_EXPECTED)) {
+			reply_error(r, m.m.serial, err);
+		}
+		break;
+	}
+	case MSG_SIGNAL:
+		// ignore errors
+		if (m.m.destination) {
+			unicast(r, &m);
+		} else {
+			broadcast(r, &m);
+		}
+		break;
+	case MSG_REPLY:
+	case MSG_ERROR:
+		if (!build_reply(r, &m)) {
+			// ignore errors
+			route_reply(r->tx, &m);
+		}
+		break;
+	default:
+		// drop everything else
+		break;
 	}
 
-	r1.next = r2.data.len ? &r2 : NULL;
-	r2.next = NULL;
-
-	return dispatch(r, &m, &r1);
+	return 0;
 }
 
 // doubles as the size of the complete buffer
-#define MAX_MSG_LEN (128 * 1024)
+#define MSG_LEN (128 * 1024)
 
 // Size of the defragment buffer. Headers and bus message bodies must be smaller
 // than this as they need to be defragmented to process.
-#define MAX_DEFRAG_LEN (1024)
+#define DEFRAG_LEN (1024)
 
 int rx_thread(void *udata)
 {
 	struct rx *r = udata;
 
-	set_thread_name(to_slice(r->addr));
+	set_thread_name(r->addr.p);
 
 	if (authenticate(r)) {
 		goto free_rx;
 	}
 
-	struct msg_stream *s =
-		malloc(sizeof(*s) + MAX_MSG_LEN + MAX_DEFRAG_LEN);
-	if (set_non_blocking(r->fd) || !s) {
-		goto free_buffers;
-	}
-	init_msg_stream(s, MAX_MSG_LEN, MAX_DEFRAG_LEN);
+	struct msg_stream *s = fmalloc(sizeof(*s) + MSG_LEN + DEFRAG_LEN);
+	must_set_non_blocking(r->fd);
+	init_msg_stream(s, MSG_LEN, DEFRAG_LEN);
 
 	while (!read_message(r, s)) {
 	}
 
-free_buffers:
 	free(s);
 	unregister_with_bus(r);
 free_rx:

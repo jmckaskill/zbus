@@ -21,8 +21,9 @@ static void append_int16(struct builder *b, int16_t v);
 static void append_uint64(struct builder *b, uint64_t v);
 static void append_int64(struct builder *b, int64_t v);
 static void append_double(struct builder *b, double v);
-static void append_string(struct builder *b, slice_t v);
-static void append_path(struct builder *b, slice_t v);
+static void append_string(struct builder *b, const char *v, size_t len);
+static int append_string8(struct builder *b, const str8_t *v);
+static void append_path(struct builder *b, const char *v, size_t len);
 static void append_signature(struct builder *b, const char *sig);
 extern void append_multiv(struct builder *b, const char *sig, va_list ap);
 extern void append_multi(struct builder *b, const char *sig, ...);
@@ -95,6 +96,11 @@ static inline int builder_error(struct builder b)
 	return (intptr_t)((uintptr_t)b.next - (uintptr_t)b.end) > 0;
 }
 
+static inline void builder_set_error(struct builder *b)
+{
+	b->next = b->end + 1;
+}
+
 static inline void append_bool(struct builder *b, bool v)
 {
 	_append4(b, v ? 1 : 0, TYPE_UINT32);
@@ -155,16 +161,22 @@ static inline void append_double(struct builder *b, double v)
 	_append8(b, u.u, TYPE_DOUBLE);
 }
 
-extern void _append_string(struct builder *b, slice_t str, char type);
+extern int _append_string(struct builder *b, const char *str, size_t len,
+			  char type);
 
-static inline void append_path(struct builder *b, slice_t str)
+static inline void append_path(struct builder *b, const char *str, size_t len)
 {
-	_append_string(b, str, TYPE_PATH);
+	_append_string(b, str, len, TYPE_PATH);
 }
 
-static inline void append_string(struct builder *b, slice_t str)
+static inline void append_string(struct builder *b, const char *str, size_t len)
 {
-	_append_string(b, str, TYPE_STRING);
+	_append_string(b, str, len, TYPE_STRING);
+}
+
+static inline int append_string8(struct builder *b, const str8_t *str)
+{
+	return _append_string(b, str->p, str->len, TYPE_STRING);
 }
 
 extern void _append_signature(struct builder *b, const char *sig, char type);

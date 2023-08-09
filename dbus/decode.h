@@ -6,8 +6,8 @@
 /////////////////////
 // raw data decoding
 
-static void init_iterator(struct iterator *ii, const char *sig,
-			  const char *data, size_t sz);
+static void init_iterator(struct iterator *ii, const char *sig, char *data,
+			  size_t sz);
 
 static int iter_error(struct iterator *p);
 
@@ -20,23 +20,15 @@ extern int32_t parse_int32(struct iterator *p);
 extern uint32_t parse_uint32(struct iterator *p);
 extern int64_t parse_int64(struct iterator *p);
 extern uint64_t parse_uint64(struct iterator *p);
-extern slice_t parse_string(struct iterator *p);
-extern slice_t parse_path(struct iterator *p);
+extern char *parse_string(struct iterator *p, size_t *psz);
+extern char *parse_path(struct iterator *p, size_t *psz);
+extern const str8_t *parse_string8(struct iterator *p);
 extern const char *parse_signature(struct iterator *p);
 extern struct variant parse_variant(struct iterator *p);
 extern void parse_struct_begin(struct iterator *p);
 extern void parse_struct_end(struct iterator *p);
 extern void parse_dict_begin(struct iterator *p);
 extern void parse_dict_end(struct iterator *p);
-
-extern int check_string(slice_t s);
-extern int check_path(slice_t s);
-extern int check_member(slice_t s);
-extern int check_interface(slice_t s);
-extern int check_address(slice_t s);
-extern int check_unique_address(slice_t s);
-static int check_error_name(slice_t s);
-static int check_known_address(slice_t s);
 
 extern struct array_data parse_array(struct iterator *p);
 extern bool array_has_more(struct iterator *p, struct array_data *a);
@@ -59,18 +51,18 @@ extern void TEST_parse(void);
 // returns non-zero on invalid message header
 // returns zero on success and sets phdr and pbody to the header and body sizes
 // returns number of bytes in header or message
-int parse_message_size(const char *p, size_t *phdr, size_t *pbody);
+int parse_message_size(char *p, size_t *phdr, size_t *pbody);
 
 // buffer needs to be at least as long as the hdr size returned
 // by parse_message_size
 // returns non-zero on error
-int parse_header(struct message *msg, const char *p);
+int parse_header(struct message *msg, char *p);
 
 ////////////////////////////////////////
 // inline implementations
 
-static inline void init_iterator(struct iterator *ii, const char *sig,
-				 const char *p, size_t sz)
+static inline void init_iterator(struct iterator *ii, const char *sig, char *p,
+				 size_t sz)
 {
 	ii->base = p;
 	ii->next = 0;
@@ -81,16 +73,6 @@ static inline void init_iterator(struct iterator *ii, const char *sig,
 static inline int iter_error(struct iterator *p)
 {
 	return p->next > p->end;
-}
-
-static inline int check_error_name(slice_t p)
-{
-	return check_interface(p);
-}
-
-static inline int check_known_address(slice_t p)
-{
-	return check_interface(p);
 }
 
 static inline bool is_signature(const char *sig, const char *test)

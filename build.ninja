@@ -20,31 +20,28 @@ rule ar
         command = rm -f $out && $ar $out $in
         description = AR $out
 
-# dmem
-build obj/dmem/vector.o: cc dmem/vector.c
-build obj/dmem/log.o: cc dmem/log.c
-build obj/dmem.a: ar $
-        obj/dmem/vector.o $
-        obj/dmem/log.o $
+# vendor
+build obj/vendor/c-rbtree.o: cc vendor/c-rbtree-3.1.0/src/c-rbtree.c
+
+# dbus
+build obj/dbus/auth.o: cc dbus/auth.c
+build obj/dbus/decode.o: cc dbus/decode.c
+build obj/dbus/encode.o: cc dbus/encode.c
+build obj/dbus/match.o: cc dbus/match.c
+build obj/dbus/stream.o: cc dbus/stream.c
+
+build obj/dbus.a: ar $
+        obj/dbus/auth.o $
+        obj/dbus/decode.o $
+        obj/dbus/encode.o $
+        obj/dbus/match.o $
+        obj/dbus/stream.o $
 
 # lib
 
-build obj/lib/auth.o: cc lib/auth.c
-build obj/lib/decode.o: cc lib/decode.c
-build obj/lib/encode.o: cc lib/encode.c
 build obj/lib/log.o: cc lib/log.c
-build obj/lib/match.o: cc lib/match.c
-build obj/lib/slice.o: cc lib/slice.c
-build obj/lib/stream.o: cc lib/stream.c
-
-build obj/lib.a: ar $
-        obj/lib/auth.o $
-        obj/lib/decode.o $
-        obj/lib/encode.o $
-        obj/lib/log.o $
-        obj/lib/match.o $
-        obj/lib/slice.o $
-        obj/lib/stream.o $
+build obj/lib/logmsg.o: cc lib/logmsg.c
+build obj/lib/sys.o: cc lib/sys.c
 
 # tester
 
@@ -54,14 +51,14 @@ build obj/tester/tester.o: cc tester/tester.c
 build bin/tester: ld $
         obj/tester/client.o $
         obj/tester/tester.o $
-        obj/dmem.a $
-        obj/lib.a $
+        obj/lib/log.o $
+        obj/lib/logmsg.o $
+        obj/dbus.a $
 
 
 build obj/zbus/addr.o:      cc zbus/addr.c
-build obj/zbus/algo.o:      cc zbus/algo.c
 build obj/zbus/bus.o:       cc zbus/bus.c
-build obj/zbus/busmsg.o:    cc zbus/busmsg.c
+build obj/zbus/busmsg.o: cc zbus/busmsg.c
 build obj/zbus/config.o: cc zbus/config.c
 build obj/zbus/dispatch.o:  cc zbus/dispatch.c
 build obj/zbus/rcu.o:       cc zbus/rcu.c
@@ -69,27 +66,40 @@ build obj/zbus/rx.o:        cc zbus/rx.c
 build obj/zbus/sub.o:       cc zbus/sub.c
 build obj/zbus/sys.o:       cc zbus/sys.c
 build obj/zbus/tx.o:        cc zbus/tx.c
+build obj/zbus/vector.o: cc zbus/vector.c
 build obj/zbus/zbus.o:      cc zbus/zbus.c
 
 build bin/zbus: ld $
         obj/zbus/addr.o $
-        obj/zbus/algo.o $
         obj/zbus/bus.o $
         obj/zbus/busmsg.o $
+        obj/zbus/config.o $
         obj/zbus/dispatch.o $
         obj/zbus/rcu.o $
         obj/zbus/rx.o $
         obj/zbus/sub.o $
         obj/zbus/sys.o $
         obj/zbus/tx.o $
+        obj/zbus/vector.o $
         obj/zbus/zbus.o $
-        obj/dmem.a $
-        obj/lib.a $
+        obj/vendor/c-rbtree.o $
+        obj/lib/log.o $
+        obj/lib/logmsg.o $
+        obj/lib/sys.o $
+        obj/dbus.a $
+
+build obj/gcc-ci-parser.o: cc gcc-ci-parser/gcc-ci-parser.c
+
+build bin/gcc-ci-parser: ld $
+        obj/gcc-ci-parser.o $
+        obj/lib/log.o $
+        obj/lib/sys.o $
+
 
 
 # default targets
 
-default bin/zbus bin/tester
+default bin/zbus bin/tester bin/gcc-ci-parser
 
 
 

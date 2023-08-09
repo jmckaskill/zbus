@@ -1,41 +1,39 @@
 #define _GNU_SOURCE
 #include "tx.h"
 #include "sys.h"
-#include "lib/encode.h"
+#include "dbus/encode.h"
+#include "lib/logmsg.h"
 #include "lib/log.h"
-#include "dmem/log.h"
 #include <unistd.h>
 #include <strings.h>
 #include <errno.h>
 #include <sys/socket.h>
 
-_Atomic(uint32_t) g_next_serial = 1;
-
-struct tx *new_tx(int fd)
+struct tx *new_tx(int fd, int id)
 {
-	struct tx *t = malloc(sizeof(*t));
-	if (!t) {
-		return NULL;
-	}
+	struct tx *t = fmalloc(sizeof(*t));
+	memset(t, 0, sizeof(*t));
 	if (mtx_init(&t->lk, mtx_plain) != thrd_success) {
 		goto do_free;
 	}
 	if (cnd_init(&t->send_cnd) != thrd_success) {
 		goto destroy_mutex;
 	}
-	if (cnd_init(&t->request_cnd) != thrd_success) {
+	if (cnd_init(&t->client.cnd) != thrd_success) {
 		goto destroy_send_cnd;
+	}
+	if (cnd_init(&t->server.cnd) != thrd_success) {
+		goto destroy_client_cnd;
 	}
 	atomic_store_explicit(&t->refcnt, 1, memory_order_relaxed);
 	t->fd = fd;
-	t->send_waiters = 0;
-	t->request_waiters = 0;
-	t->stalled = false;
-	t->request_available = (unsigned)-1;
-	for (int i = 0; i < MAX_REQUEST_NUM; i++) {
-	}
+	t->id = id;
+	t->client.avail = UINT32_MAX;
+	t->server.avail = UINT32_MAX;
 	return t;
 
+destroy_client_cnd:
+	cnd_destroy(&t->client.cnd);
 destroy_send_cnd:
 	cnd_destroy(&t->send_cnd);
 destroy_mutex:
@@ -51,85 +49,51 @@ void deref_tx(struct tx *t)
 					   memory_order_acq_rel) == 1) {
 		mtx_destroy(&t->lk);
 		cnd_destroy(&t->send_cnd);
-		close(t->fd);
+		cnd_destroy(&t->client.cnd);
+		cnd_destroy(&t->server.cnd);
 		free(t);
 	}
 }
 
-void ref_tx(struct tx *t)
-{
-	atomic_fetch_add_explicit(&t->refcnt, 1, memory_order_relaxed);
-}
+static void remove_requests_unlocked(struct tx *t, bool server);
 
-static int send_shutdown_locked(struct tx *t)
+void close_tx(struct tx *t)
 {
-	int err = shutdown(t->fd, SHUT_WR);
-	if (err) {
-		ERROR("shutdown,errno:%m");
-	}
+	mtx_lock(&t->lk);
 	t->shutdown = true;
+	t->closed = true;
 	if (t->send_waiters) {
 		cnd_broadcast(&t->send_cnd);
 	}
-	return err;
-}
-
-int send_shutdown(struct tx *t)
-{
-	mtx_lock(&t->lk);
-	int err = send_shutdown_locked(t);
 	mtx_unlock(&t->lk);
-	return err;
+	// TODO would be nicer to send error messages for the server requests
+	remove_requests_unlocked(t, true);
+	remove_requests_unlocked(t, false);
+	cnd_broadcast(&t->client.cnd);
+	cnd_broadcast(&t->server.cnd);
+	close(t->fd);
+	t->fd = -1;
 }
 
-size_t rope_size(struct rope *r)
+static int send_locked(struct tx *t, bool block, struct tx_msg *m)
 {
-	size_t ret = 0;
-	while (r) {
-		ret += r->data.len;
-		r = r->next;
-	}
-	return ret;
-}
+	assert(m->hdr.len);
 
-struct rope *rope_skip(struct rope *r, size_t len)
-{
-	while (len) {
-		if (len == r->data.len) {
-			return r->next;
-		} else if (len < r->data.len) {
-			r->data.p += len;
-			r->data.len -= len;
-			return r;
+	struct logbuf lb;
+	if (start_debug(&lb, "send")) {
+		log_int(&lb, "fd", t->fd);
+		if (m->hdr.len) {
+			log_bytes(&lb, "hdr", m->hdr.buf, m->hdr.len);
 		}
-		len -= r->data.len;
-		r = r->next;
+		if (m->body[0].len) {
+			log_bytes(&lb, "body0", m->body[0].buf, m->body[0].len);
+		}
+		if (m->body[1].len) {
+			log_bytes(&lb, "body1", m->body[1].buf, m->body[1].len);
+		}
+		finish_log(&lb);
 	}
-	return r;
-}
 
-const char *defrag_rope(char *buf, size_t bufsz, struct rope *r, size_t need)
-{
-	if (need > bufsz) {
-		return NULL;
-	} else if (!need) {
-		return buf;
-	} else if (need <= r->data.len) {
-		return r->data.p;
-	}
-	char *p = buf;
-	while (need > r->data.len) {
-		memcpy(p, r->data.p, r->data.len);
-		p += r->data.len;
-		need -= r->data.len;
-		r = r->next;
-	}
-	memcpy(p, r->data.p, need);
-	return buf;
-}
-
-static int send_locked(struct tx *t, bool block, struct rope *r)
-{
 	if (t->shutdown) {
 		return -1;
 	} else if (t->stalled && !block) {
@@ -152,61 +116,70 @@ static int send_locked(struct tx *t, bool block, struct rope *r)
 		}
 	}
 
-	while (r) {
-		int vn = 0;
+	for (;;) {
 		struct iovec v[3];
-		for (struct rope *q = r; q != NULL && vn < 3; q = q->next) {
-			v[vn].iov_base = (char *)q->data.p;
-			v[vn].iov_len = q->data.len;
-			vn++;
-		}
+		v[0].iov_base = m->hdr.buf;
+		v[0].iov_len = m->hdr.len;
+		v[1].iov_base = m->body[0].buf;
+		v[1].iov_len = m->body[0].len;
+		v[2].iov_base = m->body[1].buf;
+		v[2].iov_len = m->body[1].len;
 
-		struct msghdr m;
-		memset(&m, 0, sizeof(m));
-		m.msg_iov = v;
-		m.msg_iovlen = vn;
+		int total = m->hdr.len + m->body[0].len + m->body[1].len;
+		int num = (m->hdr.len ? 1 : 0) + (m->body[0].len ? 1 : 0) +
+			  (m->body[1].len ? 1 : 0);
+		assert(num);
 
-		int w = sendmsg(t->fd, &m, 0);
-		if (w < 0 && errno == EINTR) {
-			continue;
-		} else if (w < 0 && errno == EAGAIN) {
-			if (!block) {
-				ERROR("overrun on tx buffer");
-				goto shutdown;
-			}
+		struct msghdr msg;
+		memset(&msg, 0, sizeof(msg));
+		msg.msg_iov = v + (m->hdr.len ? 0 : (m->body[0].len ? 1 : 2));
+		msg.msg_iovlen = num;
 
-			t->stalled = true;
-			mtx_unlock(&t->lk);
-			int err = poll_one(t->fd, false, true);
-			mtx_lock(&t->lk);
-			t->stalled = false;
-
-			if (t->shutdown) {
-				return -1;
-			} else if (err) {
-				ERROR("poll,errno:%m");
-				goto shutdown;
-			}
-			continue;
+		int w = sendmsg(t->fd, &msg, 0);
+		if (w >= total) {
+			break;
 		} else if (w <= 0) {
-			ERROR("send,errno:%m");
-			goto shutdown;
-		} else {
-			struct logbuf lb;
-			if (start_debug(&lb, "send")) {
-				log_int(&lb, "fd", t->fd);
-				int n = w;
-				struct rope *p = r;
-				while (n > 0) {
-					slice_t s = p->data;
-					log_bytes(&lb, "data", s.p,
-						  (n < s.len) ? n : s.len);
-					n -= s.len;
+			switch (errno) {
+			case EINTR:
+				continue;
+			case EAGAIN: {
+				if (!block) {
+					ERROR("overrun on tx buffer");
+					goto shutdown;
 				}
-				finish_log(&lb);
+
+				t->stalled = true;
+				mtx_unlock(&t->lk);
+				int err = poll_one(t->fd, false, true);
+				mtx_lock(&t->lk);
+				t->stalled = false;
+
+				if (t->shutdown) {
+					return -1;
+				} else if (err) {
+					ERROR("poll,errno:%m,fd:%d", t->fd);
+					goto shutdown;
+				}
+				continue;
 			}
-			r = rope_skip(r, w);
-			continue;
+			default:
+				ERROR("send,errno:%m,fd:%d", t->fd);
+				goto shutdown;
+			}
+		} else if (w <= m->hdr.len) {
+			m->hdr.buf += w;
+			m->hdr.len -= w;
+		} else if (w <= m->hdr.len + m->body[0].len) {
+			w -= m->hdr.len;
+			m->hdr.len = 0;
+			m->body[0].buf += w;
+			m->body[0].len -= w;
+		} else {
+			w -= m->hdr.len + m->body[0].len;
+			m->hdr.len = 0;
+			m->body[0].len = 0;
+			m->body[1].buf += w;
+			m->body[1].len -= w;
 		}
 	}
 
@@ -217,157 +190,163 @@ static int send_locked(struct tx *t, bool block, struct rope *r)
 	return 0;
 
 shutdown:
-	send_shutdown_locked(t);
+	if (!t->shutdown) {
+		shutdown(t->fd, SHUT_WR);
+	}
 	return -1;
 }
 
-int send_rope(struct tx *t, bool block, struct rope *r)
+int send_message(struct tx *t, bool block, struct tx_msg *m)
 {
 	mtx_lock(&t->lk);
-	int err = send_locked(t, block, r);
+	int err = send_locked(t, block, m);
 	mtx_unlock(&t->lk);
 	return err;
 }
 
-int send_data(struct tx *t, bool block, const char *data, size_t sz)
+int send_data(struct tx *t, bool block, struct tx_msg *m, char *buf, int sz)
 {
-	struct rope rope;
-	rope.next = NULL;
-	rope.data = make_slice(data, sz);
-	mtx_lock(&t->lk);
-	int err = send_locked(t, block, &rope);
-	mtx_unlock(&t->lk);
-	return err;
-}
-
-int send_request(struct tx *c, struct tx *s, slice_t sender,
-		 const struct message *m, struct rope *body)
-{
-	// rewrite the header, updating and filtering fields
-	char buf[256];
-	struct message h;
-	init_message(&h, m->type, NO_REPLY_SERIAL);
-	h.path = m->path;
-	h.interface = m->interface;
-	h.member = m->member;
-	// leave error blank
-	// leave destination blank
-	h.sender = sender;
-	h.signature = m->signature;
-	// leave reply_serial as 0
-	h.flags = m->flags;
-	size_t bsz = rope_size(body);
-	int sz = write_header(buf, sizeof(buf), &h, bsz);
 	if (sz < 0) {
 		return -1;
 	}
-
-	mtx_lock(&s->lk);
-
-	// acquire a request entry and rewrite the serial
-	unsigned reqidx = 0;
-	if (m->type == MSG_METHOD && !(m->flags & FLAG_NO_REPLY_EXPECTED)) {
-		s->request_waiters++;
-		while (!(reqidx = ffs(s->request_available))) {
-			cnd_wait(&s->request_cnd, &s->lk);
-		}
-		s->request_waiters--;
-		struct tx_request *r = &s->requests[reqidx - 1];
-		r->count++;
-		r->client = c;
-		r->serial = m->serial;
-		ref_tx(c);
-		s->request_available &= ~(1U << (reqidx - 1));
-		h.serial = ((uint32_t)reqidx << 16) | r->count;
-		set_serial(buf, h.serial);
-	}
-
-	struct logbuf lb;
-	if (start_debug(&lb, "send request")) {
-		log_int(&lb, "fd", s->fd);
-		log_message(&lb, &h);
-		log_uint(&lb, "bsz", bsz);
-		finish_log(&lb);
-	}
-
-	struct rope rope;
-	rope.next = body;
-	rope.data.p = buf;
-	rope.data.len = sz;
-	if (send_locked(s, true, &rope)) {
-		goto error;
-	}
-	mtx_unlock(&s->lk);
-	return 0;
-
-error:
-	if (reqidx) {
-		s->request_available |= 1U << (reqidx - 1);
-		s->requests[reqidx - 1].client = NULL;
-		deref_tx(c);
-	}
-	mtx_unlock(&s->lk);
-	return -1;
+	// buf may actually contain some body, but we treat it is all in the
+	// header so that we send it as one chunk to the kernel.
+	m->hdr.buf = buf;
+	m->hdr.len = sz;
+	m->body[0].len = 0;
+	m->body[1].len = 0;
+	return send_message(t, block, m);
 }
 
-static struct tx *consume_request(struct tx *f, uint32_t *pserial)
+///////////////////////////////////////
+// request/reply routing
+
+static int acquire_request(struct requests *s, mtx_t *lk)
 {
-	uint16_t count = (uint16_t)*pserial;
-	unsigned reqidx = *pserial >> 16;
-	if (!reqidx || reqidx >= MAX_REQUEST_NUM) {
-		return NULL;
+	while (!s->avail) {
+		cnd_wait(&s->cnd, lk);
 	}
-
-	mtx_lock(&f->lk);
-	struct tx_request *r = &f->requests[reqidx - 1];
-	struct tx *client = r->client;
-	if (client && r->count == count) {
-		r->client = NULL;
-		*pserial = r->serial;
-		f->request_available |= 1U << (reqidx - 1);
-	}
-	if (f->request_waiters) {
-		cnd_signal(&f->request_cnd);
-	}
-	mtx_unlock(&f->lk);
-
-	// return client with an active ref
-	return client;
+	int idx = ffs(s->avail) - 1;
+	assert(0 <= idx && idx < 32);
+	s->avail &= ~(1U << idx);
+	return idx;
 }
 
-int send_reply(struct tx *s, slice_t sender, const struct message *m,
-	       struct rope *body)
+static inline uint32_t encode_serial(struct request *r)
 {
-	// the request is consumed, but c has an active ref
-	uint32_t serial = m->reply_serial;
-	struct tx *c = consume_request(s, &serial);
-	if (!c) {
+	return (r->serial << 6) | (r->reqidx << 1) | 1;
+}
+
+static int decode_serial(struct requests *s, uint32_t serial)
+{
+	int idx = (serial >> 1) & 31;
+	if (!(serial & 1) || (serial >> 6) != s->v[idx].serial) {
 		return -1;
 	}
+	return idx;
+}
 
-	// rewrite the header, updating and filtering fields
-	char buf[256];
-	struct message h;
-	init_message(&h, m->type, NO_REPLY_SERIAL);
-	// leave path blank
-	// leave interface blank
-	// leave member blank
-	if (m->type == MSG_ERROR) {
-		h.error = m->error;
+static void release_request(struct requests *s, int idx)
+{
+	bool wakeup = (s->avail == 0);
+	s->avail |= 1U << idx;
+	s->v[idx].remote = NULL;
+	if (wakeup) {
+		cnd_signal(&s->cnd);
 	}
-	// leave destination blank
-	h.sender = sender;
-	h.signature = m->signature;
-	h.reply_serial = serial;
-	h.flags = m->flags;
-	int sz = write_header(buf, sizeof(buf), &h, rope_size(body));
+}
 
-	struct rope rope;
-	rope.next = body;
-	rope.data.p = buf;
-	rope.data.len = sz;
-	int err = (sz < 0) || send_rope(c, false, &rope);
+int route_request(struct tx *client, struct tx *srv, struct tx_msg *m)
+{
+	assert(m->m.type == MSG_METHOD &&
+	       !(m->m.flags & FLAG_NO_REPLY_EXPECTED));
 
-	deref_tx(c);
+	// acquire the client request in a lock to synchronize with other
+	// replies coming in. After allocation we can modify the request itself
+	// any time until we notify the server. The only entities who are
+	// interested are the client thread which we are currently running
+	// inside or the server thread which doesn't know about this request
+	// yet.
+	mtx_lock(&client->lk);
+	int cidx = acquire_request(&client->client, &client->lk);
+	mtx_unlock(&client->lk);
+
+	mtx_lock(&srv->lk);
+	int sidx = acquire_request(&srv->server, &srv->lk);
+	struct request *sreq = &srv->server.v[sidx];
+	sreq->remote = client;
+	sreq->reqidx = cidx;
+	sreq->serial++;
+	struct request *creq = &client->client.v[cidx];
+	creq->remote = srv;
+	creq->reqidx = sidx;
+	creq->serial = m->m.serial;
+
+	// overwrite the serial to something we can use
+	m->m.serial = encode_serial(sreq);
+	set_serial(m->hdr.buf, m->m.serial);
+
+	int err = send_locked(srv, true, m);
+	if (err) {
+		// do this within the server lock so that the server doesn't try
+		// and shutdown before we make these calls. This can't occur on
+		// the client side as we are running on the client thread.
+		release_request(&srv->server, sidx);
+		release_request(&client->server, cidx);
+	}
+	mtx_unlock(&srv->lk);
 	return err;
+}
+
+int route_reply(struct tx *srv, struct tx_msg *m)
+{
+	uint32_t serial = m->m.reply_serial;
+
+	mtx_lock(&srv->lk);
+	int sidx = decode_serial(&srv->server, serial);
+	if (sidx < 0) {
+		mtx_unlock(&srv->lk);
+		return -1;
+	}
+	struct request *sreq = &srv->server.v[sidx];
+	// ref the client so that it isn't free'd between the srv unlock and the
+	// client lock
+	struct tx *client = ref_tx(sreq->remote);
+	int cidx = sreq->reqidx;
+	release_request(&srv->server, sidx);
+	mtx_unlock(&srv->lk);
+
+	mtx_lock(&client->lk);
+	struct request *creq = &client->client.v[cidx];
+	if (client->closed || creq->remote != srv || creq->reqidx != sidx) {
+		// client canceled or shutdown
+		mtx_unlock(&client->lk);
+		return -1;
+	}
+	set_reply_serial(m->hdr.buf, creq->serial);
+	release_request(&client->client, cidx);
+	int err = send_locked(client, false, m);
+	mtx_unlock(&client->lk);
+
+	deref_tx(client);
+	return err;
+}
+
+static void remove_requests_unlocked(struct tx *t, bool server)
+{
+	assert(t->closed);
+	struct requests *s = server ? &t->server : &t->client;
+	for (int i = 0; i < sizeof(s->v) / sizeof(s->v[0]); i++) {
+		struct request *r = &s->v[i];
+		struct tx *o = r->remote;
+		if (o) {
+			mtx_lock(&o->lk);
+			struct requests *os = server ? &o->client : &o->server;
+			struct request * or = &os->v[r->reqidx];
+			if (!o->closed && or->remote == t && or->reqidx == i) {
+				release_request(os, r->reqidx);
+			}
+			mtx_unlock(&o->lk);
+		}
+	}
 }

@@ -4,7 +4,7 @@
 #include "rx.h"
 #include "bus.h"
 #include "config.h"
-#include "dmem/log.h"
+#include "lib/log.h"
 #include <signal.h>
 #include <stdio.h>
 #include <getopt.h>
@@ -16,16 +16,17 @@
 
 static int ready_indicator(void *udata)
 {
-	char *fifopn = (char *)udata;
+	str8_t *fifopn = udata;
 
-	set_thread_name(S("ready-fifo"));
+	set_thread_name("ready-fifo");
 
 	for (;;) {
 		// Wait for a client to open the fifo for read. We then
 		// immediately close it to indicate that we are ready to go
-		int fd = open(fifopn, O_WRONLY | O_CLOEXEC);
+		int fd = open(fifopn->p, O_WRONLY | O_CLOEXEC);
 		if (fd < 0) {
-			ERROR("open ready fifo,error:%m,path:%s", fifopn);
+			ERROR("open ready fifo,error:%m,path:%s", fifopn->p);
+			free(fifopn);
 			return -1;
 		}
 		DEBUG("open ready fifo");
@@ -36,38 +37,31 @@ static int ready_indicator(void *udata)
 
 static int usage(void)
 {
-	fputs("usage: zbus [args] socket\n", stderr);
-	fputs("\t-j\tLog as JSON\n", stderr);
-	fputs("\t-v\tEnable verbose (default:disabled)\n", stderr);
-	fputs("\t-q\tEnable quiet (default:disabled)\n", stderr);
-	fputs("\t-C dir\tSet config directory (default:$PWD)\n", stderr);
-	fputs("\t-f file\tFIFO to use as a ready indicator\n", stderr);
+	fputs("usage: zbus [args]\n", stderr);
+	fputs("\t-f config\tLoad config file\n", stderr);
+	fputs("\t-c 'foo=bar'\tLoad config item\n", stderr);
 	return 2;
 }
 
 int main(int argc, char *argv[])
 {
-	set_thread_name(S("main"));
+	set_thread_name("main");
 
-	const char *configdir = ".";
-	char *readypn = NULL;
+	struct config_loader ldr;
+	init_config(&ldr);
+
 	int i;
-	while ((i = getopt(argc, argv, "Chqvjf:")) > 0) {
+	while ((i = getopt(argc, argv, "hf:c:")) > 0) {
 		switch (i) {
-		case 'j':
-			log_type = LOG_JSON;
-			break;
-		case 'q':
-			log_quiet_flag = 1;
-			break;
-		case 'v':
-			log_verbose_flag = 1;
-			break;
 		case 'f':
-			readypn = optarg;
+			if (add_config_file(&ldr, optarg)) {
+				return 1;
+			}
 			break;
-		case 'C':
-			configdir = optarg;
+		case 'c':
+			if (add_config_cmdline(&ldr, optarg)) {
+				return 1;
+			}
 			break;
 		case 'h':
 		case '?':
@@ -75,40 +69,49 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	(void)configdir;
-
-	argc -= optind;
-	argv += optind;
-	if (argc != 1) {
+	if (argc - optind) {
 		fputs("unexpected arguments\n", stderr);
 		return usage();
 	}
 
-	if (setup_signals()) {
+	struct bus b;
+	if (setup_signals() || init_bus(&b)) {
 		return 1;
 	}
+	load_config(&ldr, &b);
 
-	char *sockpn = argv[0];
-	struct bus bus;
-	if (init_bus(&bus) || add_name(&bus, S("com.example.Service"), false) ||
-	    add_name(&bus, S("com.example.Autostart"), true)) {
-		return 1;
+	const struct rcu_data *d = rcu_root(b.rcu);
+	const struct config *c = d->config;
+
+	if (!c->sockpn && c->sockfd < 0) {
+		FATAL("no socket specified in config");
 	}
 
-	NOTICE("startup,sockpn:%s,busid:%.*s,fifo:%s", sockpn, S_PRI(bus.busid),
-	       readypn);
+	VERBOSE("startup,listen:%s,listenfd:%d,busid:%s", c->sockpn->p,
+		c->sockfd, b.busid.p);
 
-	int lfd = bind_bus(sockpn);
+	int lfd = c->sockfd >= 0 ? c->sockfd : bind_bus(c->sockpn->p);
 	if (lfd < 0) {
 		return 1;
 	}
-
-	NOTICE("ready");
-
-	thrd_t thrd;
-	if (readypn && !thrd_create(&thrd, &ready_indicator, readypn)) {
-		thrd_detach(thrd);
+	if (lfd > 0 && dup2(lfd, 0) != 0) {
+		return 1;
 	}
+	close(lfd);
+	lfd = 0;
+
+	VERBOSE("ready");
+
+	if (c->readypn) {
+		VERBOSE("starting ready fifo thread,file:%s", c->readypn->p);
+		thrd_t thrd;
+		if (!thrd_create(&thrd, &ready_indicator,
+				 str8dup(c->readypn))) {
+			thrd_detach(thrd);
+		}
+	}
+
+	int next_id = 1;
 
 	for (;;) {
 		int cfd = accept4(lfd, NULL, NULL, SOCK_CLOEXEC);
@@ -119,13 +122,13 @@ int main(int argc, char *argv[])
 
 		VERBOSE("new connection,fd:%d", cfd);
 
-		struct tx *tx = new_tx(cfd);
+		struct tx *tx = new_tx(cfd, next_id++);
 		if (!tx) {
 			close(cfd);
 			continue;
 		}
 
-		struct rx *rx = new_rx(&bus, tx, cfd);
+		struct rx *rx = new_rx(&b, tx, cfd);
 		deref_tx(tx);
 		if (!rx) {
 			continue;
@@ -139,6 +142,6 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	destroy_bus(&bus);
+	destroy_bus(&b);
 	return 0;
 }

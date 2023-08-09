@@ -7,6 +7,8 @@ struct msg_stream {
 	size_t defrag;
 	size_t used;
 	size_t have;
+	char *body;
+	size_t bsz[2];
 	char buf[0];
 };
 
@@ -20,7 +22,15 @@ void stream_buffers(struct msg_stream *s, char **p1, size_t *n1, char **p2,
 #define STREAM_MORE 1
 #define STREAM_ERROR -1
 
-int stream_next(struct msg_stream *s, struct message *m, slice_t *b1,
-		slice_t *b2);
+int stream_next(struct msg_stream *s, struct message *m);
+int defragment_body(struct msg_stream *s, struct message *m,
+		    struct iterator *ii);
 
-int defragment_body(struct msg_stream *s, slice_t *b1, slice_t *b2);
+static inline void stream_body(struct msg_stream *s, char **p1, size_t *n1,
+			       char **p2, size_t *n2)
+{
+	*p1 = s->body;
+	*n1 = s->bsz[0];
+	*p2 = s->buf;
+	*n2 = s->bsz[1];
+}

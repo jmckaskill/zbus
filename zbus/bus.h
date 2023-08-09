@@ -4,26 +4,50 @@
 #include "rcu.h"
 #include "addr.h"
 #include "sub.h"
-#include "lib/slice.h"
-#include "lib/match.h"
+#include "rx.h"
+#include "vector.h"
+#include "txmap.h"
+#include "dbus/match.h"
+#include "lib/log.h"
+#include "vendor/c-rbtree-3.1.0/src/c-rbtree.h"
 #include <threads.h>
 
-struct rcu_names {
+struct tx;
+struct rx;
+struct address;
+
+struct config {
 	struct rcu_object rcu;
-	struct address_map *unique;
-	struct address_map *named;
-	struct subscription_map *broadcast;
-	struct subscription_map *name_changed;
+	unsigned max_msg_size;
+	unsigned max_num_remotes;
+	unsigned max_num_names;
+	unsigned max_num_subs;
+	int runas_user;
+	int runas_group;
+	int sockfd;
+	str8_t *launch_helper;
+	str8_t *sockpn;
+	str8_t *readypn;
+};
+
+struct rcu_data {
+	struct rcu_object rcu;
+	const struct config *config;
+	const struct addrmap *destinations;
+	const struct addrmap *interfaces;
+	const struct submap *name_changed;
+	const struct txmap *remotes;
 };
 
 struct bus {
 	struct {
 		char len;
-		char p[BUSID_MAXLEN];
+		char p[BUSID_BUFLEN];
 	} busid;
 
 	mtx_t lk;
-	struct rcu_writer *names; // struct rcu_names
+	cnd_t launch;
+	struct rcu_writer *rcu; // struct rcu_data
 };
 
 // all calls to the bus must be serialized using the lock
@@ -31,32 +55,42 @@ struct bus {
 int init_bus(struct bus *b);
 void destroy_bus(struct bus *b);
 
-int register_remote(struct bus *b, int id, slice_t name, struct tx *tx,
-		    struct circ_list *names, struct rcu_reader **preader);
+int register_remote(struct bus *b, struct rx *r, const str8_t *name,
+		    uint32_t serial, struct rcu_reader **preader);
+int unregister_remote(struct bus *b, struct rx *r, const str8_t *name,
+		      struct rcu_reader *reader);
 
-int unregister_remote(struct bus *b, int id);
+int autolaunch_service(struct bus *b, const str8_t *name,
+		       const struct address **paddr);
+void service_exited(struct bus *b, const str8_t *name);
 
-int add_name(struct bus *b, slice_t name, bool autostart);
-int autolaunch_service(struct bus *b, slice_t name, struct address **paddr);
-void service_exited(struct bus *b, slice_t name);
-
-#define DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER 1
-#define DBUS_REQUEST_NAME_REPLY_IN_QUEUE 2
-#define DBUS_REQUEST_NAME_REPLY_EXISTS 3
-#define DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER 4
-
-int request_name(struct bus *b, slice_t name, int id, struct tx *tx,
-		 struct circ_list *names);
+int request_name(struct bus *b, struct rx *r, const str8_t *name,
+		 uint32_t serial);
+int release_name(struct bus *b, struct rx *r, const str8_t *name,
+		 uint32_t serial);
 
 #define DBUS_RELEASE_NAME_REPLY_RELEASED 1
 #define DBUS_RELEASE_NAME_REPLY_NON_EXISTENT 2
 #define DBUS_RELEASE_NAME_REPLY_NOT_OWNER 3
 
-int release_name(struct bus *b, slice_t name, int id, struct tx *tx);
+int update_sub(struct bus *b, bool add, struct tx *tx, const char *str,
+	       struct match m, uint32_t serial);
 
-int update_bus_sub(struct bus *b, bool add, struct tx *to, struct match *m,
-		   uint32_t serial, struct circ_list *o);
-int update_bcast_sub(struct bus *b, bool add, struct tx *to, struct match *m,
-		     uint32_t serial, struct circ_list *o);
-int update_ucast_sub(struct bus *b, bool add, struct tx *to, struct match *m,
-		     uint32_t serial, struct circ_list *o);
+struct config_loader {
+	struct config *global;
+	CRBTree addresses;
+	CRBTree interfaces;
+};
+
+void init_config(struct config_loader *c);
+void destroy_config(struct config_loader *c);
+int add_config_file(struct config_loader *c, const char *fn);
+int add_config_cmdline(struct config_loader *c, const char *arg);
+void load_config(struct config_loader *c, struct bus *b);
+
+static inline str8_t *str8dup(const str8_t *from)
+{
+	str8_t *ret = fmalloc(from->len + 2);
+	memcpy(ret, from, from->len + 2);
+	return ret;
+}
