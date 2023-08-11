@@ -1,29 +1,25 @@
 #include "client.h"
 #include "dbus/auth.h"
 #include "lib/logmsg.h"
+#include "lib/algo.h"
 #include <stdint.h>
-#include <unistd.h>
-#include <errno.h>
-#include <sys/un.h>
-#include <sys/socket.h>
-#include <fcntl.h>
 
-static int write_all(int fd, char *b, size_t sz, const char *args, ...)
-	__attribute__((format(printf, 4, 5)));
+static int write_all(fd_t fd, char *b, size_t sz, const char *args, ...)
+	GNU_PRINTF_ATTRIBUTE(4, 5);
 
-static int write_all(int fd, char *b, size_t sz, const char *args, ...)
+static int write_all(fd_t fd, char *b, size_t sz, const char *args, ...)
 {
 	struct logbuf lb;
 	if (start_debug(&lb, "write")) {
 		va_list ap;
 		va_start(ap, args);
 		log_vargs(&lb, args, ap);
-		log_int(&lb, "fd", fd);
+		log_uint(&lb, "fd", (unsigned)fd);
 		log_bytes(&lb, "data", b, sz);
 		finish_log(&lb);
 	}
 	while (sz) {
-		int w = write(fd, b, sz);
+		int w = sys_send(fd, b, (int)sz);
 		if (w <= 0) {
 			char buf[128];
 			struct logbuf lb;
@@ -32,7 +28,7 @@ static int write_all(int fd, char *b, size_t sz, const char *args, ...)
 			va_start(ap, args);
 			log_vargs(&lb, args, ap);
 			log_errno(&lb, "errno");
-			log_int(&lb, "fd", fd);
+			log_uint(&lb, "fd", (unsigned)fd);
 			finish_log(&lb);
 			return -1;
 		}
@@ -42,82 +38,28 @@ static int write_all(int fd, char *b, size_t sz, const char *args, ...)
 	return 0;
 }
 
-static int read_one(int fd, char *buf, size_t cap)
+void close_client(struct client *c)
 {
-try_again:
-	int r = read(fd, buf, cap);
-	if (r < 0 && errno == EINTR) {
-		goto try_again;
-	} else if (r < 0) {
-		ERROR("read,errno:%m,fd:%d", fd);
-		return -1;
-	} else if (r == 0) {
-		ERROR("recv early EOF,fd:%d", fd);
-		return -1;
+	if (c) {
+		sys_close(c->fd);
+		free(c);
 	}
-	struct logbuf b;
-	if (start_debug(&b, "read")) {
-		log_int(&b, "fd", fd);
-		log_bytes(&b, "data", buf, r);
-		finish_log(&b);
-	}
-	return r;
 }
 
-static int connect_unix(const char *sockpn)
-{
-	int lfd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, PF_UNIX);
-	if (lfd < 0) {
-		goto error;
-	}
-
-	struct sockaddr_un addr;
-	memset(&addr, 0, sizeof(addr));
-	addr.sun_family = AF_UNIX;
-
-	size_t len = strlen(sockpn);
-	if (len + 1 > sizeof(addr.sun_path)) {
-		goto error;
-	}
-	memcpy(addr.sun_path, sockpn, len + 1);
-
-	socklen_t salen = &addr.sun_path[len + 1] - (char *)&addr;
-	if (connect(lfd, (struct sockaddr *)&addr, salen)) {
-		goto error;
-	}
-
-	return lfd;
-error:
-	close(lfd);
-	return -1;
-}
-
-static const char *get_user_id(char *buf, size_t sz)
-{
-	char *puid = buf + sz;
-	int id = getuid();
-	*(--puid) = 0;
-	do {
-		*(--puid) = (id % 10) + '0';
-		id /= 10;
-	} while (id);
-	return puid;
-}
-
-struct client *open_client(const char *sockpn)
+struct client *open_client(const char *sockpn, bool block)
 {
 	struct client *c = NULL;
-	int fd = connect_unix(sockpn);
-	if (fd < 0) {
+	fd_t fd;
+	if (sys_open(&fd, sockpn, block)) {
 		ERROR("failed to open dbus socket,errno:%m");
-		goto error;
+		return NULL;
 	}
 
-	char uidbuf[16];
-	const char *uid = get_user_id(uidbuf, sizeof(uidbuf));
+	char uidbuf[64];
+	const char *uid = sys_userid(uidbuf, sizeof(uidbuf));
 
 	char inbuf[256], outbuf[256];
-	size_t insz = 0;
+	int insz = 0;
 	int state = 0;
 	uint32_t serial;
 
@@ -137,11 +79,11 @@ struct client *open_client(const char *sockpn)
 			goto error;
 		}
 
-		int n = inbuf + insz - in;
+		int n = (int)(inbuf + insz - in);
 		memmove(inbuf, in, n);
 		insz = n;
 
-		n = read_one(fd, inbuf + insz, sizeof(inbuf) - insz);
+		n = sys_recv(fd, inbuf + insz, sizeof(inbuf) - insz);
 		if (n < 0) {
 			goto error;
 		}
@@ -168,19 +110,10 @@ struct client *open_client(const char *sockpn)
 	}
 	LOG("connected,address:%s", addr->p);
 	return c;
-
 error:
 	free(c);
-	close(fd);
+	sys_close(fd);
 	return NULL;
-}
-
-void close_client(struct client *c)
-{
-	if (c) {
-		close(c->fd);
-		free(c);
-	}
 }
 
 uint32_t register_cb(struct client *c, message_fn fn, void *udata)
@@ -353,7 +286,7 @@ int read_message(struct client *c, struct message *msg, struct iterator *body)
 			char *p1, *p2;
 			size_t n1, n2;
 			stream_buffers(&c->in, &p1, &n1, &p2, &n2);
-			int n = read_one(c->fd, p1, n1);
+			int n = sys_recv(c->fd, p1, (int)n1);
 			if (n < 0) {
 				return -1;
 			}
@@ -362,7 +295,7 @@ int read_message(struct client *c, struct message *msg, struct iterator *body)
 		} else if (err == STREAM_OK) {
 			struct logbuf lb;
 			if (start_debug(&lb, "read message")) {
-				log_int(&lb, "fd", c->fd);
+				log_uint(&lb, "fd", (unsigned)c->fd);
 				log_message(&lb, msg);
 				finish_log(&lb);
 			}

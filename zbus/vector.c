@@ -6,7 +6,7 @@ struct vector *edit_vector(struct rcu_object **objs, const struct vector *ob,
 			   int idx, int num)
 {
 	const struct void_vector *ov = (struct void_vector *)ob;
-	size_t n = vector_len(ob);
+	int n = vector_len(ob);
 	size_t esz = sizeof(ov->v[0]);
 
 	assert(0 <= idx && idx <= n);
@@ -23,13 +23,15 @@ struct vector *edit_vector(struct rcu_object **objs, const struct vector *ob,
 
 	struct void_vector *nv = fmalloc(sizeof(*nv) + (n + num) * esz);
 	if (num > 0) {
-		memcpy(nv->v, ov->v, idx * esz);
-		memset(nv->v + idx, 0, num * esz);
-		memcpy(nv->v + idx + num, ov->v + idx, (n - idx) * esz);
+		memcpy((void *)(nv->v), ov->v, idx * esz);
+		memset((void *)(nv->v + idx), 0, num * esz);
+		memcpy((void *)(nv->v + idx + num), ov->v + idx,
+		       (n - idx) * esz);
 	} else {
 		int rm = -num;
-		memcpy(nv->v, ov->v, idx * esz);
-		memcpy(nv->v + idx, ov->v + idx + rm, (n - idx - rm) * esz);
+		memcpy((void *)(nv->v), ov->v, idx * esz);
+		memcpy((void *)(nv->v + idx), ov->v + idx + rm,
+		       (n - idx - rm) * esz);
 	}
 	nv->h._len = n + num;
 	return &nv->h;

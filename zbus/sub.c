@@ -6,7 +6,7 @@
 struct subkey {
 	int txid;
 	const char *mstr;
-	size_t len;
+	uint16_t len;
 };
 
 static int cmp_subkey_subscription(const void *key, const void *element)
@@ -24,7 +24,8 @@ static int cmp_subkey_subscription(const void *key, const void *element)
 	return diff ? diff : memcmp(k->mstr, s->mstr, k->len);
 }
 
-void collect_subscription(struct rcu_object **objs, const struct subscription *s)
+void collect_subscription(struct rcu_object **objs,
+			  const struct subscription *s)
 {
 	rcu_register_gc(objs, (rcu_fn)&free, &s->h.rcu);
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include "config.h"
 #include "tx.h"
 #include "dbus/encode.h"
 

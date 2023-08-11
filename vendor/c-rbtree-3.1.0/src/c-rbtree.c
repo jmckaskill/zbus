@@ -48,7 +48,7 @@
 #ifdef __m68k__
 #define C_RBTREE_MAX_ALIGN (C_MAX(4, alignof(max_align_t)))
 #else
-#define C_RBTREE_MAX_ALIGN (alignof(max_align_t))
+#define C_RBTREE_MAX_ALIGN (alignof(size_t))
 #endif
 static_assert(alignof(CRBNode) <= C_RBTREE_MAX_ALIGN,
 	      "Invalid RBNode alignment");

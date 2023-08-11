@@ -1,19 +1,58 @@
-#define _GNU_SOURCE
 #include "bus.h"
-#include "config.h"
+#include "ini.h"
 #include "busmsg.h"
 #include "dispatch.h"
+#include "sec.h"
 #include "dbus/decode.h"
 #include "lib/log.h"
 #include "lib/algo.h"
-#include "lib/sys.h"
+#include "lib/file.h"
 #include "vendor/c-rbtree-3.1.0/src/c-rbtree.h"
-#include <sys/types.h>
-#include <dirent.h>
-#include <time.h>
+
+#ifdef HAVE__STRICMP
+#define strcasecmp _stricmp
+#endif
+
+#ifdef HAVE__STRDUP
+#define strdup _strdup
+#endif
+
+#ifdef HAVE_MEMRCHR
+#define x_memrchr memrchr
+#else
+static char *x_memrchr(char *p, char ch, size_t len)
+{
+	char *s = p + len;
+	for (;;) {
+		if (s == p) {
+			return NULL;
+		} else if (*(--s) == ch) {
+			return s;
+		}
+	}
+}
+#endif
 
 static struct config *new_config(void);
 static void free_config(struct rcu_object *o);
+
+int generate_busid(str8_t *s)
+{
+	static const char hex_enc[] = "0123456789abcdef";
+	uint8_t rand[BUSID_STRLEN / 2];
+	if (getentropy(rand, sizeof(rand))) {
+		ERROR("getentropy,errno:%m");
+		return -1;
+	}
+	for (int i = 0; i < sizeof(rand); i++) {
+		s->p[2 * i] = hex_enc[rand[i] >> 4];
+		s->p[2 * i + 1] = hex_enc[rand[i] & 15];
+	}
+	size_t n = 2 * sizeof(rand);
+	s->len = (uint8_t)n;
+	s->p[n] = '\0';
+	return 0;
+}
 
 int init_bus(struct bus *b)
 {
@@ -228,7 +267,7 @@ int request_name(struct bus *b, struct rx *r, const str8_t *name,
 	int sts;
 	const struct addrmap *om = od->destinations;
 	const struct address *oa = om->v[idx];
-	if (!has_group(r->tx->pid, oa->gid_owner)) {
+	if (!has_group(r->tx->sec, oa->gid_owner)) {
 		return ERR_NOT_ALLOWED;
 	}
 	if (oa->tx == r->tx) {
@@ -239,7 +278,9 @@ int request_name(struct bus *b, struct rx *r, const str8_t *name,
 		sts = DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER;
 	}
 
+#ifdef HAVE_AUTOLAUNCH
 	bool autolaunch = false;
+#endif
 	struct rcu_object *objs = NULL;
 	struct rcu_data *nd = NULL;
 
@@ -251,7 +292,9 @@ int request_name(struct bus *b, struct rx *r, const str8_t *name,
 		nm->v[idx] = na;
 		nd->destinations = nm;
 
+#ifdef HAVE_AUTOLAUNCH
 		autolaunch = na->activatable;
+#endif
 	}
 
 	// first notify the requester
@@ -262,10 +305,12 @@ int request_name(struct bus *b, struct rx *r, const str8_t *name,
 	// then everyone else
 	if (nd) {
 		rcu_commit(b->rcu, nd, objs);
+		notify_name_changed(b, r, true, name);
+#ifdef HAVE_AUTOLAUNCH
 		if (autolaunch) {
 			cnd_broadcast(&b->launch);
 		}
-		notify_name_changed(b, r, true, name);
+#endif
 	}
 	return 0;
 }
@@ -316,6 +361,7 @@ int release_name(struct bus *b, struct rx *r, const str8_t *name,
 ///////////////////////////////
 // autolaunch functions
 
+#ifdef HAVE_AUTOLAUNCH
 int autolaunch_service(struct bus *b, const str8_t *name,
 		       const struct address **paddr)
 {
@@ -351,7 +397,7 @@ int autolaunch_service(struct bus *b, const str8_t *name,
 		    difftime(now.tv_sec, oa->last_launch) > 5) {
 			// it's been a while since we launched it, let's try and
 			// launch it again
-			if (launch_service(b, name)) {
+			if (sys_launch(b, name)) {
 				return ERR_LAUNCH_FAILED;
 			}
 
@@ -407,6 +453,7 @@ void service_exited(struct bus *b, const str8_t *name)
 
 	cnd_broadcast(&b->launch);
 }
+#endif
 
 ////////////////////////////////////
 // subscriptions
@@ -461,7 +508,7 @@ int update_sub(struct bus *b, bool add, struct rx *r, const char *str,
 	const struct address *oa = om->v[aidx];
 	const struct submap *os = oa->subs;
 
-	if (add && !has_group(t->pid, oa->gid_access)) {
+	if (add && !has_group(t->sec, oa->gid_access)) {
 		return ERR_NOT_ALLOWED;
 	}
 
@@ -497,9 +544,9 @@ static inline int str8set(str8_t **pstr, const char *from, size_t len)
 		return -1;
 	}
 	str8_t *ret = frealloc(*pstr, len + 2);
-	ret->len = len;
+	ret->len = (uint8_t)len;
 	memcpy(&ret->p, from, len);
-	ret->p[len] = 0;
+	ret->p[len] = '\0';
 	*pstr = ret;
 	return 0;
 }
@@ -508,9 +555,10 @@ static void free_config(struct rcu_object *o)
 {
 	struct config *c = container_of(o, struct config, rcu);
 	if (c) {
-		free(c->launch_helper);
 		free(c->sockpn);
+#ifdef HAVE_READY_FIFO
 		free(c->readypn);
+#endif
 		free(c);
 	}
 }
@@ -522,10 +570,13 @@ static struct config *new_config(void)
 	c->max_num_remotes = 64;
 	c->max_num_names = 4;
 	c->max_num_subs = 16;
-	c->launch_helper = NULL;
-	c->readypn = NULL;
 	c->sockpn = NULL;
+#ifdef HAVE_READY_FIFO
+	c->readypn = NULL;
+#endif
+#ifdef HAVE_LISTENFD
 	c->sockfd = -1;
+#endif
 	return c;
 }
 
@@ -544,7 +595,7 @@ static struct address *get_address(CRBTree *t, char *key, size_t klen,
 	// "address." prefix. Pick out the last section and return the length of
 	// "address.org.example.Service." in pfxlen.
 	char *firstdot = key + *pfxlen;
-	char *lastdot = memrchr(firstdot, '.', klen - *pfxlen);
+	char *lastdot = x_memrchr(firstdot, '.', klen - *pfxlen);
 	if (!lastdot || lastdot - firstdot > UINT8_MAX) {
 		return NULL;
 	}
@@ -556,7 +607,7 @@ static struct address *get_address(CRBTree *t, char *key, size_t klen,
 	size_t slen = lastdot - firstdot;
 	uint8_t prevlen = s->len;
 	char prevnul = s->p[slen];
-	s->len = slen;
+	s->len = (uint8_t)slen;
 	s->p[slen] = 0;
 
 	CRBNode *p;
@@ -587,7 +638,9 @@ static int parse_global_config(struct config *c, const char *key,
 	switch (strlen(key)) {
 	case 6:
 		if (!strcmp(key, "listen")) {
+#ifdef HAVE_LISTENFD
 			c->sockfd = -1;
+#endif
 			if (str8set(&c->sockpn, val, strlen(val))) {
 				return CFG_OVERLONG;
 			}
@@ -606,11 +659,13 @@ static int parse_global_config(struct config *c, const char *key,
 				return CFG_VALUE;
 			}
 			return 0;
+#ifdef HAVE_LISTENFD
 		} else if (!strcmp(key, "listenfd")) {
 			c->sockfd = atoi(val);
 			free(c->sockpn);
 			c->sockpn = NULL;
 			return 0;
+#endif
 		} else {
 			return CFG_KEY;
 		}
@@ -635,6 +690,7 @@ static int parse_global_config(struct config *c, const char *key,
 			return CFG_KEY;
 		}
 
+#ifdef HAVE_READY_FIFO
 	case 10:
 		if (!strcmp(key, "ready_fifo")) {
 			if (str8set(&c->readypn, val, strlen(val))) {
@@ -644,15 +700,8 @@ static int parse_global_config(struct config *c, const char *key,
 		} else {
 			return CFG_KEY;
 		}
-	case 13:
-		if (!strcmp(key, "launch_helper")) {
-			if (str8set(&c->launch_helper, val, strlen(val))) {
-				return CFG_OVERLONG;
-			}
-			return 0;
-		} else {
-			return CFG_KEY;
-		}
+#endif
+
 	default:
 		return CFG_KEY;
 	}
@@ -664,6 +713,7 @@ static int parse_address_config(struct address *a, const char *key,
 	if (!strcmp(key, "description")) {
 		return 0;
 
+#ifdef HAVE_AUTOLAUNCH
 	} else if (!strcmp(key, "activatable")) {
 		if (!strcasecmp(val, "true")) {
 			a->activatable = true;
@@ -673,7 +723,9 @@ static int parse_address_config(struct address *a, const char *key,
 			return CFG_VALUE;
 		}
 		return 0;
+#endif
 
+#ifdef HAVE_PIDINFO
 	} else if (!strcmp(key, "owner_gid")) {
 		a->gid_owner = atoi(val);
 		return a->gid_owner >= 0 ? 0 : CFG_GROUP;
@@ -697,6 +749,7 @@ static int parse_address_config(struct address *a, const char *key,
 		}
 		a->gid_access = lookup_group(val);
 		return a->gid_access >= 0 ? 0 : CFG_GROUP;
+#endif
 
 	} else {
 		return CFG_KEY;
@@ -709,6 +762,7 @@ static int parse_interface_config(struct address *a, const char *key,
 	if (!strcmp(key, "description")) {
 		return 0;
 
+#ifdef HAVE_PIDINFO
 	} else if (!strcmp(key, "subscribe_gid")) {
 		a->gid_access = atoi(val);
 		return a->gid_access >= 0 ? 0 : CFG_GROUP;
@@ -732,6 +786,7 @@ static int parse_interface_config(struct address *a, const char *key,
 		}
 		a->gid_owner = lookup_group(val);
 		return a->gid_owner >= 0 ? 0 : CFG_GROUP;
+#endif
 
 	} else {
 		return CFG_KEY;
@@ -925,8 +980,10 @@ static void free_tree(CRBTree *t)
 int load_config(struct bus *b, struct config_arguments *args)
 {
 	struct config *cfg = new_config();
-	CRBTree taddr = C_RBTREE_INIT;
-	CRBTree tiface = C_RBTREE_INIT;
+	CRBTree taddr;
+	CRBTree tiface;
+	c_rbtree_init(&taddr);
+	c_rbtree_init(&tiface);
 
 	for (int i = 0; i < args->num; i++) {
 		struct parse_stack s;

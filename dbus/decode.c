@@ -3,7 +3,6 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdalign.h>
-#include <byteswap.h>
 
 #define MAX_DEPTH 32
 
@@ -188,7 +187,7 @@ uint64_t parse_uint64(struct iterator *p)
 	return parse8(p, TYPE_UINT64);
 }
 
-int parse_double(struct iterator *p, double *pv)
+double parse_double(struct iterator *p)
 {
 	union {
 		double d;
@@ -742,6 +741,20 @@ void init_message(struct message *m, enum msg_type type, uint32_t serial)
 
 static_assert(sizeof(struct raw_header) == 16, "");
 
+static uint32_t swap32(uint32_t v)
+{
+	union {
+		uint32_t u;
+		uint8_t v[4];
+	} in, out;
+	in.u = v;
+	out.v[0] = in.v[3];
+	out.v[1] = in.v[2];
+	out.v[2] = in.v[1];
+	out.v[3] = in.v[0];
+	return out.u;
+}
+
 int parse_message_size(char *p, size_t *phdr, size_t *pbody)
 {
 	struct raw_header *h = (struct raw_header *)p;
@@ -753,8 +766,8 @@ int parse_message_size(char *p, size_t *phdr, size_t *pbody)
 	memcpy(&flen, &h->field_len, 4);
 	memcpy(&blen, &h->body_len, 4);
 	if (h->endian != native_endian()) {
-		flen = bswap_32(flen);
-		blen = bswap_32(blen);
+		flen = swap32(flen);
+		blen = swap32(blen);
 	}
 	uint32_t fpadded = ALIGN_UINT_UP(flen, 8);
 	if (fpadded > DBUS_MAX_VALUE_SIZE || blen > DBUS_MAX_MSG_SIZE ||

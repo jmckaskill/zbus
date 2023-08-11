@@ -1,19 +1,19 @@
 #pragma once
-#include "bus.h"
 
-struct ini_reader {
-	const char *data;
-	const char *end;
-	int lineno;
-	const char *section;
-	size_t seclen;
-};
+#ifdef _WIN32
+#define HAVE_SID
+#elif defined __linux__
+#define HAVE_PROC_GROUPS
+#define HAVE_GID
+#define HAVE_UID
+#define HAVE_ACCEPT4
+#endif
 
-void init_ini(struct ini_reader *p, const char *data, size_t sz);
-
-#define INI_OK 0
-#define INI_ERROR -1
-#define INI_EOF 1
-#define INI_BUFLEN 256
-
-int read_ini(struct ini_reader *p, char *key, char *val);
+#undef HAVE_ACCEPT4
+#undef HAVE_SOCKFD
+#undef HAVE_READY_FIFO
+#undef HAVE_MEMRCHR
+#define HAVE__STRICMP
+#define HAVE__STRDUP
+#undef HAVE_ALIGNED_ALLOC
+#define HAVE_AUTOLAUNCH

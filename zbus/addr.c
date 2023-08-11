@@ -20,9 +20,13 @@ static inline void collect_address(struct rcu_object **objs,
 // the config in na to defaults.
 static void copy_config(struct address *na, const struct address *oa)
 {
+#ifdef HAVE_AUTOLAUNCH
 	na->activatable = oa ? oa->activatable : false;
+#endif
+#ifdef HAVE_GID
 	na->gid_access = oa ? oa->gid_access : 0;
 	na->gid_owner = oa ? oa->gid_owner : 0;
+#endif
 }
 
 struct address *new_address(const str8_t *name)

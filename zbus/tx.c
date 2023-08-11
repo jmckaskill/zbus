@@ -1,52 +1,29 @@
 #define _GNU_SOURCE
 #include "tx.h"
 #include "rx.h"
-#include "sys.h"
 #include "busmsg.h"
 #include "dbus/encode.h"
 #include "lib/logmsg.h"
 #include "lib/log.h"
-#include <unistd.h>
-#include <strings.h>
-#include <errno.h>
-#include <sys/socket.h>
 
 static void cancel_client_requests(struct tx *client);
 static void cancel_server_requests(struct rx *r, struct tx *srv);
 
-struct tx *new_tx(int fd, int id)
+struct tx *new_tx(int id)
 {
 	struct tx *t = fmalloc(sizeof(*t));
 	memset(t, 0, sizeof(*t));
-	if (mtx_init(&t->lk, mtx_plain) != thrd_success) {
-		goto do_free;
+	if (mtx_init(&t->lk, mtx_plain) != thrd_success ||
+	    cnd_init(&t->send_cnd) != thrd_success ||
+	    cnd_init(&t->client.cnd) != thrd_success ||
+	    cnd_init(&t->server.cnd) != thrd_success) {
+		FATAL("failed to create locks,errno:%m");
 	}
-	if (cnd_init(&t->send_cnd) != thrd_success) {
-		goto destroy_mutex;
-	}
-	if (cnd_init(&t->client.cnd) != thrd_success) {
-		goto destroy_send_cnd;
-	}
-	if (cnd_init(&t->server.cnd) != thrd_success) {
-		goto destroy_client_cnd;
-	}
-	new_socket_pidinfo(fd, &t->pid);
 	atomic_store_explicit(&t->refcnt, 1, memory_order_relaxed);
-	t->fd = fd;
 	t->id = id;
 	t->client.avail = UINT32_MAX;
 	t->server.avail = UINT32_MAX;
 	return t;
-
-destroy_client_cnd:
-	cnd_destroy(&t->client.cnd);
-destroy_send_cnd:
-	cnd_destroy(&t->send_cnd);
-destroy_mutex:
-	mtx_destroy(&t->lk);
-do_free:
-	free(t);
-	return NULL;
 }
 
 void deref_tx(struct tx *t)
@@ -57,8 +34,8 @@ void deref_tx(struct tx *t)
 		cnd_destroy(&t->send_cnd);
 		cnd_destroy(&t->client.cnd);
 		cnd_destroy(&t->server.cnd);
-		free_pidinfo(t->pid);
-		close(t->fd);
+		free_security(t->sec);
+		close_tx(&t->conn);
 		free(t);
 	}
 }
@@ -67,6 +44,7 @@ void unregister_tx(struct rx *r)
 {
 	struct tx *t = r->tx;
 	mtx_lock(&t->lk);
+	cancel_send(&t->conn);
 	t->shutdown = true;
 	t->closed = true;
 	t->stalled = false;
@@ -90,7 +68,7 @@ static int send_locked(struct tx *t, bool block, struct txmsg *m)
 
 	struct logbuf lb;
 	if (start_debug(&lb, "send")) {
-		log_int(&lb, "fd", t->fd);
+		log_int(&lb, "id", t->id);
 		if (m->hdr.len) {
 			log_bytes(&lb, "hdr", m->hdr.buf, m->hdr.len);
 		}
@@ -121,82 +99,62 @@ static int send_locked(struct tx *t, bool block, struct txmsg *m)
 		t->send_waiters--;
 	}
 
+	char *p1 = m->hdr.buf;
+	int n1 = m->hdr.len;
+	char *p2 = m->body[0].buf;
+	int n2 = m->body[0].len;
+	char *p3 = m->body[1].buf;
+	int n3 = m->body[1].len;
+
 	for (;;) {
 		if (t->shutdown) {
 			return -1;
 		}
+		assert(n1);
 
-		struct iovec v[3];
-		v[0].iov_base = m->hdr.buf;
-		v[0].iov_len = m->hdr.len;
-		v[1].iov_base = m->body[0].buf;
-		v[1].iov_len = m->body[0].len;
-		v[2].iov_base = m->body[1].buf;
-		v[2].iov_len = m->body[1].len;
-
-		int total = m->hdr.len + m->body[0].len + m->body[1].len;
-		int num = (m->hdr.len ? 1 : 0) + (m->body[0].len ? 1 : 0) +
-			  (m->body[1].len ? 1 : 0);
-		assert(num);
-
-		struct msghdr msg;
-		memset(&msg, 0, sizeof(msg));
-		msg.msg_iov = v + (m->hdr.len ? 0 : (m->body[0].len ? 1 : 2));
-		msg.msg_iovlen = num;
-		msg.msg_control = m->control.buf;
-		msg.msg_controllen = m->control.len;
-
-		int w = sendmsg(t->fd, &msg, 0);
+		int total = n1 + n2 + n3;
+		int w = start_send3(&t->conn, p1, n1, p2, n2, p3, n3);
 		if (w >= total) {
 			break;
-		} else if (w <= 0) {
-			switch (errno) {
-			case EINTR:
-				continue;
-			case EAGAIN: {
-				if (!block) {
-					ERROR("overrun on tx buffer");
-					goto shutdown;
-				}
-
-				t->stalled = true;
-				mtx_unlock(&t->lk);
-				int err = poll_one(t->fd, false, true);
-				mtx_lock(&t->lk);
-				t->stalled = false;
-
-				if (err) {
-					ERROR("poll,errno:%m,fd:%d", t->fd);
-					goto shutdown;
-				}
-				continue;
-			}
-			default:
-				ERROR("send,errno:%m,fd:%d", t->fd);
+		} else if (w < 0) {
+			ERROR("start_send,errno:%m");
+			goto shutdown;
+		} else if (w == 0) {
+			if (!block) {
+				ERROR("overrun on tx buffer");
 				goto shutdown;
 			}
+
+			t->stalled = true;
+			int err = finish_send(&t->conn, &t->lk);
+			t->stalled = false;
+
+			if (err) {
+				ERROR("finish_send,errno:%m");
+				goto shutdown;
+			}
+			continue;
 		}
 
 		// partial write - update pointers to figure out next chunk
 
-		if (w <= m->hdr.len) {
-			m->hdr.buf += w;
-			m->hdr.len -= w;
-		} else if (w <= m->hdr.len + m->body[0].len) {
-			w -= m->hdr.len;
-			m->hdr.len = 0;
-			m->body[0].buf += w;
-			m->body[0].len -= w;
+		if (w < n1) {
+			p1 += w;
+			n1 -= w;
+		} else if (w < n1 + n2) {
+			w -= n1;
+			p1 = p2 + w;
+			n1 = n2 - w;
+			p2 = p3;
+			n2 = n3;
+			n3 = 0;
 		} else {
-			w -= m->hdr.len + m->body[0].len;
-			m->hdr.len = 0;
-			m->body[0].len = 0;
-			m->body[1].buf += w;
-			m->body[1].len -= w;
+			w -= n1 + n2;
+			p1 = p3 + w;
+			n1 = n3 - w;
+			n2 = 0;
+			n3 = 0;
 		}
-
-		m->control.buf = NULL;
-		m->control.len = 0;
 	}
 
 	if (t->send_waiters) {
@@ -209,7 +167,7 @@ shutdown:
 	if (!t->shutdown) {
 		t->shutdown = true;
 		t->stalled = false;
-		shutdown(t->fd, SHUT_WR);
+		cancel_send(&t->conn);
 		cnd_broadcast(&t->send_cnd);
 	}
 	return -1;
@@ -234,8 +192,7 @@ int send_data(struct tx *t, bool block, struct txmsg *m, char *buf, int sz)
 	m->hdr.len = sz;
 	m->body[0].len = 0;
 	m->body[1].len = 0;
-	m->control.buf = NULL;
-	m->control.len = 0;
+	m->fdsrc = NULL;
 	return send_message(t, block, m);
 }
 

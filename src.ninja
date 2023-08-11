@@ -1,0 +1,104 @@
+
+# vendor
+build obj/vendor/c-rbtree.o: cc vendor/c-rbtree-3.1.0/src/c-rbtree.c
+
+# dbus
+build obj/dbus/auth.o: cc dbus/auth.c
+build obj/dbus/decode.o: cc dbus/decode.c
+build obj/dbus/encode.o: cc dbus/encode.c
+build obj/dbus/match.o: cc dbus/match.c
+build obj/dbus/stream.o: cc dbus/stream.c
+
+build obj/dbus.lib: lib $
+        obj/dbus/auth.o $
+        obj/dbus/decode.o $
+        obj/dbus/encode.o $
+        obj/dbus/match.o $
+        obj/dbus/stream.o $
+
+# lib
+
+build obj/lib/file-posix.o: cc lib/file-posix.c
+build obj/lib/file-win32.o: cc lib/file-win32.c
+build obj/lib/log.o: cc lib/log.c
+build obj/lib/logmsg.o: cc lib/logmsg.c
+build obj/lib/print.o: cc lib/print.c
+build obj/lib/socket-posix.o: cc lib/socket-posix.c
+build obj/lib/socket-win32.o: cc lib/socket-win32.c
+build obj/lib/threads-win.o: cc lib/threads-win.c
+
+build obj/lib.lib: lib $
+        obj/lib/file-posix.o $
+        obj/lib/file-win32.o $
+        obj/lib/log.o $
+        obj/lib/logmsg.o $
+        obj/lib/print.o $
+        obj/lib/socket-posix.o $
+        obj/lib/socket-win32.o $
+        obj/lib/threads-win.o $
+
+
+# tester
+
+build obj/tester/client.o: cc tester/client.c
+build obj/tester/socket-posix.o: cc tester/socket-posix.c
+build obj/tester/socket-win32.o: cc tester/socket-win32.c
+build obj/tester/tester.o: cc tester/tester.c
+
+build bin/tester${exe}: ld $
+        obj/tester/client.o $
+        obj/tester/socket-posix.o $
+        obj/tester/socket-win32.o $
+        obj/tester/tester.o $
+        obj/lib.lib $
+        obj/dbus.lib $
+
+
+build obj/zbus/addr.o: cc zbus/addr.c
+build obj/zbus/bus.o: cc zbus/bus.c
+build obj/zbus/busmsg.o: cc zbus/busmsg.c
+build obj/zbus/dispatch.o: cc zbus/dispatch.c
+build obj/zbus/ini.o: cc zbus/ini.c
+build obj/zbus/main-posix.o: cc zbus/main-posix.c
+build obj/zbus/main-win32.o: cc zbus/main-win32.c
+build obj/zbus/rcu.o: cc zbus/rcu.c
+build obj/zbus/rx.o: cc zbus/rx.c
+build obj/zbus/sec-linux.o: cc zbus/sec-linux.c
+build obj/zbus/sec-posix.o: cc zbus/sec-posix.c
+build obj/zbus/sec-win32.o: cc zbus/sec-win32.c
+build obj/zbus/sub.o: cc zbus/sub.c
+build obj/zbus/tx.o: cc zbus/tx.c
+build obj/zbus/txmap.o: cc zbus/txmap.c
+build obj/zbus/vector.o: cc zbus/vector.c
+
+build bin/zbus${exe}: ld $
+        obj/zbus/addr.o $
+        obj/zbus/bus.o $
+        obj/zbus/busmsg.o $
+        obj/zbus/dispatch.o $
+        obj/zbus/ini.o $
+        obj/zbus/main-posix.o $
+        obj/zbus/main-win32.o $
+        obj/zbus/rcu.o $
+        obj/zbus/rx.o $
+        obj/zbus/sec-linux.o $
+        obj/zbus/sec-posix.o $
+        obj/zbus/sec-win32.o $
+        obj/zbus/sub.o $
+        obj/zbus/tx.o $
+        obj/zbus/txmap.o $
+        obj/zbus/vector.o $
+        obj/vendor/c-rbtree.o $
+        obj/lib.lib $
+        obj/dbus.lib $
+
+# stack depth parser
+
+build obj/gcc-ci-parser.o: cc gcc-ci-parser/gcc-ci-parser.c
+
+build bin/gcc-ci-parser${exe}: ld $
+        obj/gcc-ci-parser.o $
+        obj/lib.lib $
+
+
+

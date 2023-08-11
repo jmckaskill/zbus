@@ -1,5 +1,5 @@
 #pragma once
-#include "sys.h"
+#include "config.h"
 #include "tx.h"
 #include "rcu.h"
 #include "addr.h"
@@ -9,11 +9,13 @@
 #include "txmap.h"
 #include "dbus/match.h"
 #include "lib/log.h"
-#include <threads.h>
+#include "lib/threads.h"
 
 struct tx;
 struct rx;
 struct address;
+
+#define BUSID_STRLEN 32
 
 struct config {
 	struct rcu_object rcu;
@@ -21,10 +23,15 @@ struct config {
 	unsigned max_num_remotes;
 	unsigned max_num_names;
 	unsigned max_num_subs;
-	int sockfd;
-	str8_t *launch_helper;
 	str8_t *sockpn;
+
+#ifdef HAVE_LISTENFD
+	int sockfd;
+#endif
+
+#ifdef HAVE_READY_FIFO
 	str8_t *readypn;
+#endif
 };
 
 struct rcu_data {
@@ -38,7 +45,7 @@ struct rcu_data {
 
 struct bus {
 	str8_t busid;
-	char idbuf[BUSID_BUFLEN];
+	char idbuf[BUSID_STRLEN];
 
 	mtx_t lk;
 	cnd_t launch;
@@ -54,6 +61,8 @@ int register_remote(struct bus *b, struct rx *r, const str8_t *name,
 		    uint32_t serial, struct rcu_reader **preader);
 int unregister_remote(struct bus *b, struct rx *r, const str8_t *name,
 		      struct rcu_reader *reader);
+
+extern int sys_launch(struct bus *bus, const str8_t *name);
 
 int autolaunch_service(struct bus *b, const str8_t *name,
 		       const struct address **paddr);

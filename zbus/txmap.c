@@ -4,14 +4,14 @@
 ////////////////////////////////////
 // Unique address encode/decode
 
-size_t id_to_address(char *buf, int id)
+uint8_t id_to_address(char *buf, int id)
 {
 	assert(id >= 0);
 	size_t n = strlen(UNIQ_ADDR_PREFIX);
 	memcpy(buf, UNIQ_ADDR_PREFIX, n);
 	n += print_uint32(buf + n, id);
 	buf[n] = 0;
-	return n;
+	return (uint8_t)n;
 }
 
 int address_to_id(const str8_t *s)
@@ -20,7 +20,7 @@ int address_to_id(const str8_t *s)
 		return -1;
 	}
 	const char *p = s->p + strlen(UNIQ_ADDR_PREFIX);
-	int len = s->len - strlen(UNIQ_ADDR_PREFIX);
+	size_t len = s->len - strlen(UNIQ_ADDR_PREFIX);
 	int id = 0;
 	for (int i = 0; i < len; i++) {
 		char start = (i || len == 1) ? '0' : '1';
@@ -49,7 +49,7 @@ int append_id_address(struct builder *b, int id)
 
 static int compare_id_tx(const void *key, const void *element)
 {
-	int id = (uintptr_t)key;
+	int id = (int)(uintptr_t)key;
 	const struct tx *tx = element;
 	return id - tx->id;
 }

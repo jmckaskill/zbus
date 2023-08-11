@@ -1,18 +1,11 @@
-#define _GNU_SOURCE
 #include "client.h"
 #include "dbus/encode.h"
 #include "dbus/decode.h"
 #include "dbus/stream.h"
 #include "lib/log.h"
-#include <getopt.h>
+#include "lib/threads.h"
 #include <stdio.h>
-#include <unistd.h>
-#include <fcntl.h>
 #include <stdalign.h>
-#include <errno.h>
-#include <sys/un.h>
-#include <sys/socket.h>
-#include <threads.h>
 
 static inline void must(int error, const char *cmd)
 {
@@ -63,7 +56,7 @@ static int on_test_signal(void *udata, struct client *c, struct message *m,
 	return 0;
 }
 
-static int on_test_method(void *, struct client *c, struct message *m,
+static int on_test_method(void *udata, struct client *c, struct message *m,
 			  struct iterator *ii)
 {
 	unregister_cb(c, m->reply_serial);
@@ -82,7 +75,7 @@ static int on_test_method(void *, struct client *c, struct message *m,
 	return 0;
 }
 
-static int on_autostart(void *, struct client *c, struct message *m,
+static int on_autostart(void *udata, struct client *c, struct message *m,
 			struct iterator *ii)
 {
 	unregister_cb(c, m->reply_serial);
@@ -100,7 +93,7 @@ static int run_client(void *udata)
 {
 	const char *sockpn = udata;
 
-	struct client *c = open_client(sockpn);
+	struct client *c = open_client(sockpn, false);
 
 	uint32_t list_names = register_cb(c, &on_list_names, NULL);
 	must(!list_names, "register ListNames");
@@ -150,7 +143,7 @@ static int run_client(void *udata)
 #define DBUS_REQUEST_NAME_REPLY_EXISTS 3
 #define DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER 4
 
-static int on_request_name(void *, struct client *c, struct message *m,
+static int on_request_name(void *udata, struct client *c, struct message *m,
 			   struct iterator *ii)
 {
 	unregister_cb(c, m->reply_serial);
@@ -168,7 +161,7 @@ static int on_request_name(void *, struct client *c, struct message *m,
 
 static struct client *start_server(const char *sockpn)
 {
-	struct client *c = open_client(sockpn);
+	struct client *c = open_client(sockpn, true);
 
 	uint32_t request_name = register_cb(c, &on_request_name, NULL);
 	must(call_bus_method(c, request_name, S8("\013RequestName"), "su",
@@ -211,52 +204,16 @@ static void server_message(struct client *c, const struct message *m,
 	}
 }
 
-static int usage(void)
-{
-	fputs("usage: tester [args] socket\n", stderr);
-	fputs("    -v     	Enable verbose (default:disabled)\n", stderr);
-	fputs("    -f file    	FIFO to use as a ready indicator\n", stderr);
-	return 2;
-}
-
 int main(int argc, char *argv[])
 {
-	char *readypn = NULL;
-	int i;
-	while ((i = getopt(argc, argv, "hqvf:")) > 0) {
-		switch (i) {
-		case 'f':
-			readypn = optarg;
-			break;
-		case 'q':
-			g_log_level = LOG_WARNING;
-			break;
-		case 'v':
-			g_log_level = LOG_VERBOSE;
-			break;
-		case 'h':
-		case '?':
-			return usage();
-		}
+	if (argc < 2) {
+		return 2;
 	}
 
-	argc -= optind;
-	argv += optind;
-	if (argc != 1) {
-		fputs("unexpected arguments\n", stderr);
-		return usage();
-	}
-	char *sockpn = argv[0];
+	g_log_level = LOG_DEBUG;
+	char *sockpn = argv[1];
 
 	VERBOSE("startup");
-
-	if (readypn != NULL) {
-		LOG("waiting for server ready,fifopn:%s", readypn);
-		int rfd = open(readypn, O_RDONLY);
-		must(rfd < 0, "open ready fifo");
-		close(rfd);
-	}
-
 	LOG("opening dbus socket,path:%s", sockpn);
 
 	struct client *c = start_server(sockpn);

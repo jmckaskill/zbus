@@ -1,12 +1,13 @@
 #pragma once
+#include "config.h"
 #include "rcu.h"
+#include "sec.h"
 #include "dbus/encode.h"
-#include <threads.h>
+#include "lib/threads.h"
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <limits.h>
-#include <sys/socket.h>
 
 #define NO_REPLY_SERIAL 2U
 #define MAX_NUM_REQUESTS 32
@@ -17,8 +18,9 @@ struct txmsg {
 	struct message m;
 	struct {
 		char *buf;
-		size_t len;
-	} hdr, body[2], control;
+		int len;
+	} hdr, body[2];
+	struct rxconn *fdsrc;
 };
 
 struct request {
@@ -39,12 +41,12 @@ struct tx {
 	// data that can be used without the lock
 	atomic_int refcnt;
 	int id;
-	struct pidinfo *pid;
+	struct security *sec;
 
 	// data that requires the lock be held
 	mtx_t lk;
 	cnd_t send_cnd;
-	int fd;
+	struct txconn conn;
 	int send_waiters;
 	bool stalled;
 	bool shutdown;
@@ -53,7 +55,7 @@ struct tx {
 	struct requests server;
 };
 
-struct tx *new_tx(int fd, int id);
+struct tx *new_tx(int id);
 static struct tx *ref_tx(struct tx *t);
 void deref_tx(struct tx *t);
 void unregister_tx(struct rx *r);

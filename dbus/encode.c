@@ -74,8 +74,9 @@ static uint32_t alignx(char *base, uint32_t off, char type)
 
 void append_raw(struct builder *b, const char *sig, const void *p, size_t len)
 {
+	assert(len < DBUS_MAX_MSG_SIZE);
 	uint32_t off = alignx(b->base, b->next, *sig);
-	b->next = off + len;
+	b->next = off + (uint32_t)len;
 	if (!is_signature(b->sig, sig)) {
 		b->next = b->end + 1;
 	} else if (!len && b->next <= b->end) {
@@ -135,13 +136,13 @@ int _append_string(struct builder *b, const char *str, size_t len, char type)
 {
 	uint32_t lenoff = align4(b->base, b->next);
 	uint32_t stroff = lenoff + 4;
-	uint32_t nuloff = stroff + len;
+	uint32_t nuloff = stroff + (uint32_t)len;
 	b->next = nuloff + 1;
 	if (*b->sig != type || len > DBUS_MAX_VALUE_SIZE) {
 		b->next = b->end + 1;
 		return -1;
 	} else if (b->next <= b->end) {
-		uint32_t len32 = len;
+		uint32_t len32 = (uint32_t)len;
 		memcpy(b->base + lenoff, &len32, 4);
 		memcpy(b->base + stroff, str, len);
 		b->base[nuloff] = 0;
@@ -157,11 +158,11 @@ void _append_signature(struct builder *b, const char *sig, char type)
 	size_t len = strlen(sig);
 	uint32_t lenoff = b->next;
 	uint32_t stroff = lenoff + 1;
-	b->next = stroff + len + 1;
+	b->next = stroff + (uint32_t)len + 1;
 	if (len > 255 || *b->sig != type) {
 		b->next = b->end + 1;
 	} else if (b->next <= b->end) {
-		*(uint8_t *)(b->base + lenoff) = len;
+		*(uint8_t *)(b->base + lenoff) = (uint8_t)len;
 		memcpy(b->base + stroff, sig, len + 1);
 		b->sig++;
 	}
@@ -184,7 +185,8 @@ char *start_string(struct builder *b, size_t *psz)
 
 void finish_string(struct builder *b, size_t sz)
 {
-	b->next += sz;
+	assert(sz < DBUS_MAX_VALUE_SIZE);
+	b->next += (uint32_t)sz;
 	if (b->next <= b->end) {
 		b->base[b->next - 1] = 0;
 	}
@@ -523,10 +525,10 @@ static void append_signature_field(struct builder *b, uint32_t tag,
 	uint32_t tagoff = b->next;
 	uint32_t lenoff = tagoff + 4;
 	uint32_t stroff = lenoff + 1;
-	b->next = stroff + len + 1;
+	b->next = stroff + (uint8_t)len + 1;
 	if (b->next <= b->end) {
 		write_little_4(b->base + tagoff, tag);
-		*(uint8_t *)(b->base + lenoff) = len;
+		*(uint8_t *)(b->base + lenoff) = (uint8_t)len;
 		memcpy(b->base + stroff, sig, len + 1);
 	}
 }
@@ -571,11 +573,11 @@ void set_reply_serial(char *buf, uint32_t reply_serial)
 }
 
 static int append_header(struct builder *b, const struct message *m,
-			 uint32_t blen)
+			 size_t blen)
 {
 	uint32_t start = b->next;
 	b->next += sizeof(struct raw_header);
-	if (b->next > b->end) {
+	if (b->next > b->end || blen > DBUS_MAX_MSG_SIZE) {
 		return -1;
 	}
 
@@ -617,10 +619,11 @@ static int append_header(struct builder *b, const struct message *m,
 	h->flags = m->flags;
 	h->version = DBUS_VERSION;
 	uint32_t serial = m->serial;
-	uint32_t flen = b->next - start - sizeof(*h);
+	uint32_t flen32 = b->next - start - sizeof(*h);
+	uint32_t blen32 = (uint32_t)blen;
 	memcpy(h->serial, &serial, 4);
-	memcpy(h->body_len, &blen, 4);
-	memcpy(h->field_len, &flen, 4);
+	memcpy(h->body_len, &blen32, 4);
+	memcpy(h->field_len, &flen32, 4);
 
 	// align the end of the fields
 	align_buffer_8(b);

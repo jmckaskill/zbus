@@ -17,7 +17,7 @@ static int add_match_field(struct match *m, char *base, char *key, size_t klen,
 			if (m->path_off) {
 				return -1;
 			}
-			m->path_off = (char *)val - base;
+			m->path_off = (uint16_t)((char *)val - base);
 			return 0;
 		} else {
 			return 0;
@@ -27,13 +27,13 @@ static int add_match_field(struct match *m, char *base, char *key, size_t klen,
 			if (m->sender_off) {
 				return -1;
 			}
-			m->sender_off = (char *)val - base;
+			m->sender_off = (uint16_t)((char *)val - base);
 			return 0;
 		} else if (!memcmp(key, "member", 6)) {
 			if (m->member_off) {
 				return -1;
 			}
-			m->member_off = (char *)val - base;
+			m->member_off = (uint16_t)((char *)val - base);
 			return 0;
 		} else {
 			return 0;
@@ -43,7 +43,7 @@ static int add_match_field(struct match *m, char *base, char *key, size_t klen,
 			if (m->interface_off) {
 				return -1;
 			}
-			m->interface_off = (char *)val - base;
+			m->interface_off = (uint16_t)((char *)val - base);
 			return 0;
 		} else if (!memcmp(key, "eavesdrop", 9)) {
 			// eavesdrop through matches is not supported.
@@ -73,7 +73,8 @@ static int add_match_field(struct match *m, char *base, char *key, size_t klen,
 				val->len--;
 				val->p[val->len] = 0;
 			}
-			m->path_off = INCLUDE_CHILDREN | ((char *)val - base);
+			m->path_off = INCLUDE_CHILDREN |
+				      (uint16_t)((char *)val - base);
 			return 0;
 		} else {
 			return 0;
@@ -90,7 +91,7 @@ int decode_match(struct match *m, char *s, size_t len)
 	}
 
 	memset(m, 0, sizeof(*m));
-	m->len = len;
+	m->len = (uint16_t)len;
 	char *base = s;
 	const char *end = s + len;
 	while (s < end) {
@@ -130,7 +131,7 @@ int decode_match(struct match *m, char *s, size_t len)
 		// replace the beginning apostrophe with the string size and the
 		// end apostrophe with a nul to create a str8_t
 		str8_t *str = (str8_t *)(val - 1);
-		str->len = vlen;
+		str->len = (uint8_t)vlen;
 		str->p[vlen] = 0;
 
 		if (add_match_field(m, base, key, klen, str)) {

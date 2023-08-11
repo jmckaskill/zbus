@@ -12,19 +12,14 @@
 #include "dbus/auth.h"
 #include "lib/logmsg.h"
 #include "lib/algo.h"
-#include <sys/socket.h>
-#include <unistd.h>
-#include <poll.h>
-#include <errno.h>
-#include <pthread.h>
+#include <stdlib.h>
 
-struct rx *new_rx(struct bus *bus, int fd, int id)
+struct rx *new_rx(struct bus *bus, int id)
 {
 	struct rx *r = fmalloc(sizeof(*r) + UNIQ_ADDR_BUFLEN);
 	memset(r, 0, sizeof(*r));
 	r->bus = bus;
-	r->tx = new_tx(fd, id);
-	r->fd = fd;
+	r->tx = new_tx(id);
 	r->addr.len = id_to_address(r->addr.p, id);
 	return r;
 }
@@ -32,7 +27,7 @@ struct rx *new_rx(struct bus *bus, int fd, int id)
 void free_rx(struct rx *r)
 {
 	if (r) {
-		close_all_fds(&r->unix_fds);
+		close_rx(&r->conn);
 		deref_tx(r->tx);
 		assert(!r->names);
 		assert(!r->subs);
@@ -41,71 +36,18 @@ void free_rx(struct rx *r)
 	}
 }
 
-static ssize_t recv_one(int fd, char *p1, size_t n1, char *p2, size_t n2,
-			char *ctrl, size_t *cn)
-{
-	for (;;) {
-		struct iovec v[2];
-		v[0].iov_base = p1;
-		v[0].iov_len = n1;
-		v[1].iov_base = p2;
-		v[1].iov_len = n2;
-
-		struct msghdr m;
-		memset(&m, 0, sizeof(m));
-		m.msg_iov = v;
-		m.msg_iovlen = n2 ? 2 : 1;
-		m.msg_control = ctrl;
-		m.msg_controllen = *cn;
-		ssize_t n = recvmsg(fd, &m, MSG_CMSG_CLOEXEC);
-		if (n < 0 && errno == EINTR) {
-			continue;
-		} else if (n < 0 && errno == EAGAIN) {
-			if (poll_one(fd, true, false)) {
-				return -1;
-			}
-			continue;
-		} else if (n < 0) {
-			ERROR("recv,errno:%m,fd:%d", fd);
-			return -1;
-		} else if (n == 0) {
-			ERROR("recv early EOF,fd:%d", fd);
-			return -1;
-		}
-
-		struct logbuf lb;
-		if (start_debug(&lb, "recv")) {
-			log_int(&lb, "fd", fd);
-			log_bytes(&lb, "data1", p1, (n > n1) ? n1 : n);
-			log_bytes(&lb, "data2", p2, (n > n1) ? (n - n1) : 0);
-			finish_log(&lb);
-		}
-
-		*cn = m.msg_controllen;
-
-		return n;
-	}
-}
-
-static int send_all(int fd, const char *p, size_t sz)
+static int send_auth(struct txconn *c, char *p, int sz)
 {
 	while (sz) {
-		int n = send(fd, p, sz, 0);
-		if (n < 0 && errno == EINTR) {
-			continue;
-		} else if (n < 0 && errno == EAGAIN) {
-			if (poll_one(fd, false, true)) {
-				return -1;
-			}
-			continue;
-		} else if (n <= 0) {
-			ERROR("send,errno:%m,fd:%d", fd);
+		int n = start_send1(c, p, sz);
+		if (n <= 0) {
+			// we shouldn't have sent enough to consume the tx
+			// buffer so consider async sends as errors
+			ERROR("send,errno:%m");
 			return -1;
-		} else {
-			p += n;
-			sz -= n;
-			continue;
 		}
+		p += n;
+		sz -= n;
 	}
 	return 0;
 }
@@ -114,14 +56,13 @@ static int authenticate(struct rx *r)
 {
 	uint32_t serial;
 	int state = 0;
-	size_t insz = 0;
+	int insz = 0;
 	char inbuf[256];
 	char outbuf[64];
 
 	for (;;) {
-		size_t cn = 0;
-		int n = recv_one(r->fd, inbuf + insz, sizeof(inbuf) - insz,
-				 NULL, 0, NULL, &cn);
+		int n = block_recv1(&r->conn, inbuf + insz,
+				    sizeof(inbuf) - insz);
 		if (n < 0) {
 			return -1;
 		}
@@ -133,7 +74,7 @@ static int authenticate(struct rx *r)
 					   sizeof(outbuf), r->bus->busid.p,
 					   &serial);
 
-		if (send_all(r->fd, outbuf, out - outbuf)) {
+		if (send_auth(&r->tx->conn, outbuf, (int)(out - outbuf))) {
 			return -1;
 		}
 
@@ -144,9 +85,9 @@ static int authenticate(struct rx *r)
 		}
 
 		// compact any remaining input data
-		n = inbuf + insz - in;
-		memmove(inbuf, in, n);
-		insz = n;
+		int sz = (int)(inbuf + insz - in);
+		memmove(inbuf, in, sz);
+		insz = sz;
 	}
 
 	// register_remote will send the Hello reply
@@ -181,26 +122,24 @@ static int read_message(struct rx *r, struct msg_stream *s)
 		char *p1, *p2;
 		size_t n1, n2;
 		stream_buffers(s, &p1, &n1, &p2, &n2);
-		size_t cn = sizeof(r->buf);
-		ssize_t n = recv_one(r->fd, p1, n1, p2, n2, r->buf, &cn);
+		int n = block_recv2(&r->conn, p1, (int)n1, p2, (int)n2);
 		if (n < 0) {
 			return -1;
-		}
-		if (cn && parse_cmsg(&r->unix_fds, r->buf, cn)) {
-			ERROR("failed to parse cmsg data,fd:%d", r->fd);
 		}
 		s->have += n;
 	}
 
-	m.m.sender = &r->addr;
+	size_t n1, n2;
+	stream_body(s, &m.body[0].buf, &n1, &m.body[1].buf, &n2);
 	m.hdr.buf = NULL;
 	m.hdr.len = 0;
-	stream_body(s, &m.body[0].buf, &m.body[0].len, &m.body[1].buf,
-		    &m.body[1].len);
+	m.body[0].len = (int)n1;
+	m.body[1].len = (int)n2;
+	m.m.sender = &r->addr;
 
 	struct logbuf lb;
 	if (start_debug(&lb, "read")) {
-		log_int(&lb, "fd", r->fd);
+		log_int(&lb, "id", r->tx->id);
 		log_message(&lb, &m.m);
 		if (m.body[0].len) {
 			log_bytes(&lb, "body", m.body[0].buf, m.body[0].len);
@@ -210,12 +149,6 @@ static int read_message(struct rx *r, struct msg_stream *s)
 		}
 		finish_log(&lb);
 	}
-
-	if (m.m.fdnum > r->unix_fds.n) {
-		WARN("message requests more fds than we have");
-		m.m.fdnum = r->unix_fds.n;
-	}
-	int fdnum = m.m.fdnum;
 
 	switch (m.m.type) {
 	case MSG_METHOD: {
@@ -256,12 +189,6 @@ static int read_message(struct rx *r, struct msg_stream *s)
 		break;
 	}
 
-	if (s->have == s->used) {
-		close_all_fds(&r->unix_fds);
-	} else if (fdnum) {
-		close_fds(&r->unix_fds, fdnum);
-	}
-
 	return 0;
 }
 
@@ -272,18 +199,13 @@ static int read_message(struct rx *r, struct msg_stream *s)
 // than this as they need to be defragmented to process.
 #define DEFRAG_LEN (1024)
 
-int rx_thread(void *udata)
+int run_rx(struct rx *r)
 {
-	struct rx *r = udata;
-
-	set_thread_name(r->addr.p);
-
-	if (authenticate(r)) {
+	if (authenticate(r) || load_security(&r->tx->conn, &r->tx->sec)) {
 		goto free_rx;
 	}
 
 	struct msg_stream *s = fmalloc(sizeof(*s) + MSG_LEN + DEFRAG_LEN);
-	must_set_non_blocking(r->fd);
 	init_msg_stream(s, MSG_LEN, DEFRAG_LEN);
 
 	while (!read_message(r, s)) {

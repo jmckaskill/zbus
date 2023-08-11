@@ -1,4 +1,5 @@
 #pragma once
+#include "config.h"
 #include "vector.h"
 #include "tx.h"
 
@@ -14,7 +15,7 @@ int bsearch_tx(const struct txmap *m, int id);
 
 // buffer must be at least UNIX_ADDR_MAXLEN long
 // this does not nul terminate the string
-size_t id_to_address(char *buf, int id);
+uint8_t id_to_address(char *buf, int id);
 int address_to_id(const str8_t *s);
 int append_id_address(struct builder *b, int id);
 

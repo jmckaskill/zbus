@@ -1,4 +1,5 @@
 #pragma once
+#include "socket.h"
 #include "dbus/types.h"
 #include "dbus/stream.h"
 #include "dbus/encode.h"
@@ -15,13 +16,13 @@ struct message_cb {
 };
 
 struct client {
-	int fd;
+	fd_t fd;
 	uint16_t cb_available;
 	struct message_cb cbs[16];
 	struct msg_stream in;
 };
 
-struct client *open_client(const char *sockpn);
+struct client *open_client(const char *sockpn, bool block);
 void close_client(struct client *c);
 
 uint32_t register_cb(struct client *c, message_fn fn, void *udata);

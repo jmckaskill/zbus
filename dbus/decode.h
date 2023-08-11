@@ -20,6 +20,7 @@ extern int32_t parse_int32(struct iterator *p);
 extern uint32_t parse_uint32(struct iterator *p);
 extern int64_t parse_int64(struct iterator *p);
 extern uint64_t parse_uint64(struct iterator *p);
+extern double parse_double(struct iterator *p);
 extern char *parse_string(struct iterator *p, size_t *psz);
 extern char *parse_path(struct iterator *p, size_t *psz);
 extern const str8_t *parse_string8(struct iterator *p);
@@ -64,9 +65,10 @@ int parse_header(struct message *msg, char *p);
 static inline void init_iterator(struct iterator *ii, const char *sig, char *p,
 				 size_t sz)
 {
+	assert(sz < DBUS_MAX_MSG_SIZE);
 	ii->base = p;
 	ii->next = 0;
-	ii->end = sz;
+	ii->end = (uint32_t)sz;
 	ii->sig = sig;
 }
 

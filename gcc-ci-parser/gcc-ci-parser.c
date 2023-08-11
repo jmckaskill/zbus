@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #include "lib/sys.h"
 #include "lib/log.h"
-#include "vendor/klib-master/khash.h"
+#include "lib/khash.h"
 #include <stdio.h>
 #include <string.h>
 #include <getopt.h>

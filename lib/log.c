@@ -2,20 +2,25 @@
 #include "log.h"
 #include "print.h"
 #include <stdint.h>
-#include <threads.h>
-#include <unistd.h>
-#include <time.h>
 #include <limits.h>
 #include <string.h>
-#include <errno.h>
 #include <stdbool.h>
 #include <assert.h>
 #include <stddef.h>
 
+#ifdef _WIN32
+#undef ERROR
+#include "lib/windows.h"
+#else
+#include <time.h>
+#include <errno.h>
+#include <unistd.h>
+#endif
+
 enum log_level g_log_level = LOG_NOTICE;
 enum log_type g_log_type = LOG_TEXT;
 
-int g_log_fd = 2;
+intptr_t g_log_fd = -1;
 
 #define YELLOW "\033[33m"
 #define RED "\033[31m"
@@ -88,11 +93,11 @@ static const char escapes[128] = {
 
 static const char hexdigit[] = "0123456789ABCDEF";
 
-static unsigned write_char(char *buf, unsigned off, char ch)
+static size_t write_char(char *buf, size_t off, char ch)
 {
 	unsigned char u = (unsigned char)ch;
 	signed char s = (signed char)ch;
-	int esc = s > 0 ? escapes[s] : 0;
+	char esc = s > 0 ? escapes[s] : 0;
 	if (!esc) {
 		buf[off++] = ch;
 	} else if (esc > 1) {
@@ -114,7 +119,7 @@ static unsigned write_char(char *buf, unsigned off, char ch)
 	return off;
 }
 
-static inline int append(char *buf, int off, const char *str, size_t len)
+static inline size_t append(char *buf, size_t off, const char *str, size_t len)
 {
 	memcpy(buf + off, str, len);
 	return off + len;
@@ -122,13 +127,20 @@ static inline int append(char *buf, int off, const char *str, size_t len)
 
 static inline void flush_log(struct logbuf *b)
 {
-	write(g_log_fd, b->buf, b->off);
+#ifdef _WIN32
+	HANDLE h = (g_log_fd >= 0) ? (HANDLE)g_log_fd :
+				     GetStdHandle(STD_ERROR_HANDLE);
+	DWORD written;
+	WriteFile(h, b->buf, (DWORD)b->off, &written, NULL);
+#else
+	write(g_log_fd >= 0 ? g_log_fd : 2, b->buf, b->off);
+#endif
 	b->buf = NULL;
 	b->off = 0;
 	b->end = 0;
 }
 
-static inline int grow(struct logbuf *b, size_t sz)
+static inline size_t grow(struct logbuf *b, size_t sz)
 {
 	if (b->lvl >= LOG_VERBOSE) {
 		size_t alloc = b->off + sz;
@@ -159,17 +171,17 @@ static void write_nstring(struct logbuf *b, const char *str, size_t len)
 	}
 }
 
-static int append_uint64(char *buf, int off, uint64_t num)
+static size_t append_uint64(char *buf, size_t off, uint64_t num)
 {
-	return off + print_uint64(buf, num);
+	return off + print_uint64(buf + off, num);
 }
 
-static int append_int64(char *buf, int off, int64_t num)
+static size_t append_int64(char *buf, size_t off, int64_t num)
 {
-	return off + print_int64(buf, num);
+	return off + print_int64(buf + off, num);
 }
 
-static int append_padded(char *buf, int off, unsigned num, int len)
+static size_t append_padded(char *buf, size_t off, unsigned num, int len)
 {
 	for (int i = len - 1; i >= 0; i--) {
 		buf[off + i] = (num % 10) + '0';
@@ -178,8 +190,8 @@ static int append_padded(char *buf, int off, unsigned num, int len)
 	return off + len;
 }
 
-static int append_key(char *buf, int off, const char *key, size_t len,
-		      bool is_string)
+static size_t append_key(char *buf, size_t off, const char *key, size_t len,
+			 bool is_string)
 {
 	off = append(buf, off, key, len);
 	if (g_log_type == LOG_TEXT) {
@@ -193,6 +205,71 @@ static int append_key(char *buf, int off, const char *key, size_t len,
 	}
 	return off;
 }
+
+static size_t append_time_parts(char *buf, size_t off, int year, int mon,
+				int day, int hour, int min, int sec, int millis)
+{
+	if (g_log_type == LOG_TEXT) {
+		off = append_padded(buf, off, hour, 2);
+		buf[off++] = ':';
+		off = append_padded(buf, off, min, 2);
+		buf[off++] = ':';
+		off = append_padded(buf, off, sec, 2);
+		buf[off++] = '.';
+		off = append_padded(buf, off, millis, 3);
+		return append(buf, off, MSG_KEY_TEXT, strlen(MSG_KEY_TEXT));
+	} else {
+		off = append_padded(buf, off, year, 4);
+		buf[off++] = '-';
+		off = append_padded(buf, off, mon, 2);
+		buf[off++] = '-';
+		off = append_padded(buf, off, day, 2);
+		buf[off++] = 'T';
+		off = append_padded(buf, off, hour, 2);
+		buf[off++] = ':';
+		off = append_padded(buf, off, min, 2);
+		buf[off++] = ':';
+		off = append_padded(buf, off, sec, 2);
+		buf[off++] = '.';
+		off = append_padded(buf, off, millis, 3);
+		buf[off++] = 'Z';
+		return append(buf, off, MSG_KEY_JSON, strlen(MSG_KEY_JSON));
+	}
+}
+
+#ifdef _WIN32
+static size_t append_time(char *buf, size_t off)
+{
+	SYSTEMTIME st;
+	if (g_log_type == LOG_TEXT) {
+		GetLocalTime(&st);
+	} else {
+		GetSystemTime(&st);
+	}
+	return append_time_parts(buf, off, st.wYear, st.wMonth, st.wDay,
+				 st.wHour, st.wMinute, st.wSecond,
+				 st.wMilliseconds);
+}
+#else
+static size_t append_time(char *buf, size_t off)
+{
+	struct timespec ts;
+	struct tm tm;
+	if (clock_gettime(CLOCK_REALTIME, &ts)) {
+		ts.tv_sec = 0;
+		ts.tv_nsec = 0;
+	}
+
+	if (g_log_type == LOG_TEXT) {
+		localtime_r(&ts.tv_sec, &tm);
+	} else {
+		gmtime_r(&ts.tv_sec, &tm);
+	}
+	return append_time_parts(buf, off, tm.tm_year + 1900, tm.tm_mon + 1,
+				 tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
+				 ts.tv_nsec / 1000000);
+}
+#endif
 
 int start_log2(struct logbuf *b, char *buf, size_t sz, enum log_level lvl,
 	       const char *msg, size_t mlen)
@@ -214,51 +291,15 @@ int start_log2(struct logbuf *b, char *buf, size_t sz, enum log_level lvl,
 		return 0;
 	}
 
+#ifdef _WIN32
+	int err = (int)GetLastError();
+#else
 	int err = errno;
-	int off = 0;
+#endif
+	size_t off = 0;
 	const char *pfx = prefix[(g_log_type * LOG_LEVELS) + lvl];
 	off = append(buf, off, pfx, strlen(pfx));
-
-	struct timespec ts;
-	struct tm tm;
-	if (clock_gettime(CLOCK_REALTIME, &ts)) {
-		ts.tv_sec = 0;
-		ts.tv_nsec = 0;
-	}
-
-	switch (g_log_type) {
-	case LOG_TEXT:
-		if (localtime_r(&ts.tv_sec, &tm)) {
-			off = append_padded(buf, off, tm.tm_hour, 2);
-			buf[off++] = ':';
-			off = append_padded(buf, off, tm.tm_min, 2);
-			buf[off++] = ':';
-			off = append_padded(buf, off, tm.tm_sec, 2);
-			buf[off++] = '.';
-			off = append_padded(buf, off, ts.tv_nsec / 1000000, 3);
-		}
-		off = append(buf, off, MSG_KEY_TEXT, strlen(MSG_KEY_TEXT));
-		break;
-	case LOG_JSON:
-		if (gmtime_r(&ts.tv_sec, &tm)) {
-			off = append_padded(buf, off, tm.tm_year + 1900, 4);
-			buf[off++] = '-';
-			off = append_padded(buf, off, tm.tm_mon + 1, 2);
-			buf[off++] = '-';
-			off = append_padded(buf, off, tm.tm_mday, 2);
-			buf[off++] = 'T';
-			off = append_padded(buf, off, tm.tm_hour, 2);
-			buf[off++] = ':';
-			off = append_padded(buf, off, tm.tm_min, 2);
-			buf[off++] = ':';
-			off = append_padded(buf, off, tm.tm_sec, 2);
-			buf[off++] = '.';
-			off = append_padded(buf, off, ts.tv_nsec / 1000000, 3);
-			buf[off++] = 'Z';
-		}
-		off = append(buf, off, MSG_KEY_JSON, strlen(MSG_KEY_JSON));
-		break;
-	}
+	off = append_time(buf, off);
 
 	b->buf = buf;
 	b->off = off;
@@ -274,7 +315,7 @@ int start_log2(struct logbuf *b, char *buf, size_t sz, enum log_level lvl,
 
 int finish_log(struct logbuf *b)
 {
-	if (!b->buf) {
+	if (b->buf) {
 		b->off = append(b->buf, b->off, SUFFIX, strlen(SUFFIX));
 		flush_log(b);
 	}
@@ -290,7 +331,7 @@ int finish_log(struct logbuf *b)
 void log_bool_2(struct logbuf *b, const char *key, size_t klen, bool val)
 {
 	char *buf = b->buf;
-	int off = b->off;
+	size_t off = b->off;
 	if (off + MIN_FIELD_LEN + klen > b->end &&
 	    grow(b, MIN_FIELD_LEN + klen)) {
 		return;
@@ -306,8 +347,15 @@ void log_bool_2(struct logbuf *b, const char *key, size_t klen, bool val)
 
 void log_errno_2(struct logbuf *b, const char *key, size_t klen)
 {
+#ifdef _WIN32
+	char estr[256];
+	size_t len = FormatMessageA(
+		FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+		NULL, (DWORD)b->err, 0, estr, sizeof(estr), NULL);
+#else
 	const char *estr = strerror(b->err);
-	int len = strlen(estr);
+	size_t len = strlen(estr);
+#endif
 	log_nstring_2(b, key, klen, estr, len);
 }
 
@@ -333,7 +381,7 @@ void log_nstring_2(struct logbuf *b, const char *key, size_t klen,
 		   const char *str, size_t len)
 {
 	char *buf = b->buf;
-	int off = b->off;
+	size_t off = b->off;
 	if (off + MIN_FIELD_LEN + klen > b->end &&
 	    grow(b, MIN_FIELD_LEN + klen)) {
 		return;
@@ -345,10 +393,19 @@ void log_nstring_2(struct logbuf *b, const char *key, size_t klen,
 	b->off = append(buf, b->off, STR_END, strlen(STR_END));
 }
 
+void log_wstring_2(struct logbuf *b, const char *key, size_t klen,
+		   const uint16_t *wstr, size_t len)
+{
+	char *str = fmalloc(UTF8_SPACE(len));
+	char *end = utf16_to_utf8(str, wstr, len);
+	log_nstring_2(b, key, klen, str, end - str);
+	free(str);
+}
+
 void log_int_2(struct logbuf *b, const char *key, size_t klen, int val)
 {
 	char *buf = b->buf;
-	int off = b->off;
+	size_t off = b->off;
 	if (off + MIN_FIELD_LEN + klen > b->end &&
 	    grow(b, MIN_FIELD_LEN + klen)) {
 		return;
@@ -361,7 +418,7 @@ void log_int_2(struct logbuf *b, const char *key, size_t klen, int val)
 void log_uint_2(struct logbuf *b, const char *key, size_t klen, unsigned val)
 {
 	char *buf = b->buf;
-	int off = b->off;
+	size_t off = b->off;
 	if (off + MIN_FIELD_LEN + klen > b->end &&
 	    grow(b, MIN_FIELD_LEN + klen)) {
 		return;
@@ -374,7 +431,7 @@ void log_uint_2(struct logbuf *b, const char *key, size_t klen, unsigned val)
 void log_int64_2(struct logbuf *b, const char *key, size_t klen, int64_t val)
 {
 	char *buf = b->buf;
-	int off = b->off;
+	size_t off = b->off;
 	if (off + MIN_FIELD_LEN + klen > b->end &&
 	    grow(b, MIN_FIELD_LEN + klen)) {
 		return;
@@ -388,7 +445,7 @@ void log_int64_2(struct logbuf *b, const char *key, size_t klen, int64_t val)
 void log_uint64_2(struct logbuf *b, const char *key, size_t klen, uint64_t val)
 {
 	char *buf = b->buf;
-	int off = b->off;
+	size_t off = b->off;
 	if (off + MIN_FIELD_LEN + klen > b->end &&
 	    grow(b, MIN_FIELD_LEN + klen)) {
 		return;
@@ -406,7 +463,7 @@ void log_hex_2(struct logbuf *b, const char *key, size_t klen, unsigned val)
 		return;
 	}
 	char *buf = b->buf;
-	int off = b->off;
+	size_t off = b->off;
 	if (off + MIN_FIELD_LEN + klen > b->end &&
 	    grow(b, MIN_FIELD_LEN + klen)) {
 		return;
@@ -435,13 +492,13 @@ static void to_base64(char d[4], const uint8_t s[3])
 	/* Input:  xxxx xxxx yyyy yyyy zzzz zzzz
 	 * Output: 00xx xxxx 00xx yyyy 00yy yyzz 00zz zzzz
 	 */
-	int i0 = ((s[0] >> 2) & 0x3F);
+	uint8_t i0 = ((s[0] >> 2) & 0x3F);
 
-	int i1 = ((s[0] << 4) & 0x30) | ((s[1] >> 4) & 0x0F);
+	uint8_t i1 = ((s[0] << 4) & 0x30) | ((s[1] >> 4) & 0x0F);
 
-	int i2 = ((s[1] << 2) & 0x3C) | ((s[2] >> 6) & 0x03);
+	uint8_t i2 = ((s[1] << 2) & 0x3C) | ((s[2] >> 6) & 0x03);
 
-	int i3 = (s[2] & 0x3F);
+	uint8_t i3 = (s[2] & 0x3F);
 
 	d[0] = b64digits[i0];
 	d[1] = b64digits[i1];
@@ -449,7 +506,8 @@ static void to_base64(char d[4], const uint8_t s[3])
 	d[3] = b64digits[i3];
 }
 
-static int write_base64(char *buf, int off, const uint8_t *data, size_t sz)
+static size_t write_base64(char *buf, size_t off, const uint8_t *data,
+			   size_t sz)
 {
 	size_t i;
 	for (i = 0; i + 3 <= sz; i += 3) {
@@ -485,7 +543,7 @@ static void log_json_bytes(struct logbuf *b, const char *key, size_t klen,
 			   const uint8_t *data, size_t sz)
 {
 	char *buf = b->buf;
-	int off = b->off;
+	size_t off = b->off;
 	size_t b64bytes = ((sz + 2) / 3) * 4;
 	if (off + MIN_FIELD_LEN + klen + b64bytes > b->end &&
 	    grow(b, MIN_FIELD_LEN + klen + b64bytes)) {
@@ -506,8 +564,8 @@ static char ascii(unsigned char ch)
 static void log_text_bytes(struct logbuf *b, const char *key, size_t klen,
 			   const uint8_t *data, size_t sz)
 {
-	int start = b->off;
-	int off = b->off;
+	size_t start = b->off;
+	size_t off = b->off;
 	size_t rowb = strlen(FIELD_KEY_TEXT) + klen + 6 + (2 * 8) + 1 + 8;
 	size_t rows = (sz / 8) + 1;
 	size_t need = rows * rowb + MIN_FIELD_LEN;
@@ -595,6 +653,13 @@ int log_vargs(struct logbuf *b, const char *fmt, va_list ap)
 			// cstring
 			log_cstring_2(b, key, klen, va_arg(ap, const char *));
 			break;
+		case 'S': {
+			// wide cstring
+			const uint16_t *wstr = va_arg(ap, const uint16_t *);
+			size_t len = u16len(wstr);
+			log_wstring_2(b, key, klen, wstr, len);
+			break;
+		}
 		case 'd':
 		case 'i':
 			// int
@@ -634,20 +699,23 @@ int log_vargs(struct logbuf *b, const char *fmt, va_list ap)
 			case 'u':
 				if (sizeof(size_t) == sizeof(unsigned)) {
 					log_uint_2(b, key, klen,
-						   va_arg(ap, size_t));
+						   (unsigned)va_arg(ap,
+								    size_t));
 				} else {
 					log_uint64_2(b, key, klen,
-						     va_arg(ap, size_t));
+						     (uint64_t)va_arg(ap,
+								      size_t));
 				}
 				break;
 			case 'd':
 			case 'i':
 				if (sizeof(ptrdiff_t) == sizeof(int)) {
 					log_int_2(b, key, klen,
-						  va_arg(ap, ptrdiff_t));
+						  (int)va_arg(ap, ptrdiff_t));
 				} else {
 					log_int64_2(b, key, klen,
-						    va_arg(ap, ptrdiff_t));
+						    (int64_t)va_arg(ap,
+								    ptrdiff_t));
 				}
 				break;
 			default:
@@ -675,11 +743,23 @@ int log_args(struct logbuf *b, const char *fmt, ...)
 	return log_vargs(b, fmt, ap);
 }
 
+#if defined __GNUC__
+#define x_strchrnul strchrnul
+#else
+static inline char *x_strchrnul(const char *s, char ch)
+{
+	while (*s && *s != ch) {
+		s++;
+	}
+	return (char *)s;
+}
+#endif
+
 int flog(enum log_level lvl, const char *fmt, ...)
 {
 	char buf[256];
 	struct logbuf b;
-	const char *args = strchrnul(fmt, ',');
+	const char *args = x_strchrnul(fmt, ',');
 	if (!start_log2(&b, buf, sizeof(buf), lvl, fmt, args - fmt)) {
 		return 0;
 	}
@@ -694,6 +774,15 @@ int flog(enum log_level lvl, const char *fmt, ...)
 void *fmalloc(size_t sz)
 {
 	void *p = malloc(sz);
+	if (!p) {
+		FATAL("allocation failed");
+	}
+	return p;
+}
+
+void *fcalloc(size_t num, size_t sz)
+{
+	void *p = calloc(num, sz);
 	if (!p) {
 		FATAL("allocation failed");
 	}

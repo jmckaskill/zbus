@@ -2,7 +2,6 @@
 #include "decode.h"
 #include "encode.h"
 #include <stdlib.h>
-#include <unistd.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -17,7 +16,7 @@
 static bool begins_with(char *line, char *end, const char *test)
 {
 	size_t len = strlen(test);
-	return (end - line) >= len && !memcmp(line, test, len);
+	return (size_t)(end - line) >= len && !memcmp(line, test, len);
 }
 
 static bool equals(char *line, char *end, const char *test)
@@ -84,8 +83,8 @@ enum {
 	SERVER_WAIT_FOR_HELLO,
 };
 
-int step_server_auth(int *pstate, char **pin, size_t insz, char **pout,
-		     size_t outsz, const char *busid, uint32_t *pserial)
+int step_server_auth(int *pstate, char **pin, int insz, char **pout, int outsz,
+		     const char *busid, uint32_t *pserial)
 {
 	char *ine = *pin + insz;
 	char *oute = *pout + outsz;
@@ -196,8 +195,8 @@ enum {
 	CLIENT_WAIT_FOR_OK,
 };
 
-int step_client_auth(int *pstate, char **pin, size_t insz, char **pout,
-		     size_t outsz, const char *uid, uint32_t *pserial)
+int step_client_auth(int *pstate, char **pin, int insz, char **pout, int outsz,
+		     const char *uid, uint32_t *pserial)
 {
 	char *ine = *pin + insz;
 	char *oute = *pout + outsz;

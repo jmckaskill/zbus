@@ -25,31 +25,38 @@ enum log_type {
 
 extern enum log_level g_log_level;
 extern enum log_type g_log_type;
-extern int g_log_fd;
+extern intptr_t g_log_fd;
 
 struct logbuf {
 	char *buf;
-	unsigned off, end;
+	size_t off, end;
 	int err;
 	enum log_level lvl;
 };
 
+#if defined __GNUC__ || defined __clang__
+#define GNU_PRINTF_ATTRIBUTE(FMT, ARGS) \
+	__attribute__((format(gnu_printf, FMT, ARGS)))
+#else
+#define GNU_PRINTF_ATTRIBUTE(FMT, ARGS)
+#endif
+
 int start_log2(struct logbuf *b, char *buf, size_t sz, enum log_level lvl,
 	       const char *msg, size_t mlen);
-int flog(enum log_level lvl, const char *fmt, ...)
-	__attribute__((format(gnu_printf, 2, 3)));
+int flog(enum log_level lvl, const char *fmt, ...) GNU_PRINTF_ATTRIBUTE(2, 3);
 int finish_log(struct logbuf *b);
 
-int log_args(struct logbuf *b, const char *fmt, ...)
-	__attribute__((format(gnu_printf, 2, 3)));
+int log_args(struct logbuf *b, const char *fmt, ...) GNU_PRINTF_ATTRIBUTE(2, 3);
 int log_vargs(struct logbuf *b, const char *fmt, va_list ap)
-	__attribute__((format(gnu_printf, 2, 0)));
+	GNU_PRINTF_ATTRIBUTE(2, 0);
 void log_errno_2(struct logbuf *b, const char *key, size_t klen);
 void log_bool_2(struct logbuf *b, const char *key, size_t klen, bool val);
 void log_cstring_2(struct logbuf *b, const char *key, size_t klen,
 		   const char *str);
 void log_nstring_2(struct logbuf *b, const char *key, size_t klen,
 		   const char *str, size_t len);
+void log_wstring_2(struct logbuf *b, const char *key, size_t klen,
+		   const uint16_t *str, size_t len);
 void log_bytes_2(struct logbuf *b, const char *key, size_t klen,
 		 const void *data, size_t sz);
 void log_uint_2(struct logbuf *b, const char *key, size_t klen, unsigned val);
@@ -60,6 +67,7 @@ void log_int64_2(struct logbuf *b, const char *key, size_t klen, int64_t val);
 
 // fmalloc that will will abort the program on failure
 void *fmalloc(size_t sz);
+void *fcalloc(size_t num, size_t sz);
 void *frealloc(void *p, size_t sz);
 
 static inline int start_log(struct logbuf *b, char *buf, size_t sz,

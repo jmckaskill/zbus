@@ -1,0 +1,22 @@
+rule cc
+    deps = msvc
+    command = cl /showIncludes /nologo /c $in /experimental:c11atomics $
+        /Fo$out /Od /I. /Z7 /MTd /WX /W3 /std:c11 /wd5045
+    description = CL $out
+
+rule ld
+    command = link /nologo /DEBUG /OUT:$out /WX $in
+    description = LINK $out
+
+rule lib
+    command = lib /nologo /OUT:$out $in
+    description = LIB $out
+
+exe = .exe
+
+include src.ninja
+
+default $
+    bin/zbus.exe $
+    bin/tester.exe $
+

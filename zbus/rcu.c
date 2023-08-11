@@ -6,6 +6,10 @@
 #include <stdint.h>
 #include <limits.h>
 
+#ifdef _MSC_VER
+#include <malloc.h>
+#endif
+
 #define NOT_IN_USE 0
 #define DISABLE_GC 2
 #define VALID_FLAG 1
@@ -13,9 +17,14 @@
 
 #define ROOT_NEXT_FLAG 1
 
+#ifdef HAVE_ALIGNED_ALLOC
+#define _aligned_malloc aligned_alloc
+#define _aligned_free free
+#endif
+
 struct rcu_reader {
 	alignas(CACHE_LINE_SIZE) atomic_uint version;
-	_Atomic(struct rcu_object *) *root;
+	atomic_uintptr_t *root;
 };
 
 static_assert(sizeof(struct rcu_reader) == CACHE_LINE_SIZE, "");
@@ -23,8 +32,8 @@ static_assert(sizeof(struct rcu_reader) == CACHE_LINE_SIZE, "");
 const void *rcu_lock(struct rcu_reader *r)
 {
 	atomic_store_explicit(&r->version, DISABLE_GC, memory_order_release);
-	struct rcu_object *d =
-		atomic_load_explicit(r->root, memory_order_acquire);
+	uintptr_t u = atomic_load_explicit(r->root, memory_order_acquire);
+	struct rcu_object *d = (void *)u;
 	// Then once we have the data pointer, bring our version forward
 	atomic_store_explicit(&r->version, d ? d->version : NOT_IN_USE,
 			      memory_order_release);
@@ -45,7 +54,7 @@ struct rcu_writer {
 	struct rcu_object *collect_oldest;
 	struct rcu_object *collect_newest;
 
-	alignas(CACHE_LINE_SIZE) _Atomic(struct rcu_object *) root;
+	alignas(CACHE_LINE_SIZE) atomic_uintptr_t root;
 };
 
 static_assert(sizeof(struct rcu_writer) == 2 * CACHE_LINE_SIZE, "");
@@ -54,12 +63,13 @@ static void run_gc(struct rcu_writer *w, unsigned tgt_version);
 
 static inline struct rcu_object *get_root(struct rcu_writer *w)
 {
-	return atomic_load_explicit(&w->root, memory_order_relaxed);
+	uintptr_t u = atomic_load_explicit(&w->root, memory_order_relaxed);
+	return (void *)u;
 }
 
 static void *fcache_aligned_alloc(size_t sz)
 {
-	void *p = aligned_alloc(CACHE_LINE_SIZE, sz);
+	void *p = _aligned_malloc(CACHE_LINE_SIZE, sz);
 	if (!p) {
 		FATAL("aligned allocation failed");
 	}
@@ -80,7 +90,7 @@ void free_rcu_writer(struct rcu_writer *w)
 		assert(!w->rd.n);
 		run_gc(w, w->version);
 		free(w->rd.v);
-		free(w);
+		_aligned_free(w);
 	}
 }
 
@@ -106,7 +116,7 @@ void free_rcu_reader(struct rcu_writer *w, struct rcu_reader *r)
 				break;
 			}
 		}
-		free(r);
+		_aligned_free(r);
 	}
 }
 
@@ -161,7 +171,8 @@ void rcu_commit(struct rcu_writer *w, void *p, struct rcu_object *objs)
 	struct rcu_object *d = p;
 	w->version += VERSION_STEP;
 	d->version = w->version;
-	atomic_store_explicit(&w->root, d, memory_order_release);
+	atomic_store_explicit(&w->root, (uintptr_t)(void *)d,
+			      memory_order_release);
 
 	// find the oldest version in active use
 	unsigned version = w->version;

@@ -114,8 +114,7 @@ static int build_signal(struct txmsg *m)
 	assert(m->m.type == MSG_SIGNAL);
 	m->m.flags &= FLAG_MASK;
 	// keep body[0] and body[1]
-	m->control.buf = NULL;
-	m->control.len = 0;
+	m->fdsrc = NULL;
 
 	size_t bsz = m->body[0].len + m->body[1].len;
 	int sz = write_header(m->hdr.buf, SIGNAL_HDR_CAP, &m->m, bsz);
@@ -180,7 +179,7 @@ int broadcast(struct rx *r, struct txmsg *m)
 	// send to broadcast subscriptions
 	const struct rcu_data *d = rcu_lock(r->reader);
 	const struct address *a = get_address(d->interfaces, m->m.interface);
-	if (a && has_group(r->tx->pid, a->gid_owner) &&
+	if (a && has_group(r->tx->sec, a->gid_owner) &&
 	    send_signal(true, a->subs, m)) {
 		goto error;
 	}
@@ -299,7 +298,7 @@ static int ref_named(struct rx *r, const str8_t *name, bool should_autostart,
 		     struct tx **ptx)
 {
 	struct tx *tx = NULL;
-	int err = 0;
+	int err = ERR_NO_REMOTE;
 
 	if (!name) {
 		return ERR_BAD_ARGUMENT;
@@ -312,12 +311,14 @@ static int ref_named(struct rx *r, const str8_t *name, bool should_autostart,
 			err = ERR_NO_REMOTE;
 		} else {
 			const struct address *a = d->destinations->v[idx];
-			if (!has_group(r->tx->pid, a->gid_access)) {
+			if (!has_group(r->tx->sec, a->gid_access)) {
 				err = ERR_NOT_ALLOWED;
 			} else if (a->tx) {
 				tx = ref_tx(a->tx);
-			} else if (!a->activatable || !should_autostart) {
-				err = ERR_NO_REMOTE;
+#ifdef HAVE_AUTOLAUNCH
+			} else if (a->activatable && should_autostart) {
+				err = 0;
+#endif
 			}
 		}
 		rcu_unlock(r->reader);
@@ -326,16 +327,18 @@ static int ref_named(struct rx *r, const str8_t *name, bool should_autostart,
 	if (tx) {
 		*ptx = tx;
 		return 0;
-	} else if (err) {
-		return err;
 	}
 
+#ifdef HAVE_AUTOLAUNCH
+	if (err) {
+		return err;
+	}
 	mtx_lock(&r->bus->lk);
 	const struct address *a;
 	err = autolaunch_service(r->bus, name, &a);
 	if (!err) {
 		assert(a->tx);
-		if (!has_group(r->tx->pid, a->gid_access)) {
+		if (!has_group(r->tx->sec, a->gid_access)) {
 			// config may have changed while we were launching the
 			// service
 			err = ERR_NOT_ALLOWED;
@@ -344,6 +347,7 @@ static int ref_named(struct rx *r, const str8_t *name, bool should_autostart,
 		}
 	}
 	mtx_unlock(&r->bus->lk);
+#endif
 
 	return err;
 }
@@ -379,12 +383,26 @@ static int ref_remote(struct rx *r, const str8_t *name, struct tx **ptx)
 ///////////////////////////////////////////
 // ListNames
 
-static void encode_names(struct builder *b, struct array_data ad,
-			 const struct addrmap *m, bool only_activatable)
+#ifdef HAVE_AUTOLAUNCH
+static void encode_activatable(struct builder *b, struct array_data ad,
+			       const struct addrmap *m)
 {
 	for (int i = 0, n = vector_len(&m->hdr); i < n; i++) {
 		const struct address *a = m->v[i];
-		if (only_activatable ? a->activatable : (a->tx != NULL)) {
+		if (a->activatable) {
+			start_array_entry(b, ad);
+			append_string8(b, &a->name);
+		}
+	}
+}
+#endif
+
+static void encode_names(struct builder *b, struct array_data ad,
+			 const struct addrmap *m)
+{
+	for (int i = 0, n = vector_len(&m->hdr); i < n; i++) {
+		const struct address *a = m->v[i];
+		if (a->tx) {
 			start_array_entry(b, ad);
 			append_string8(b, &a->name);
 		}
@@ -411,9 +429,13 @@ static int list_names(struct rx *r, uint32_t request_serial, bool activatable)
 	struct array_data ad = start_array(&b);
 
 	const struct rcu_data *d = rcu_lock(r->reader);
-	encode_names(&b, ad, d->destinations, activatable);
 	if (!activatable) {
+		encode_names(&b, ad, d->destinations);
 		encode_unique_names(&b, ad, d->remotes);
+#ifdef HAVE_AUTOLAUNCH
+	} else {
+		encode_activatable(&b, ad, d->destinations);
+#endif
 	}
 	rcu_unlock(r->reader);
 
@@ -431,12 +453,12 @@ static int get_credentials(struct rx *r, uint32_t serial, const str8_t *name)
 	int err = ref_remote(r, name, &tx);
 	if (err) {
 		return err;
-	} else if (!tx->pid) {
+	} else if (!tx->sec) {
 		deref_tx(tx);
 		return ERR_INTERNAL;
 	}
 
-	struct pidinfo *p = tx->pid;
+	struct security *s = tx->sec;
 
 	struct txmsg m;
 	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
@@ -448,27 +470,39 @@ static int get_credentials(struct rx *r, uint32_t serial, const str8_t *name)
 	struct variant_data vd;
 
 	start_dict_entry(&b, dd);
-	append_string8(&b, S8("\012UnixUserID"));
-	vd = start_variant(&b, "u");
-	append_uint32(&b, p->uid);
-	end_variant(&b, vd);
-
-	start_dict_entry(&b, dd);
 	append_string8(&b, S8("\011ProcessID"));
 	vd = start_variant(&b, "u");
-	append_uint32(&b, p->pid);
+	append_uint32(&b, s->pid);
 	end_variant(&b, vd);
 
+#ifdef HAVE_SID
+	start_dict_entry(&b, dd);
+	append_string8(&b, S8("\012WindowsSID"));
+	vd = start_variant(&b, "s");
+	append_string(&b, s->sid, strlen(s->sid));
+	end_variant(&b, vd);
+#endif
+
+#ifdef HAVE_UID
+	start_dict_entry(&b, dd);
+	append_string8(&b, S8("\012UnixUserID"));
+	vd = start_variant(&b, "u");
+	append_uint32(&b, s->uid);
+	end_variant(&b, vd);
+#endif
+
+#ifdef HAVE_GID
 	start_dict_entry(&b, dd);
 	append_string8(&b, S8("\014UnixGroupIDs"));
 	vd = start_variant(&b, "au");
 	struct array_data ad = start_array(&b);
-	for (int i = 0; i < p->groups.n; i++) {
+	for (int i = 0; i < s->groups.n; i++) {
 		start_array_entry(&b, ad);
-		append_uint32(&b, p->groups.v[i]);
+		append_uint32(&b, s->groups.v[i]);
 	}
 	end_array(&b, ad);
 	end_variant(&b, vd);
+#endif
 
 	end_dict(&b, dd);
 
@@ -477,18 +511,18 @@ static int get_credentials(struct rx *r, uint32_t serial, const str8_t *name)
 	return send_data(r->tx, true, &m, r->buf, sz);
 }
 
-static int get_unix_pid(struct rx *r, uint32_t serial, const str8_t *name,
-			bool want_uid)
+static int get_sec_u32(struct rx *r, uint32_t serial, const str8_t *name,
+		       size_t offset)
 {
 	struct tx *tx = NULL;
 	int err = ref_remote(r, name, &tx);
 	if (err) {
 		return err;
-	} else if (!tx->pid) {
+	} else if (!tx->sec) {
 		deref_tx(tx);
 		return ERR_INTERNAL;
 	}
-	int id = want_uid ? tx->pid->uid : tx->pid->pid;
+	uint32_t id = *(uint32_t *)((char *)(tx->sec) + offset);
 	deref_tx(tx);
 	return reply_uint32(r, serial, id);
 }
@@ -579,8 +613,13 @@ int bus_method(struct rx *r, struct message *m, struct iterator *ii)
 		case 21:
 
 			if (str8eq(m->member, METHOD_GET_UNIX_USER)) {
-				return get_unix_pid(r, m->serial,
-						    parse_string8(ii), true);
+#ifdef HAVE_UID
+				return get_sec_u32(
+					r, m->serial, parse_string8(ii),
+					offsetof(struct security, uid));
+#else
+				return ERR_NOT_SUPPORTED;
+#endif
 			}
 			break;
 		case 22:
@@ -599,8 +638,9 @@ int bus_method(struct rx *r, struct message *m, struct iterator *ii)
 		case 26:
 
 			if (str8eq(m->member, METHOD_GET_UNIX_PROCESS_ID)) {
-				return get_unix_pid(r, m->serial,
-						    parse_string8(ii), false);
+				return get_sec_u32(
+					r, m->serial, parse_string8(ii),
+					offsetof(struct security, pid));
 			}
 			break;
 		case 27:
@@ -638,17 +678,6 @@ int peer_method(struct rx *r, struct message *m)
 /////////////////////////////////
 // Unicast signals and requests
 
-static void setup_control(struct rx *r, struct txmsg *m, int hdrsz)
-{
-	if (write_cmsg(&m->control.buf, &m->control.len, r->buf + hdrsz,
-		       sizeof(r->buf) - hdrsz, r->unix_fds.v, m->m.fdnum)) {
-		WARN("failed to write fd cmsg");
-		m->control.buf = NULL;
-		m->control.len = 0;
-		m->m.fdnum = 0;
-	}
-}
-
 int unicast(struct rx *r, struct txmsg *m)
 {
 	struct tx *tx;
@@ -680,7 +709,7 @@ int unicast(struct rx *r, struct txmsg *m)
 	m->hdr.buf = r->buf;
 	m->hdr.len = sz;
 	// keep body[0], body[1]
-	setup_control(r, m, sz);
+	m->fdsrc = &r->conn;
 
 	if (m->m.type == MSG_METHOD && !(m->m.flags & FLAG_NO_REPLY_EXPECTED)) {
 		err = route_request(r, tx, m);
@@ -720,7 +749,7 @@ int build_reply(struct rx *r, struct txmsg *m)
 	m->hdr.buf = r->buf;
 	m->hdr.len = sz;
 	// keep body[0], body[1]
-	setup_control(r, m, sz);
+	m->fdsrc = &r->conn;
 
 	return 0;
 }

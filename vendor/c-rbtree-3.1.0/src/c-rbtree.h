@@ -227,7 +227,7 @@ static inline void c_rbnode_unlink(CRBNode *n)
  */
 static inline void c_rbtree_init(CRBTree *t)
 {
-	*t = (CRBTree)C_RBTREE_INIT;
+	t->root = NULL;
 }
 
 /**
