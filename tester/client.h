@@ -22,7 +22,7 @@ struct client {
 	struct msg_stream in;
 };
 
-struct client *open_client(const char *sockpn, bool block);
+struct client *open_client(const char *sockpn);
 void close_client(struct client *c);
 
 uint32_t register_cb(struct client *c, message_fn fn, void *udata);

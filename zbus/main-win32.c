@@ -196,6 +196,7 @@ int wmain(int argc, wchar_t *argv[])
 		// running in single bus mode, take the argument as the config
 		// file path
 		g_enable_security = false;
+		g_log_level = LOG_DEBUG;
 		run_bus(argv[1]);
 		return 0;
 	}

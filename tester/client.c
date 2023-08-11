@@ -46,11 +46,11 @@ void close_client(struct client *c)
 	}
 }
 
-struct client *open_client(const char *sockpn, bool block)
+struct client *open_client(const char *sockpn)
 {
 	struct client *c = NULL;
 	fd_t fd;
-	if (sys_open(&fd, sockpn, block)) {
+	if (sys_open(&fd, sockpn)) {
 		ERROR("failed to open dbus socket,errno:%m");
 		return NULL;
 	}

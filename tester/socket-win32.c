@@ -41,7 +41,7 @@ void sys_close(fd_t fd)
 
 int sys_open(fd_t *pfd, const char *sockpn)
 {
-	static const wchar_t pfx[] = L"\\.\\pipe\\";
+	static const wchar_t pfx[] = L"\\\\.\\pipe\\";
 	size_t len = strlen(sockpn);
 	wchar_t *fn = fmalloc(sizeof(pfx) + UTF16_SPACE(len) + 2);
 	memcpy(fn, pfx, sizeof(pfx));
@@ -51,7 +51,7 @@ int sys_open(fd_t *pfd, const char *sockpn)
 		HANDLE h = CreateFileW(fn, GENERIC_READ | GENERIC_WRITE, 0,
 				       NULL, OPEN_EXISTING, 0, NULL);
 		if (h != INVALID_HANDLE_VALUE) {
-			*pfd = h;
+			*pfd = (uintptr_t)h;
 			return 0;
 		} else if (GetLastError() != ERROR_PIPE_BUSY) {
 			return -1;
@@ -66,29 +66,33 @@ int sys_open(fd_t *pfd, const char *sockpn)
 char *sys_userid(char *buf, size_t sz)
 {
 	HANDLE tok;
-	if (!OpenThreadToken(GetCurrentThread(), TOKEN_QUERY_SOURCE, TRUE,
-			     &tok)) {
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &tok)) {
 		FATAL("failed to open token,errno:%m");
 	}
 
-	TOKEN_OWNER o;
 	DWORD osz;
-	if (!GetTokenInformation(tok, TokenOwner, &o, sizeof(o), &osz) ||
-	    osz != sizeof(o)) {
+	if (GetTokenInformation(tok, TokenOwner, NULL, 0, &osz) ||
+	    GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+		FATAL("failed to get sid,errno:%m");
+	}
+
+	TOKEN_OWNER *o = fmalloc(osz);
+	if (!GetTokenInformation(tok, TokenOwner, o, osz, &osz)) {
 		FATAL("failed to get sid,errno:%m");
 	}
 
 	char *sid;
-	if (!ConvertSidToStringSidA(o.Owner, &sid)) {
+	if (!ConvertSidToStringSidA(o->Owner, &sid)) {
 		FATAL("failed to convert sid to string,errno:%m");
 	}
 
-	size_t len = strlen(buf);
+	size_t len = strlen(sid);
 	if (len + 1 > sz) {
 		FATAL("SID too long for buffer,sid:%s", sid);
 	}
 	memcpy(buf, sid, len + 1);
 	LocalFree(sid);
+	free(o);
 	CloseHandle(tok);
 
 	return buf;

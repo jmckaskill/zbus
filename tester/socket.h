@@ -8,7 +8,7 @@ typedef uintptr_t fd_t;
 typedef int fd_t;
 #endif
 
-int sys_open(fd_t *pfd, const char *pn, bool block);
+int sys_open(fd_t *pfd, const char *pn);
 void sys_close(fd_t fd);
 int sys_send(fd_t fd, const char *b, int sz);
 int sys_recv(fd_t fd, char *b, int sz);

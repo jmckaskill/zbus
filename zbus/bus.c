@@ -202,6 +202,7 @@ int register_remote(struct bus *b, struct rx *r, const str8_t *name,
 	if (idx >= 0) {
 		return -1;
 	}
+	idx = -(idx + 1);
 
 	// Send Hello response first
 	reply_string(r, serial, name);

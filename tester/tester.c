@@ -93,7 +93,7 @@ static int run_client(void *udata)
 {
 	const char *sockpn = udata;
 
-	struct client *c = open_client(sockpn, false);
+	struct client *c = open_client(sockpn);
 
 	uint32_t list_names = register_cb(c, &on_list_names, NULL);
 	must(!list_names, "register ListNames");
@@ -161,7 +161,7 @@ static int on_request_name(void *udata, struct client *c, struct message *m,
 
 static struct client *start_server(const char *sockpn)
 {
-	struct client *c = open_client(sockpn, true);
+	struct client *c = open_client(sockpn);
 
 	uint32_t request_name = register_cb(c, &on_request_name, NULL);
 	must(call_bus_method(c, request_name, S8("\013RequestName"), "su",
