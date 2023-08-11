@@ -1,4 +1,5 @@
 #include "client.h"
+#include "socket.h"
 #include "dbus/auth.h"
 #include "lib/logmsg.h"
 #include "lib/algo.h"

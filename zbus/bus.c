@@ -1,3 +1,4 @@
+#include "config.h"
 #include "bus.h"
 #include "ini.h"
 #include "busmsg.h"

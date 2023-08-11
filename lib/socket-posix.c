@@ -1,5 +1,16 @@
+#define _POSIX_C_SOURCE 199309UL
+#define _GNU_SOURCE
 #include "socket-posix.h"
+
 #ifndef _WIN32
+#include "log.h"
+#include <sys/socket.h>
+#include <unistd.h>
+#include <string.h>
+#include <errno.h>
+#include <poll.h>
+#include <assert.h>
+#include <signal.h>
 
 static void close_all_fds(struct rxconn *c)
 {
@@ -69,7 +80,7 @@ int block_recv2(struct rxconn *c, char *p1, int n1, char *p2, int n2)
 		m.msg_iovlen = n2 ? 2 : 1;
 		m.msg_control = c->ctrl;
 		m.msg_controllen = sizeof(c->ctrl);
-		int n = recvmsg(fd, &m, MSG_CMSG_CLOEXEC);
+		int n = recvmsg(c->fd, &m, MSG_CMSG_CLOEXEC);
 		if (n < 0 && errno == EINTR) {
 			continue;
 		} else if (n < 0 && errno == EAGAIN) {

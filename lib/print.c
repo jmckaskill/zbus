@@ -82,7 +82,7 @@ static void ReplaceUtf8(uint8_t** dp, const uint16_t** sp)
 
 char *utf16_to_utf8(char* dst, const uint16_t* src, size_t len)
 {
-	uint8_t* dp = dst;
+	uint8_t* dp = (uint8_t*)dst;
 	const uint16_t* sp = src;
 	const uint16_t* send = src + len;
 
@@ -155,7 +155,7 @@ char *utf16_to_utf8(char* dst, const uint16_t* src, size_t len)
 			sp += 1;
 		}
 	}
-	return dp;
+	return (char*)dp;
 }
 
 static void ReplaceUtf16(uint16_t** dp, const uint8_t** sp, int srcskip)

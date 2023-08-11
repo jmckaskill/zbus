@@ -1,4 +1,5 @@
 #pragma once
+#ifdef _WIN32
 #include "windows.h"
 #include <assert.h>
 #include <time.h>
@@ -83,3 +84,4 @@ int x_cnd_timedwait(cnd_t *c, mtx_t *m, const struct timespec *ts);
 int x_thrd_create(thrd_t *t, int (*fn)(void *), void *udata);
 int x_thrd_join(thrd_t t, int *res);
 int x_thrd_detach(thrd_t t);
+#endif

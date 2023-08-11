@@ -1,6 +1,7 @@
 #include "socket.h"
 
 #ifndef _WIN32
+#include "lib/log.h"
 #include <unistd.h>
 #include <errno.h>
 #include <sys/un.h>
@@ -9,7 +10,7 @@
 
 int sys_send(fd_t fd, const char *buf, int sz)
 {
-	return send(fd, buf, sz);
+	return write(fd, buf, sz);
 }
 
 int sys_recv(fd_t fd, char *buf, int sz)

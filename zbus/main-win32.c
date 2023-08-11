@@ -1,4 +1,6 @@
-#pragma once
+#include "config.h"
+
+#ifdef _WIN32
 #include "bus.h"
 #include "lib/windows.h"
 #include "lib/log.h"
@@ -201,3 +203,4 @@ int wmain(int argc, wchar_t *argv[])
 		return 0;
 	}
 }
+#endif

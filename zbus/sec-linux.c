@@ -2,6 +2,8 @@
 #include "sec.h"
 
 #ifdef HAVE_PROC_GROUPS
+#include "lib/log.h"
+#include "lib/print.h"
 #include <unistd.h>
 #include <sys/un.h>
 #include <sys/socket.h>
@@ -39,7 +41,7 @@ static void parse_proc_groups(struct security *c, int max_groups, pid_t pid,
 	}
 }
 
-int load_security(struct rxconn *c, struct security **pp)
+int load_security(struct txconn *c, struct security **pp)
 {
 	if (!g_enable_security) {
 		*pp = NULL;

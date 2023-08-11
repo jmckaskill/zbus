@@ -2,7 +2,6 @@
 
 #ifndef _WIN32
 #define _GNU_SOURCE
-#include "sys.h"
 #include "tx.h"
 #include "rx.h"
 #include "bus.h"
@@ -15,6 +14,8 @@
 #include <fcntl.h>
 #include <threads.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
+#include <poll.h>
 #include <errno.h>
 
 #ifdef HAVE_ACCEPT4
@@ -53,10 +54,10 @@ static void default_sigmask(sigset_t *ss)
 {
 	sigemptyset(ss);
 #ifdef HAVE_AUTOLAUNCH
-	sigaddset(&ss, SIGCHLD);
+	sigaddset(ss, SIGCHLD);
 #endif
-	sigaddset(&ss, SIGHUP);
-	sigaddset(&ss, CANCEL_SIGNAL);
+	sigaddset(ss, SIGHUP);
+	sigaddset(ss, CANCEL_SIGNAL);
 }
 
 int setup_signals(void)
@@ -271,8 +272,6 @@ static int usage(void)
 
 int main(int argc, char *argv[])
 {
-	set_thread_name("main");
-
 	struct config_arguments args;
 	memset(&args, 0, sizeof(args));
 
@@ -345,7 +344,7 @@ int main(int argc, char *argv[])
 			rx->conn.fd = cfd;
 
 			thrd_t thrd;
-			if (thrd_create(&thrd, &rx_thread, rx) ==
+			if (thrd_create(&thrd, (thrd_start_t)&run_rx, rx) ==
 			    thrd_success) {
 				thrd_detach(thrd);
 			} else {
@@ -356,7 +355,7 @@ int main(int argc, char *argv[])
 
 		// check our signals
 		struct pollfd pfd = {
-			.fd = fd,
+			.fd = lfd,
 			.events = POLLIN,
 		};
 		sigset_t ss;

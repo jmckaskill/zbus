@@ -2,20 +2,22 @@
 #include "socket.h"
 
 #ifndef _WIN32
+#include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <signal.h>
+#include <pthread.h>
 
-#define MAX_UNIX_FDS
+#define MAX_UNIX_FDS 256
 
 struct rxconn {
-	int sock;
+	int fd;
 	int clen;
 	char ctrl[CMSG_SPACE(sizeof(int) * MAX_UNIX_FDS)];
 };
 
 struct txconn {
-	int sock;
+	int fd;
 	int fdnum;
 	struct rxconn *fdsrc;
 	bool is_async;
