@@ -9,11 +9,12 @@ struct msg_stream {
 	size_t have;
 	char *body;
 	size_t bsz[2];
-	char buf[0];
+	char *buf;
 };
 
 // msgsz must be a power of 2
-void init_msg_stream(struct msg_stream *s, size_t msgsz, size_t defragsz);
+void init_msg_stream(struct msg_stream *s, char *buf, size_t msgsz,
+		     size_t defragsz);
 
 void stream_buffers(struct msg_stream *s, char **p1, size_t *n1, char **p2,
 		    size_t *n2);

@@ -17,8 +17,9 @@
 #include <sys/wait.h>
 #include <poll.h>
 #include <errno.h>
+#include <spawn.h>
 
-#ifdef HAVE_ACCEPT4
+#if HAVE_ACCEPT4
 #define x_accept4 accept4
 #endif
 
@@ -34,7 +35,7 @@ static void on_sighup(int)
 	atomic_flag_clear(&g_sighup);
 }
 
-#ifdef HAVE_AUTOLAUNCH
+#if HAVE_AUTOLAUNCH
 static atomic_flag g_sigchld;
 
 static inline bool have_sigchld(void)
@@ -53,7 +54,7 @@ static void on_sigchld(int)
 static void default_sigmask(sigset_t *ss)
 {
 	sigemptyset(ss);
-#ifdef HAVE_AUTOLAUNCH
+#if HAVE_AUTOLAUNCH
 	sigaddset(ss, SIGCHLD);
 #endif
 	sigaddset(ss, SIGHUP);
@@ -74,7 +75,7 @@ int setup_signals(void)
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
 
-#ifdef HAVE_AUTOLAUNCH
+#if HAVE_AUTOLAUNCH
 	atomic_flag_test_and_set(&g_sigchld);
 	sa.sa_handler = &on_sigchld;
 	if (sigaction(SIGCHLD, &sa, NULL)) {
@@ -101,7 +102,7 @@ int setup_signals(void)
 	return 0;
 }
 
-#ifdef HAVE_AUTOLAUNCH
+#if HAVE_AUTOLAUNCH
 struct child_info {
 	struct bus *bus;
 	pid_t pid;
@@ -160,19 +161,40 @@ static int reap_children(void)
 	return 0;
 }
 
-int sys_launch(struct bus *bus, const str8_t *name)
+int sys_launch(struct bus *b, const struct address *a)
 {
-	pid_t pid = fork();
-	if (pid < 0) {
-		ERROR("fork,errno:%m");
-		return -1;
+	const struct rcu_data *d = rcu_root(b->rcu);
+	if (d->config->type) {
+		setenv("DBUS_STARTER_BUS_TYPE", d->config->type, 1);
+	}
+	if (d->config->address) {
+		setenv("DBUS_STARTER_ADDRESS", d->config->address, 1);
 	}
 
-	if (pid) {
-		// parent
-		struct child_info *c = fmalloc(sizeof(*c) + name->len);
-		str8cpy(&c->name, name);
-		c->bus = bus;
+	posix_spawnattr_t attr;
+	posix_spawnattr_init(&attr);
+
+	// clear the signal mask in the child
+	// signal handlers are always reset to defaults on exec
+	sigset_t mask;
+	sigemptyset(&mask);
+	posix_spawnattr_setsigmask(&attr, &mask);
+
+	pid_t pid;
+	char *args[] = {
+		"/bin/sh", "sh", "-c", a->cfg->exec, NULL,
+	};
+	posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK);
+	int err = posix_spawn(&pid, "/bin/sh", NULL, &attr, args, environ);
+	posix_spawnattr_destroy(&attr);
+
+	if (err) {
+		ERROR("spawn,errno:%m,name:%s,exec:%s", a->name.p,
+		      a->cfg->exec);
+	} else {
+		struct child_info *c = fmalloc(sizeof(*c) + a->name.len);
+		str8cpy(&c->name, &a->name);
+		c->bus = b;
 		c->pid = pid;
 
 		mtx_lock(&child_lk);
@@ -183,40 +205,22 @@ int sys_launch(struct bus *bus, const str8_t *name)
 		}
 		kh_val(&children, ii) = c;
 		mtx_unlock(&child_lk);
-		return 0;
-	} else {
-		// child
-		char *args[] = {
-			"zbus-launch",
-			(char *)name->p,
-			NULL,
-		};
-
-		close(0);
-		close(1);
-		// leave stderr open
-
-		sigset_t ss;
-		sigemptyset(&ss);
-		pthread_sigmask(SIG_SETMASK, &ss, NULL);
-
-		execvp("zbus-launch", args);
-		ERROR("execvp failed in child,errno:%m");
-		exit(112);
 	}
+
+	return err;
 }
 #endif
 
 static int ready_indicator(void *udata)
 {
-	str8_t *fifopn = udata;
+	char *fifopn = udata;
 
 	for (;;) {
 		// Wait for a client to open the fifo for read. We then
 		// immediately close it to indicate that we are ready to go
-		int fd = open(fifopn->p, O_WRONLY | O_CLOEXEC);
+		int fd = open(fifopn, O_WRONLY | O_CLOEXEC);
 		if (fd < 0) {
-			ERROR("open ready fifo,error:%m,path:%s", fifopn->p);
+			ERROR("open ready fifo,error:%m,path:%s", fifopn);
 			free(fifopn);
 			return -1;
 		}
@@ -273,16 +277,18 @@ static int usage(void)
 int main(int argc, char *argv[])
 {
 	struct config_arguments args;
-	memset(&args, 0, sizeof(args));
+	args.num = 0;
 
 	int i;
 	while ((i = getopt(argc, argv, "hf:c:")) > 0 &&
 	       args.num < MAX_ARGUMENTS) {
 		switch (i) {
 		case 'f':
+			args.v[args.num].cmdline = NULL;
 			args.v[args.num++].file = optarg;
 			break;
 		case 'c':
+			args.v[args.num].file = NULL;
 			args.v[args.num++].cmdline = optarg;
 			break;
 		case 'h':
@@ -296,6 +302,10 @@ int main(int argc, char *argv[])
 		return usage();
 	}
 
+	LOG("bufsz,sz:%zu,sigsz:%zu,rxsz:%zu,txsz:%zu,bussz:%zu",
+	    (size_t)NAME_OWNER_CHANGED_BUFSZ, (size_t)SIGNAL_HDR_BUFSZ,
+	    sizeof(struct rx), sizeof(struct tx), sizeof(struct bus));
+
 	struct bus b;
 	if (setup_signals() || init_bus(&b) || load_config(&b, &args)) {
 		return 1;
@@ -304,14 +314,14 @@ int main(int argc, char *argv[])
 	const struct rcu_data *d = rcu_root(b.rcu);
 	const struct config *c = d->config;
 
-	if (!c->sockpn && c->sockfd < 0) {
+	if (!c->listenpn && c->listenfd < 0) {
 		FATAL("no socket specified in config");
 	}
 
-	VERBOSE("startup,listen:%s,listenfd:%d,busid:%s", c->sockpn->p,
-		c->sockfd, b.busid.p);
+	VERBOSE("startup,listen:%s,listenfd:%d,busid:%s", c->listenpn,
+		c->listenfd, b.busid.p);
 
-	int lfd = c->sockfd >= 0 ? c->sockfd : bind_bus(c->sockpn->p);
+	int lfd = c->listenfd >= 0 ? c->listenfd : bind_bus(c->listenpn);
 	if (lfd < 0) {
 		return 1;
 	}
@@ -319,14 +329,18 @@ int main(int argc, char *argv[])
 	VERBOSE("ready");
 
 	if (c->readypn) {
-		VERBOSE("starting ready fifo thread,file:%s", c->readypn->p);
+		VERBOSE("starting ready fifo thread,file:%s", c->readypn);
 		thrd_t thrd;
-		if (!thrd_create(&thrd, &ready_indicator,
-				 str8dup(c->readypn))) {
+		if (!thrd_create(&thrd, &ready_indicator, strdup(c->readypn))) {
 			thrd_detach(thrd);
 		}
 	}
 
+	if (lfd != 0) {
+		close(0);
+	}
+
+	g_enable_security = true;
 	int next_id = 1;
 
 	for (;;) {
@@ -365,7 +379,7 @@ int main(int argc, char *argv[])
 		int n = ppoll(&pfd, 1, NULL, &ss);
 		if (n == 1) {
 			continue;
-#ifdef HAVE_AUTOLAUNCH
+#if HAVE_AUTOLAUNCH
 		} else if (have_sigchld() && reap_children()) {
 			return 1;
 #endif

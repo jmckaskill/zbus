@@ -1,10 +1,12 @@
 #include "stream.h"
 #include <assert.h>
 
-void init_msg_stream(struct msg_stream *s, size_t msgsz, size_t defragsz)
+void init_msg_stream(struct msg_stream *s, char *buf, size_t msgsz,
+		     size_t defragsz)
 {
 	assert((msgsz & (msgsz - 1)) == 0);
 	assert(defragsz >= DBUS_MIN_MSG_SIZE);
+	s->buf = buf;
 	s->cap = msgsz;
 	s->defrag = defragsz;
 	s->have = 0;

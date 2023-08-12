@@ -192,27 +192,26 @@ static int read_message(struct rx *r, struct msg_stream *s)
 	return 0;
 }
 
-// doubles as the size of the complete buffer
-#define MSG_LEN (128 * 1024)
-
-// Size of the defragment buffer. Headers and bus message bodies must be smaller
-// than this as they need to be defragmented to process.
-#define DEFRAG_LEN (1024)
-
 int run_rx(struct rx *r)
 {
 	if (authenticate(r) || load_security(&r->tx->conn, &r->tx->sec)) {
 		goto free_rx;
 	}
 
-	struct msg_stream *s = fmalloc(sizeof(*s) + MSG_LEN + DEFRAG_LEN);
-	init_msg_stream(s, MSG_LEN, DEFRAG_LEN);
-
-	while (!read_message(r, s)) {
+	char *buf = malloc(TX_BUFSZ + RX_BUFSZ + RX_HDRSZ);
+	if (!buf) {
+		goto free_rx;
 	}
 
-	free(s);
+	struct msg_stream s;
+	init_msg_stream(&s, buf + TX_BUFSZ, RX_BUFSZ, RX_HDRSZ);
+	r->txbuf = buf;
+
+	while (!read_message(r, &s)) {
+	}
+
 	unregister_with_bus(r);
+	free(buf);
 free_rx:
 	free_rx(r);
 	return 0;

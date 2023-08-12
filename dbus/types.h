@@ -51,7 +51,7 @@ struct dict_data;
 #define DBUS_MAX_MSG_SIZE 0x8000000U
 #define DBUS_MAX_VALUE_SIZE 0x4000000U
 
-#define BUFSZ_REPLY 64 // 16B hdr, 32B sender, 8B serial, 8B sig
+#define BUFSZ_FIELD 8 // string: 3B padding, 4B tag, u32: 4B tag, 4B value
 #define BUFSZ_STRING 8 // 3B padding, 4B length, 1B nul
 #define BUFSZ_ARRAY 12 // 3B padding, 4B length, 4B padding
 

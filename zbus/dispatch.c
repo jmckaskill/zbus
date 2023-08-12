@@ -33,18 +33,16 @@ static int addmatch(struct rx *r, struct message *req, struct iterator *ii)
 		return ERR_BAD_ARGUMENT;
 	}
 
-	// keep a copy of the subscription for cleanup on exit
-	struct subscription *s = new_subscription(str, m);
-
 	mtx_lock(&r->bus->lk);
 	int err = update_sub(r->bus, true, r, str, m, req->serial);
 	mtx_unlock(&r->bus->lk);
 
 	if (err) {
-		free_subscription(s);
 		return err;
 	}
 
+	// keep a copy of the subscription for cleanup on exit
+	struct subscription *s = new_subscription(str, m);
 	s->h.next = r->subs;
 	r->subs = s;
 	r->num_subs++;
@@ -68,16 +66,19 @@ static int rmmatch(struct rx *r, struct message *req, struct iterator *ii)
 		return ERR_NOT_FOUND;
 	}
 
-	// remove it from the bus
-	mtx_lock(&r->bus->lk);
-	int err = update_sub(r->bus, false, r, str, (*ps)->m, 0);
-	mtx_unlock(&r->bus->lk);
+	// take a copy of the cached match params to use to remove the match
+	struct match m = (*ps)->m;
 
 	// free our local copy
 	struct subscription *s = *ps;
 	*ps = s->h.next;
 	free_subscription(s);
 	r->num_subs--;
+
+	// remove it from the bus
+	mtx_lock(&r->bus->lk);
+	int err = update_sub(r->bus, false, r, str, m, 0);
+	mtx_unlock(&r->bus->lk);
 
 	return err;
 }
@@ -97,8 +98,6 @@ void rm_all_matches_locked(struct rx *r)
 /////////////////////////////////////////
 // Broadcasts
 
-#define SIGNAL_HDR_CAP sizeof(((struct rx *)0)->buf)
-
 static int build_signal(struct txmsg *m)
 {
 	// keep path
@@ -117,7 +116,7 @@ static int build_signal(struct txmsg *m)
 	m->fdsrc = NULL;
 
 	size_t bsz = m->body[0].len + m->body[1].len;
-	int sz = write_header(m->hdr.buf, SIGNAL_HDR_CAP, &m->m, bsz);
+	int sz = write_header(m->hdr.buf, SIGNAL_HDR_BUFSZ, &m->m, bsz);
 	if (sz <= 0) {
 		return -1;
 	}
@@ -129,17 +128,21 @@ static int send_signal(bool iface_checked, const struct submap *subs,
 		       struct txmsg *m)
 {
 	// signals are required to specify: member, interface & path
+	// matches are required to have: interface
 
 	for (int i = 0, n = vector_len(&subs->hdr); i < n; i++) {
 		const struct subscription *s = subs->v[i];
 		const str8_t *iface = match_interface(s->mstr, s->m);
 		const str8_t *mbr = match_member(s->mstr, s->m);
 
+		assert(m->m.member && m->m.interface && m->m.path);
+		assert(iface);
+
 		if (!iface_checked && !str8eq(iface, m->m.interface)) {
 			continue;
 		}
 
-		if (!str8eq(mbr, m->m.member)) {
+		if (mbr && !str8eq(mbr, m->m.member)) {
 			continue;
 		}
 
@@ -172,14 +175,13 @@ int broadcast(struct rx *r, struct txmsg *m)
 {
 	// only encode the header if we have a valid subscription and
 	// only encode it once
-	static_assert(SIGNAL_HDR_CAP == sizeof(r->buf), "");
-	m->hdr.buf = r->buf;
+	m->hdr.buf = r->txbuf;
 	m->hdr.len = 0;
 
 	// send to broadcast subscriptions
 	const struct rcu_data *d = rcu_lock(r->reader);
 	const struct address *a = get_address(d->interfaces, m->m.interface);
-	if (a && has_group(r->tx->sec, a->gid_owner) &&
+	if (a && (!a->cfg || has_group(r->tx->sec, a->cfg->gid_owner)) &&
 	    send_signal(true, a->subs, m)) {
 		goto error;
 	}
@@ -227,20 +229,18 @@ static int addname(struct rx *r, struct message *req, struct iterator *ii)
 		return ERR_OOM;
 	}
 
-	// keep a copy of the name for cleanup on exit and sub lookup
-	struct rxname *n = fmalloc(sizeof(*n) + name->len);
-	str8cpy(&n->name, name);
-
 	// bus methods will send a reply if we don't error
 	mtx_lock(&r->bus->lk);
 	int err = request_name(r->bus, r, name, req->serial);
 	mtx_unlock(&r->bus->lk);
 
 	if (err) {
-		free(n);
 		return err;
 	}
 
+	// keep a copy of the name for cleanup on exit and sub lookup
+	struct rxname *n = fmalloc(sizeof(*n) + name->len);
+	str8cpy(&n->name, name);
 	n->next = r->names;
 	r->names = n;
 	r->num_names++;
@@ -265,16 +265,17 @@ static int rmname(struct rx *r, struct message *req, struct iterator *ii)
 				    DBUS_RELEASE_NAME_REPLY_NOT_OWNER);
 	}
 
-	// remove it from the bus
-	mtx_lock(&r->bus->lk);
-	int err = release_name(r->bus, r, name, req->serial);
-	mtx_unlock(&r->bus->lk);
-
 	// free our local copy
 	struct rxname *n = *pn;
 	*pn = n->next;
 	free(n);
 	r->num_names--;
+
+	// release the name from the bus. This could still return an error if
+	// the bus kicked our name out in the interim.
+	mtx_lock(&r->bus->lk);
+	int err = release_name(r->bus, r, name, req->serial);
+	mtx_unlock(&r->bus->lk);
 
 	return err;
 }
@@ -311,12 +312,13 @@ static int ref_named(struct rx *r, const str8_t *name, bool should_autostart,
 			err = ERR_NO_REMOTE;
 		} else {
 			const struct address *a = d->destinations->v[idx];
-			if (!has_group(r->tx->sec, a->gid_access)) {
+			if (a->cfg &&
+			    !has_group(r->tx->sec, a->cfg->gid_access)) {
 				err = ERR_NOT_ALLOWED;
 			} else if (a->tx) {
 				tx = ref_tx(a->tx);
-#ifdef HAVE_AUTOLAUNCH
-			} else if (a->activatable && should_autostart) {
+#if HAVE_AUTOLAUNCH
+			} else if (a->cfg && a->cfg->exec && should_autostart) {
 				err = 0;
 #endif
 			}
@@ -329,7 +331,7 @@ static int ref_named(struct rx *r, const str8_t *name, bool should_autostart,
 		return 0;
 	}
 
-#ifdef HAVE_AUTOLAUNCH
+#if HAVE_AUTOLAUNCH
 	if (err) {
 		return err;
 	}
@@ -338,7 +340,7 @@ static int ref_named(struct rx *r, const str8_t *name, bool should_autostart,
 	err = autolaunch_service(r->bus, name, &a);
 	if (!err) {
 		assert(a->tx);
-		if (!has_group(r->tx->sec, a->gid_access)) {
+		if (!a->cfg || !has_group(r->tx->sec, a->cfg->gid_access)) {
 			// config may have changed while we were launching the
 			// service
 			err = ERR_NOT_ALLOWED;
@@ -383,13 +385,13 @@ static int ref_remote(struct rx *r, const str8_t *name, struct tx **ptx)
 ///////////////////////////////////////////
 // ListNames
 
-#ifdef HAVE_AUTOLAUNCH
+#if HAVE_AUTOLAUNCH
 static void encode_activatable(struct builder *b, struct array_data ad,
 			       const struct addrmap *m)
 {
 	for (int i = 0, n = vector_len(&m->hdr); i < n; i++) {
 		const struct address *a = m->v[i];
-		if (a->activatable) {
+		if (a->cfg && a->cfg->exec) {
 			start_array_entry(b, ad);
 			append_string8(b, &a->name);
 		}
@@ -425,14 +427,14 @@ static int list_names(struct rx *r, uint32_t request_serial, bool activatable)
 	m.m.reply_serial = request_serial;
 	m.m.signature = "as";
 
-	struct builder b = start_message(r->buf, sizeof(r->buf), &m.m);
+	struct builder b = start_message(r->txbuf, TX_BUFSZ, &m.m);
 	struct array_data ad = start_array(&b);
 
 	const struct rcu_data *d = rcu_lock(r->reader);
 	if (!activatable) {
 		encode_names(&b, ad, d->destinations);
 		encode_unique_names(&b, ad, d->remotes);
-#ifdef HAVE_AUTOLAUNCH
+#if HAVE_AUTOLAUNCH
 	} else {
 		encode_activatable(&b, ad, d->destinations);
 #endif
@@ -441,7 +443,7 @@ static int list_names(struct rx *r, uint32_t request_serial, bool activatable)
 
 	end_array(&b, ad);
 	int sz = end_message(b);
-	return send_data(r->tx, true, &m, r->buf, sz);
+	return send_data(r->tx, true, &m, r->txbuf, sz);
 }
 
 ///////////////////////////////////
@@ -465,7 +467,7 @@ static int get_credentials(struct rx *r, uint32_t serial, const str8_t *name)
 	m.m.reply_serial = serial;
 	m.m.signature = "a{sv}";
 
-	struct builder b = start_message(r->buf, sizeof(r->buf), &m.m);
+	struct builder b = start_message(r->txbuf, TX_BUFSZ, &m.m);
 	struct dict_data dd = start_dict(&b);
 	struct variant_data vd;
 
@@ -475,7 +477,7 @@ static int get_credentials(struct rx *r, uint32_t serial, const str8_t *name)
 	append_uint32(&b, s->pid);
 	end_variant(&b, vd);
 
-#ifdef HAVE_SID
+#if HAVE_SID
 	start_dict_entry(&b, dd);
 	append_string8(&b, S8("\012WindowsSID"));
 	vd = start_variant(&b, "s");
@@ -483,7 +485,7 @@ static int get_credentials(struct rx *r, uint32_t serial, const str8_t *name)
 	end_variant(&b, vd);
 #endif
 
-#ifdef HAVE_UID
+#if HAVE_UID
 	start_dict_entry(&b, dd);
 	append_string8(&b, S8("\012UnixUserID"));
 	vd = start_variant(&b, "u");
@@ -491,7 +493,7 @@ static int get_credentials(struct rx *r, uint32_t serial, const str8_t *name)
 	end_variant(&b, vd);
 #endif
 
-#ifdef HAVE_GID
+#if HAVE_GID
 	start_dict_entry(&b, dd);
 	append_string8(&b, S8("\014UnixGroupIDs"));
 	vd = start_variant(&b, "au");
@@ -508,7 +510,7 @@ static int get_credentials(struct rx *r, uint32_t serial, const str8_t *name)
 
 	deref_tx(tx);
 	int sz = end_message(b);
-	return send_data(r->tx, true, &m, r->buf, sz);
+	return send_data(r->tx, true, &m, r->txbuf, sz);
 }
 
 static int get_sec_u32(struct rx *r, uint32_t serial, const str8_t *name,
@@ -613,7 +615,7 @@ int bus_method(struct rx *r, struct message *m, struct iterator *ii)
 		case 21:
 
 			if (str8eq(m->member, METHOD_GET_UNIX_USER)) {
-#ifdef HAVE_UID
+#if HAVE_UID
 				return get_sec_u32(
 					r, m->serial, parse_string8(ii),
 					offsetof(struct security, uid));
@@ -700,13 +702,13 @@ int unicast(struct rx *r, struct txmsg *m)
 	m->m.flags &= FLAG_MASK;
 
 	size_t bsz = m->body[0].len + m->body[1].len;
-	int sz = write_header(r->buf, sizeof(r->buf), &m->m, bsz);
+	int sz = write_header(r->txbuf, TX_BUFSZ, &m->m, bsz);
 	if (sz < 0) {
 		deref_tx(tx);
 		return -1;
 	}
 
-	m->hdr.buf = r->buf;
+	m->hdr.buf = r->txbuf;
 	m->hdr.len = sz;
 	// keep body[0], body[1]
 	m->fdsrc = &r->conn;
@@ -741,12 +743,12 @@ int build_reply(struct rx *r, struct txmsg *m)
 	m->m.flags &= FLAG_MASK;
 
 	size_t bsz = m->body[0].len + m->body[1].len;
-	int sz = write_header(r->buf, sizeof(r->buf), &m->m, bsz);
+	int sz = write_header(r->txbuf, TX_BUFSZ, &m->m, bsz);
 	if (sz < 0) {
 		return -1;
 	}
 
-	m->hdr.buf = r->buf;
+	m->hdr.buf = r->txbuf;
 	m->hdr.len = sz;
 	// keep body[0], body[1]
 	m->fdsrc = &r->conn;

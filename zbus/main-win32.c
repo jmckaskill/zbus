@@ -83,8 +83,8 @@ static int install()
 	return 0;
 }
 
-#ifdef HAVE_AUTOLAUNCH
-int sys_launch(struct bus *bus, const str8_t *name)
+#if HAVE_AUTOLAUNCH
+int sys_launch(struct bus *bus, const str8_t *name, char *exec)
 {
 	return -1;
 }

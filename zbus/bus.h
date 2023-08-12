@@ -23,14 +23,19 @@ struct config {
 	unsigned max_num_remotes;
 	unsigned max_num_names;
 	unsigned max_num_subs;
-	str8_t *sockpn;
 
-#ifdef HAVE_LISTENFD
-	int sockfd;
+	bool allow_unknown_destinations;
+	bool allow_unknown_interfaces;
+
+#if HAVE_LISTENFD
+	int listenfd;
 #endif
+	char *listenpn;
+	char *address; // address in dbus format
+	char *type;
 
-#ifdef HAVE_READY_FIFO
-	str8_t *readypn;
+#if HAVE_READY_FIFO
+	char *readypn;
 #endif
 };
 
@@ -62,7 +67,7 @@ int register_remote(struct bus *b, struct rx *r, const str8_t *name,
 int unregister_remote(struct bus *b, struct rx *r, const str8_t *name,
 		      struct rcu_reader *reader);
 
-extern int sys_launch(struct bus *bus, const str8_t *name);
+extern int sys_launch(struct bus *bus, const struct address *addr);
 
 int autolaunch_service(struct bus *b, const str8_t *name,
 		       const struct address **paddr);
@@ -91,10 +96,3 @@ struct config_arguments {
 };
 
 int load_config(struct bus *b, struct config_arguments *c);
-
-static inline str8_t *str8dup(const str8_t *from)
-{
-	str8_t *ret = fmalloc(from->len + 2);
-	memcpy(ret, from, from->len + 2);
-	return ret;
-}

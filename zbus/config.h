@@ -1,25 +1,21 @@
 #pragma once
 
 #ifdef _WIN32
-#define HAVE_SID
-#undef HAVE_ACCEPT4
-#undef HAVE_SOCKFD
-#undef HAVE_READY_FIFO
-#undef HAVE_MEMRCHR
-#define HAVE__STRICMP
-#define HAVE__STRDUP
-#undef HAVE_ALIGNED_ALLOC
-#define HAVE_AUTOLAUNCH
+#define HAVE_SID 1
+#define HAVE_LISTENFD 0
+#define HAVE_MEMRCHR 0
+#define HAVE_ALIGNED_ALLOC 0
+#define HAVE_AUTOLAUNCH 1
+#define HAVE_READY_FIFO 0
 #elif defined __linux__
-#define _GNU_SOURCE
-#define HAVE_PROC_GROUPS
-#define HAVE_GID
-#define HAVE_UID
-#define HAVE_ACCEPT4
-#define HAVE_LISTENFD
-#define HAVE_MEMRCHR
-#define HAVE_ALIGNED_ALLOC
-#define HAVE_AUTOLAUNCH
-#define HAVE_READY_FIFO
+#define HAVE_PROC_GROUPS 1
+#define HAVE_GID 1
+#define HAVE_UID 1
+#define HAVE_SID 0
+#define HAVE_ACCEPT4 1
+#define HAVE_LISTENFD 1
+#define HAVE_MEMRCHR 1
+#define HAVE_ALIGNED_ALLOC 1
+#define HAVE_AUTOLAUNCH 1
+#define HAVE_READY_FIFO 1
 #endif
-

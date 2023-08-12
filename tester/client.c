@@ -97,7 +97,7 @@ struct client *open_client(const char *sockpn)
 	c->fd = fd;
 	c->cb_available = UINT16_MAX;
 	memset(&c->cbs, 0, sizeof(c->cbs));
-	init_msg_stream(&c->in, msgsz, defrag);
+	init_msg_stream(&c->in, c->buf, msgsz, defrag);
 
 	struct message m;
 	struct iterator ii;

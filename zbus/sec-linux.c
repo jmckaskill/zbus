@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #include "sec.h"
 
-#ifdef HAVE_PROC_GROUPS
+#if HAVE_PROC_GROUPS
 #include "lib/log.h"
 #include "lib/print.h"
 #include <unistd.h>
@@ -10,7 +10,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 
-static void parse_proc_groups(struct security *c, int max_groups, pid_t pid,
+static void parse_proc_groups(struct security *c, int max_groups, int pid,
 			      FILE *f)
 {
 	char buf[256];
@@ -19,22 +19,34 @@ static void parse_proc_groups(struct security *c, int max_groups, pid_t pid,
 			continue;
 		}
 		char *p = &buf[strlen("Groups:\t")];
-		for (;;) {
+		while (*p && *p != '\n') {
 			if (c->groups.n == max_groups) {
 				WARN("too many supplementary groups,pid:%d",
-				     (int)pid);
+				     pid);
 				break;
 			}
-			char *e;
-			gid_t id = strtoul(p, &e, 10);
-			if (p == e) {
+			int id;
+			int n = parse_pos_int(p, &id);
+			if (n <= 0) {
+				WARN("failed to parse group,val:%s,pid:%d", p,
+				     pid);
 				break;
 			}
-			c->groups.v[c->groups.n++] = id;
-			p = e;
+			c->groups.v[c->groups.n++] = (int)id;
+			p += n;
+			if (*p == ' ') {
+				p++;
+			}
 		}
 		return;
 	}
+
+#ifndef NDEBUG
+	// has_group relies on the group list being sorted
+	for (int i = 0; i < c->groups.n - 1; i++) {
+		assert(c->groups.v[i] < c->groups.v[i + 1]);
+	}
+#endif
 
 	if (ferror(f)) {
 		WARN("error reading proc file,errno:%m,pid:%d", (int)pid);
@@ -60,6 +72,7 @@ int load_security(struct txconn *c, struct security **pp)
 		fmalloc(sizeof(*p) + (max_groups * sizeof(p->groups.v[0])));
 	p->pid = uc.pid;
 	p->uid = uc.uid;
+	p->groups.n = 0;
 
 	// now try to get the full group list
 	char path[32 + PRINT_UINT32_LEN];

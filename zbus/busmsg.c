@@ -35,8 +35,8 @@ int reply_error(struct rx *r, uint32_t serial, int err)
 	m.m.reply_serial = serial;
 	m.m.error = error;
 
-	int sz = write_header(r->buf, sizeof(r->buf), &m.m, 0);
-	return send_data(r->tx, false, &m, r->buf, sz);
+	int sz = write_header(r->txbuf, TX_BUFSZ, &m.m, 0);
+	return send_data(r->tx, false, &m, r->txbuf, sz);
 }
 
 static int _reply_uint32(struct rx *r, uint32_t serial, const char *sig,
@@ -47,10 +47,10 @@ static int _reply_uint32(struct rx *r, uint32_t serial, const char *sig,
 	m.m.reply_serial = serial;
 	m.m.signature = sig;
 
-	struct builder b = start_message(r->buf, sizeof(r->buf), &m.m);
+	struct builder b = start_message(r->txbuf, TX_BUFSZ, &m.m);
 	_append4(&b, value, *sig);
 	int sz = end_message(b);
-	return send_data(r->tx, false, &m, r->buf, sz);
+	return send_data(r->tx, false, &m, r->txbuf, sz);
 }
 
 int reply_uint32(struct rx *r, uint32_t serial, uint32_t value)
@@ -70,10 +70,10 @@ int reply_string(struct rx *r, uint32_t serial, const str8_t *str)
 	m.m.reply_serial = serial;
 	m.m.signature = "s";
 
-	struct builder b = start_message(r->buf, sizeof(r->buf), &m.m);
+	struct builder b = start_message(r->txbuf, TX_BUFSZ, &m.m);
 	append_string8(&b, str);
 	int sz = end_message(b);
-	return send_data(r->tx, false, &m, r->buf, sz);
+	return send_data(r->tx, false, &m, r->txbuf, sz);
 }
 
 int reply_id_address(struct rx *r, uint32_t serial, int id)
@@ -83,10 +83,10 @@ int reply_id_address(struct rx *r, uint32_t serial, int id)
 	m.m.reply_serial = serial;
 	m.m.signature = "s";
 
-	struct builder b = start_message(r->buf, sizeof(r->buf), &m.m);
+	struct builder b = start_message(r->txbuf, TX_BUFSZ, &m.m);
 	append_id_address(&b, id);
 	int sz = end_message(b);
-	return send_data(r->tx, false, &m, r->buf, sz);
+	return send_data(r->tx, false, &m, r->txbuf, sz);
 }
 
 int reply_empty(struct rx *r, uint32_t serial)
@@ -95,6 +95,6 @@ int reply_empty(struct rx *r, uint32_t serial)
 	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
 	m.m.reply_serial = serial;
 
-	int sz = write_header(r->buf, sizeof(r->buf), &m.m, 0);
-	return send_data(r->tx, false, &m, r->buf, sz);
+	int sz = write_header(r->txbuf, TX_BUFSZ, &m.m, 0);
+	return send_data(r->tx, false, &m, r->txbuf, sz);
 }

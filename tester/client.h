@@ -20,6 +20,7 @@ struct client {
 	uint16_t cb_available;
 	struct message_cb cbs[16];
 	struct msg_stream in;
+	char buf[0];
 };
 
 struct client *open_client(const char *sockpn);

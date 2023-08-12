@@ -17,7 +17,7 @@
 
 #define ROOT_NEXT_FLAG 1
 
-#ifdef HAVE_ALIGNED_ALLOC
+#if HAVE_ALIGNED_ALLOC
 #define _aligned_malloc aligned_alloc
 #define _aligned_free free
 #endif

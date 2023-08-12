@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "config.h"
 #include "bus.h"
 #include "ini.h"
@@ -8,17 +9,10 @@
 #include "lib/log.h"
 #include "lib/algo.h"
 #include "lib/file.h"
+#include "lib/print.h"
 #include "vendor/c-rbtree-3.1.0/src/c-rbtree.h"
 
-#ifdef HAVE__STRICMP
-#define strcasecmp _stricmp
-#endif
-
-#ifdef HAVE__STRDUP
-#define strdup _strdup
-#endif
-
-#ifdef HAVE_MEMRCHR
+#if HAVE_MEMRCHR
 #define x_memrchr memrchr
 #else
 static char *x_memrchr(char *p, char ch, size_t len)
@@ -92,7 +86,7 @@ static void free_addrmap(struct addrmap *m)
 		assert(!a->tx);
 		// the only reason we should still have the address is if it's
 		// got a configuration
-		assert(a->in_config);
+		assert(a->cfg);
 		free_address(a);
 	}
 	free_vector(&m->hdr);
@@ -125,10 +119,10 @@ static struct rcu_data *edit_rcu_data(struct rcu_object **objs,
 ////////////////////
 // NameOwerChanged
 
-static void notify_name_changed(struct bus *bus, struct rx *r, bool acquired,
-				const str8_t *name)
+static void notify_name_changed(struct bus *bus, char *buf, bool acquired,
+				struct tx *tx, const str8_t *name)
 {
-	int id = r->tx->id;
+	int id = tx->id;
 
 	// send the NameAcquired/NameLost Signal
 	struct txmsg m;
@@ -144,10 +138,10 @@ static void notify_name_changed(struct bus *bus, struct rx *r, bool acquired,
 	// leave reply_serial as 0
 	// leave flags as 0
 
-	struct builder b = start_message(r->buf, sizeof(r->buf), &m.m);
+	struct builder b = start_message(buf, NAME_OWNER_CHANGED_BUFSZ, &m.m);
 	append_string8(&b, name);
 	int sz = end_message(b);
-	if (send_data(r->tx, false, &m, r->buf, sz)) {
+	if (send_data(tx, false, &m, buf, sz)) {
 		ERROR("failed to send NameAcquired/Lost message,id:%d", id);
 	}
 
@@ -171,7 +165,7 @@ static void notify_name_changed(struct bus *bus, struct rx *r, bool acquired,
 	// leave reply_serial as 0
 	// leave flags as 0
 
-	b = start_message(r->buf, sizeof(r->buf), &m.m);
+	b = start_message(buf, NAME_OWNER_CHANGED_BUFSZ, &m.m);
 	append_string8(&b, name);
 	if (acquired) {
 		append_string8(&b, S8("\0"));
@@ -184,7 +178,7 @@ static void notify_name_changed(struct bus *bus, struct rx *r, bool acquired,
 
 	for (int i = 0; i < nsubs; i++) {
 		struct tx *to = subs->v[i]->tx;
-		if (send_data(to, false, &m, r->buf, sz)) {
+		if (send_data(to, false, &m, buf, sz)) {
 			ERROR("failed to send NameOwnerChanged message,name:%s,txid:%d",
 			      name->p, to->id);
 		}
@@ -197,9 +191,9 @@ static void notify_name_changed(struct bus *bus, struct rx *r, bool acquired,
 int register_remote(struct bus *b, struct rx *r, const str8_t *name,
 		    uint32_t serial, struct rcu_reader **preader)
 {
-	int id = r->tx->id;
+	struct tx *tx = r->tx;
 	const struct rcu_data *od = rcu_root(b->rcu);
-	int idx = bsearch_tx(od->remotes, id);
+	int idx = bsearch_tx(od->remotes, tx->id);
 	if (idx >= 0) {
 		return -1;
 	}
@@ -212,11 +206,11 @@ int register_remote(struct bus *b, struct rx *r, const str8_t *name,
 	struct rcu_object *objs = NULL;
 	struct rcu_data *nd = edit_rcu_data(&objs, od);
 	struct txmap *nm = edit_txmap(&objs, od->remotes, idx, 1);
-	nm->v[idx] = ref_tx(r->tx);
+	nm->v[idx] = ref_tx(tx);
 	nd->remotes = nm;
 	rcu_commit(b->rcu, nd, objs);
 
-	notify_name_changed(b, r, true, name);
+	notify_name_changed(b, r->txbuf, true, tx, name);
 
 	*preader = new_rcu_reader(b->rcu);
 	return 0;
@@ -227,22 +221,23 @@ int unregister_remote(struct bus *b, struct rx *r, const str8_t *name,
 {
 	free_rcu_reader(b->rcu, reader);
 
-	int id = r->tx->id;
+	struct tx *tx = r->tx;
 	const struct rcu_data *od = rcu_root(b->rcu);
-	int idx = bsearch_tx(od->remotes, id);
+	int idx = bsearch_tx(od->remotes, tx->id);
 	if (idx < 0) {
 		return -1;
 	}
-	assert(r->tx == od->remotes->v[idx]);
+	assert(tx == od->remotes->v[idx]);
+	static_assert(offsetof(struct tx, rcu) == 0, "");
 
 	struct rcu_object *objs = NULL;
 	struct rcu_data *nd = edit_rcu_data(&objs, od);
 	struct txmap *nm = edit_txmap(&objs, od->remotes, idx, -1);
-	rcu_register_gc(&objs, (rcu_fn)&deref_tx, &r->tx->rcu);
+	rcu_register_gc(&objs, (rcu_fn)&deref_tx, &tx->rcu);
 	nd->remotes = nm;
 	rcu_commit(b->rcu, nd, objs);
 
-	notify_name_changed(b, r, false, name);
+	notify_name_changed(b, r->txbuf, false, tx, name);
 	return 0;
 }
 
@@ -260,42 +255,50 @@ int request_name(struct bus *b, struct rx *r, const str8_t *name,
 	// lookup the name
 	const struct rcu_data *od = rcu_root(b->rcu);
 	int idx = bsearch_address(od->destinations, name);
-	if (idx < 0) {
-		// TODO: dynamic address creation
-		return ERR_NOT_ALLOWED;
-	}
 
 	// calculate the return errcode
 	int sts;
 	const struct addrmap *om = od->destinations;
-	const struct address *oa = om->v[idx];
-	if (!has_group(r->tx->sec, oa->gid_owner)) {
-		return ERR_NOT_ALLOWED;
-	}
-	if (oa->tx == r->tx) {
-		sts = DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER;
-	} else if (oa->tx) {
-		sts = DBUS_REQUEST_NAME_REPLY_EXISTS;
+	const struct address *oa;
+	if (idx >= 0) {
+		oa = om->v[idx];
+		if (oa->cfg && !has_group(r->tx->sec, oa->cfg->gid_owner)) {
+			return ERR_NOT_ALLOWED;
+		} else if (oa->tx == r->tx) {
+			sts = DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER;
+		} else if (oa->tx) {
+			sts = DBUS_REQUEST_NAME_REPLY_EXISTS;
+		} else {
+			sts = DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER;
+		}
 	} else {
-		sts = DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER;
+		oa = NULL;
+		idx = -(idx + 1);
+		if (!od->config->allow_unknown_destinations) {
+			return ERR_NOT_ALLOWED;
+		} else {
+			sts = DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER;
+		}
 	}
 
-#ifdef HAVE_AUTOLAUNCH
+#if HAVE_AUTOLAUNCH
 	bool autolaunch = false;
 #endif
 	struct rcu_object *objs = NULL;
 	struct rcu_data *nd = NULL;
+	struct tx *tx = r->tx;
 
 	if (sts == DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
 		nd = edit_rcu_data(&objs, od);
-		struct address *na = edit_address(&objs, oa);
-		struct addrmap *nm = edit_addrmap(&objs, om, idx, 0);
-		na->tx = r->tx;
+		struct address *na = oa ? edit_address(&objs, oa) :
+					  new_address(name);
+		struct addrmap *nm = edit_addrmap(&objs, om, idx, (oa ? 0 : 1));
+		na->tx = tx;
 		nm->v[idx] = na;
 		nd->destinations = nm;
 
-#ifdef HAVE_AUTOLAUNCH
-		autolaunch = na->activatable;
+#if HAVE_AUTOLAUNCH
+		autolaunch = oa && oa->cfg && oa->cfg->exec;
 #endif
 	}
 
@@ -307,8 +310,8 @@ int request_name(struct bus *b, struct rx *r, const str8_t *name,
 	// then everyone else
 	if (nd) {
 		rcu_commit(b->rcu, nd, objs);
-		notify_name_changed(b, r, true, name);
-#ifdef HAVE_AUTOLAUNCH
+		notify_name_changed(b, r->txbuf, true, tx, name);
+#if HAVE_AUTOLAUNCH
 		if (autolaunch) {
 			cnd_broadcast(&b->launch);
 		}
@@ -334,16 +337,24 @@ int release_name(struct bus *b, struct rx *r, const str8_t *name,
 
 	struct rcu_object *objs = NULL;
 	struct rcu_data *nd = NULL;
+	struct tx *tx = r->tx;
 
 	if (sts == DBUS_RELEASE_NAME_REPLY_RELEASED) {
 		const struct address *oa = om->v[idx];
+		assert(oa->tx == tx);
 
 		nd = edit_rcu_data(&objs, od);
-		struct address *na = edit_address(&objs, oa);
-		struct addrmap *nm = edit_addrmap(&objs, om, idx, 0);
-		na->tx = NULL;
-		nm->v[idx] = na;
-		nd->destinations = nm;
+		if (oa->cfg || oa->subs) {
+			struct address *na = edit_address(&objs, oa);
+			struct addrmap *nm = edit_addrmap(&objs, om, idx, 0);
+			na->tx = NULL;
+			nm->v[idx] = na;
+			nd->destinations = nm;
+		} else {
+			struct addrmap *nm = edit_addrmap(&objs, om, idx, -1);
+			collect_address(&objs, oa);
+			nd->destinations = nm;
+		}
 	}
 
 	// first notify the requester
@@ -354,7 +365,7 @@ int release_name(struct bus *b, struct rx *r, const str8_t *name,
 	// then everyone else
 	if (nd) {
 		rcu_commit(b->rcu, nd, objs);
-		notify_name_changed(b, r, false, name);
+		notify_name_changed(b, r->txbuf, false, tx, name);
 	}
 
 	return 0;
@@ -363,7 +374,7 @@ int release_name(struct bus *b, struct rx *r, const str8_t *name,
 ///////////////////////////////
 // autolaunch functions
 
-#ifdef HAVE_AUTOLAUNCH
+#if HAVE_AUTOLAUNCH
 int autolaunch_service(struct bus *b, const str8_t *name,
 		       const struct address **paddr)
 {
@@ -391,7 +402,7 @@ int autolaunch_service(struct bus *b, const str8_t *name,
 		if (oa->tx) {
 			*paddr = oa;
 			return 0;
-		} else if (!oa->activatable) {
+		} else if (!oa->cfg || !oa->cfg->exec) {
 			return ERR_NOT_ALLOWED;
 		}
 
@@ -399,7 +410,7 @@ int autolaunch_service(struct bus *b, const str8_t *name,
 		    difftime(now.tv_sec, oa->last_launch) > 5) {
 			// it's been a while since we launched it, let's try and
 			// launch it again
-			if (sys_launch(b, name)) {
+			if (sys_launch(b, oa)) {
 				return ERR_LAUNCH_FAILED;
 			}
 
@@ -493,7 +504,8 @@ int update_sub(struct bus *b, bool add, struct rx *r, const char *str,
 
 	if (str8eq(iface, BUS_INTERFACE)) {
 		if (!path_matches(str, match, BUS_PATH) ||
-		    !str8eq(mbr, SIGNAL_NAME_OWNER_CHANGED)) {
+		    (mbr && !str8eq(mbr, SIGNAL_NAME_OWNER_CHANGED)) ||
+		    (sender && !str8eq(sender, BUS_DESTINATION))) {
 			return ERR_NOT_FOUND;
 		}
 		return update_bus_sub(b, add, t, str, match, serial);
@@ -502,63 +514,102 @@ int update_sub(struct bus *b, bool add, struct rx *r, const char *str,
 	// lookup the address in the current RCU data
 	const struct rcu_data *od = rcu_root(b->rcu);
 	const struct addrmap *om = sender ? od->destinations : od->interfaces;
-	int aidx = bsearch_address(om, sender ? sender : iface);
-	if (aidx < 0) {
-		// TODO: dynamic interface/destination creation
-		return add ? ERR_NOT_ALLOWED : ERR_NOT_FOUND;
-	}
-	const struct address *oa = om->v[aidx];
-	const struct submap *os = oa->subs;
+	const str8_t *aname = sender ? sender : iface;
+	int aidx = bsearch_address(om, aname);
 
-	if (add && !has_group(t->sec, oa->gid_access)) {
-		return ERR_NOT_ALLOWED;
-	}
-
-	int sidx;
-	if (!add && (sidx = bsearch_subscription(os, t, str, match)) < 0) {
-		return ERR_NOT_FOUND;
-	}
-
-	// create new RCU chain
 	struct rcu_object *objs = NULL;
-	struct rcu_data *nd = edit_rcu_data(&objs, od);
-	struct address *na = edit_address(&objs, oa);
-	struct addrmap *nm = edit_addrmap(&objs, om, aidx, 0);
-	struct submap *ns =
-		add ? add_subscription(&objs, os, t, str, match, serial) :
-		      rm_subscription(&objs, os, sidx);
+	struct addrmap *nm;
 
-	na->subs = ns;
-	nm->v[aidx] = na;
+	if (add) {
+		const struct address *oa;
+		struct address *na;
+
+		if (aidx >= 0) {
+			// add a match to an existing address
+			oa = om->v[aidx];
+			if (oa->cfg &&
+			    !has_group(t->sec, oa->cfg->gid_access)) {
+				return ERR_NOT_ALLOWED;
+			}
+			na = edit_address(&objs, oa);
+
+		} else {
+			// add a match to a new address
+			const struct config *oc = od->config;
+			if (!(sender ? oc->allow_unknown_destinations :
+				       oc->allow_unknown_interfaces)) {
+				return ERR_NOT_ALLOWED;
+			}
+			oa = NULL;
+			aidx = -(aidx + 1);
+			na = new_address(aname);
+		}
+
+		struct submap *ns = add_subscription(&objs, na->subs, t, str,
+						     match, serial);
+		na->subs = ns;
+
+		nm = edit_addrmap(&objs, om, aidx, oa ? 0 : 1);
+		nm->v[aidx] = na;
+
+	} else {
+		// remove the match
+		if (aidx < 0) {
+			return ERR_NOT_FOUND;
+		}
+		const struct address *oa = om->v[aidx];
+		const struct submap *os = oa->subs;
+		int sidx = bsearch_subscription(os, t, str, match);
+		if (sidx < 0) {
+			return ERR_NOT_FOUND;
+		}
+
+		struct submap *ns = rm_subscription(&objs, oa->subs, sidx);
+
+		if (ns || oa->tx || oa->cfg) {
+			// we still have a reason to keep the address
+			struct address *na = edit_address(&objs, oa);
+			na->subs = ns;
+			nm = edit_addrmap(&objs, om, aidx, 0);
+			nm->v[aidx] = na;
+		} else {
+			// remove empty address records
+			nm = edit_addrmap(&objs, om, aidx, -1);
+			collect_address(&objs, oa);
+		}
+	}
+
+	// hook up the new RCU chain
+	struct rcu_data *nd = edit_rcu_data(&objs, od);
 	const struct addrmap **pnm = sender ? &nd->destinations :
 					      &nd->interfaces;
 	*pnm = nm;
 	rcu_commit(b->rcu, nd, objs);
+
 	return 0;
 }
 
 /////////////////////////////////
 // config option processing
 
-static inline int str8set(str8_t **pstr, const char *from, size_t len)
+static void realloc_str(char **ps, const char *str)
 {
-	if (len > UINT8_MAX) {
-		return -1;
+	if (str) {
+		size_t sz = strlen(str) + 1;
+		*ps = memcpy(frealloc(*ps, sz), str, sz);
+	} else {
+		free(*ps);
 	}
-	str8_t *ret = frealloc(*pstr, len + 2);
-	ret->len = (uint8_t)len;
-	memcpy(&ret->p, from, len);
-	ret->p[len] = '\0';
-	*pstr = ret;
-	return 0;
 }
 
 static void free_config(struct rcu_object *o)
 {
 	struct config *c = container_of(o, struct config, rcu);
 	if (c) {
-		free(c->sockpn);
-#ifdef HAVE_READY_FIFO
+		free(c->address);
+		free(c->type);
+		free(c->listenpn);
+#if HAVE_READY_FIFO
 		free(c->readypn);
 #endif
 		free(c);
@@ -572,30 +623,26 @@ static struct config *new_config(void)
 	c->max_num_remotes = 64;
 	c->max_num_names = 4;
 	c->max_num_subs = 16;
-	c->sockpn = NULL;
-#ifdef HAVE_READY_FIFO
+	c->listenpn = NULL;
+	c->address = NULL;
+	c->type = NULL;
+#if HAVE_READY_FIFO
 	c->readypn = NULL;
 #endif
-#ifdef HAVE_LISTENFD
-	c->sockfd = -1;
+#if HAVE_LISTENFD
+	c->listenfd = -1;
 #endif
 	return c;
 }
 
-static int cmp_str8_addresss_node(CRBTree *t, void *k, CRBNode *n)
-{
-	str8_t *key = k;
-	struct address *a = node_to_addr(n);
-	return str8cmp(key, &a->name);
-}
-
-static struct address *get_address(CRBTree *t, char *key, size_t klen,
+static struct address *get_address(struct addrtree *t, char *key, size_t klen,
 				   size_t *pfxlen)
 {
 	// key is of the form address.org.example.Service.enabled
-	// want to pick out the middle piece. *pfxlen gives the length of the
-	// "address." prefix. Pick out the last section and return the length of
-	// "address.org.example.Service." in pfxlen.
+	// want to pick out the middle piece. *pfxlen gives the length
+	// of the "address." prefix. Pick out the last section and
+	// return the length of "address.org.example.Service." in
+	// pfxlen.
 	char *firstdot = key + *pfxlen;
 	char *lastdot = x_memrchr(firstdot, '.', klen - *pfxlen);
 	if (!lastdot || lastdot - firstdot > UINT8_MAX) {
@@ -603,8 +650,8 @@ static struct address *get_address(CRBTree *t, char *key, size_t klen,
 	}
 	*pfxlen = lastdot - key + 1;
 
-	// create a str8 for use with the lookup, but save the len and nul bytes
-	// so we can restore them after.
+	// create a str8 for use with the lookup, but save the len and
+	// nul bytes so we can restore them after.
 	str8_t *s = (str8_t *)(firstdot - 1);
 	size_t slen = lastdot - firstdot;
 	uint8_t prevlen = s->len;
@@ -612,16 +659,8 @@ static struct address *get_address(CRBTree *t, char *key, size_t klen,
 	s->len = (uint8_t)slen;
 	s->p[slen] = 0;
 
-	CRBNode *p;
-	CRBNode **l = c_rbtree_find_slot(t, &cmp_str8_addresss_node, s, &p);
-	struct address *a;
-	if (l) {
-		a = new_address(s);
-		a->in_config = true;
-		c_rbtree_add(t, p, l, &a->rb);
-	} else {
-		a = node_to_addr(p);
-	}
+	struct address *a = insert_addrtree(t, s);
+
 	s->len = prevlen;
 	s->p[slen] = prevnul;
 	return a;
@@ -634,18 +673,38 @@ static struct address *get_address(CRBTree *t, char *key, size_t klen,
 #define CFG_OPEN_DIR -5
 #define CFG_GROUP -6
 
+static int decode_positive_int(const char *val, int *pval)
+{
+	int n = parse_pos_int(val, pval);
+	return (n <= 0 || val[n]) ? CFG_VALUE : 0;
+}
+
 static int parse_global_config(struct config *c, const char *key,
 			       const char *val)
 {
 	switch (strlen(key)) {
+	case 4:
+		if (!strcmp(key, "type")) {
+			realloc_str(&c->type, val);
+			return 0;
+		} else {
+			return CFG_KEY;
+		}
+
 	case 6:
 		if (!strcmp(key, "listen")) {
-#ifdef HAVE_LISTENFD
-			c->sockfd = -1;
+#if HAVE_LISTENFD
+			c->listenfd = -1;
 #endif
-			if (str8set(&c->sockpn, val, strlen(val))) {
-				return CFG_OVERLONG;
-			}
+			realloc_str(&c->listenpn, val);
+			return 0;
+		} else {
+			return CFG_KEY;
+		}
+
+	case 7:
+		if (!strcmp(key, "address")) {
+			realloc_str(&c->address, val);
 			return 0;
 		} else {
 			return CFG_KEY;
@@ -653,20 +712,18 @@ static int parse_global_config(struct config *c, const char *key,
 
 	case 8:
 		if (!strcmp(key, "log_type")) {
-			if (!strcasecmp(val, "json")) {
+			if (!strcmp(val, "json")) {
 				g_log_type = LOG_JSON;
-			} else if (!strcasecmp(val, "text")) {
+			} else if (!strcmp(val, "text")) {
 				g_log_type = LOG_TEXT;
 			} else {
 				return CFG_VALUE;
 			}
 			return 0;
-#ifdef HAVE_LISTENFD
+#if HAVE_LISTENFD
 		} else if (!strcmp(key, "listenfd")) {
-			c->sockfd = atoi(val);
-			free(c->sockpn);
-			c->sockpn = NULL;
-			return 0;
+			realloc_str(&c->listenpn, NULL);
+			return decode_positive_int(val, &c->listenfd);
 #endif
 		} else {
 			return CFG_KEY;
@@ -674,15 +731,15 @@ static int parse_global_config(struct config *c, const char *key,
 
 	case 9:
 		if (!strcmp(key, "log_level")) {
-			if (!strcasecmp(val, "debug")) {
+			if (!strcmp(val, "debug")) {
 				g_log_level = LOG_DEBUG;
-			} else if (!strcasecmp(val, "verbose")) {
+			} else if (!strcmp(val, "verbose")) {
 				g_log_level = LOG_VERBOSE;
-			} else if (!strcasecmp(val, "notice")) {
+			} else if (!strcmp(val, "notice")) {
 				g_log_level = LOG_NOTICE;
-			} else if (!strcasecmp(val, "warning")) {
+			} else if (!strcmp(val, "warning")) {
 				g_log_level = LOG_WARNING;
-			} else if (!strcasecmp(val, "error")) {
+			} else if (!strcmp(val, "error")) {
 				g_log_level = LOG_ERROR;
 			} else {
 				return CFG_VALUE;
@@ -692,65 +749,78 @@ static int parse_global_config(struct config *c, const char *key,
 			return CFG_KEY;
 		}
 
-#ifdef HAVE_READY_FIFO
+#if HAVE_READY_FIFO
 	case 10:
 		if (!strcmp(key, "ready_fifo")) {
-			if (str8set(&c->readypn, val, strlen(val))) {
-				return CFG_OVERLONG;
-			}
+			realloc_str(&c->readypn, val);
 			return 0;
 		} else {
 			return CFG_KEY;
 		}
 #endif
-
+	case 23:
+		if (!strcmp(key, "allow_unknown_addresses")) {
+			if (!strcmp(val, "true")) {
+				c->allow_unknown_destinations = true;
+			} else if (!strcmp(val, "false")) {
+				c->allow_unknown_destinations = false;
+			} else {
+				return CFG_VALUE;
+			}
+			return 0;
+		} else {
+			return CFG_KEY;
+		}
+	case 24:
+		if (!strcmp(key, "allow_unknown_interfaces")) {
+			if (!strcmp(val, "true")) {
+				c->allow_unknown_interfaces = true;
+			} else if (!strcmp(val, "false")) {
+				c->allow_unknown_interfaces = false;
+			} else {
+				return CFG_VALUE;
+			}
+			return 0;
+		} else {
+			return CFG_KEY;
+		}
 	default:
 		return CFG_KEY;
 	}
 }
 
-static int parse_address_config(struct address *a, const char *key,
+#if HAVE_GID
+static int decode_group(const char *val, int *pgid)
+{
+	*pgid = lookup_group(val);
+	return (*pgid == GROUP_UNKNOWN) ? CFG_VALUE : 0;
+}
+#endif
+
+static int parse_address_config(struct addrcfg *c, const char *key,
 				const char *val)
 {
 	if (!strcmp(key, "description")) {
 		return 0;
 
-#ifdef HAVE_AUTOLAUNCH
-	} else if (!strcmp(key, "activatable")) {
-		if (!strcasecmp(val, "true")) {
-			a->activatable = true;
-		} else if (!strcasecmp(val, "false")) {
-			a->activatable = false;
-		} else {
-			return CFG_VALUE;
-		}
+#if HAVE_AUTOLAUNCH
+	} else if (!strcmp(key, "exec")) {
+		realloc_str(&c->exec, val);
 		return 0;
 #endif
 
-#ifdef HAVE_PIDINFO
+#if HAVE_GID
 	} else if (!strcmp(key, "owner_gid")) {
-		a->gid_owner = atoi(val);
-		return a->gid_owner >= 0 ? 0 : CFG_GROUP;
+		return decode_positive_int(val, &c->gid_owner);
 
 	} else if (!strcmp(key, "owner_group")) {
-		if (!strcmp(val, "any")) {
-			a->gid_owner = -1;
-			return 0;
-		}
-		a->gid_owner = lookup_group(val);
-		return a->gid_owner >= 0 ? 0 : CFG_GROUP;
+		return decode_group(val, &c->gid_owner);
 
 	} else if (!strcmp(key, "access_gid")) {
-		a->gid_access = atoi(val);
-		return a->gid_access >= 0 ? 0 : CFG_GROUP;
+		return decode_positive_int(val, &c->gid_access);
 
 	} else if (!strcmp(key, "access_group")) {
-		if (!strcmp(val, "any")) {
-			a->gid_access = -1;
-			return 0;
-		}
-		a->gid_access = lookup_group(val);
-		return a->gid_access >= 0 ? 0 : CFG_GROUP;
+		return decode_group(val, &c->gid_access);
 #endif
 
 	} else {
@@ -758,36 +828,24 @@ static int parse_address_config(struct address *a, const char *key,
 	}
 }
 
-static int parse_interface_config(struct address *a, const char *key,
+static int parse_interface_config(struct addrcfg *c, const char *key,
 				  const char *val)
 {
 	if (!strcmp(key, "description")) {
 		return 0;
 
-#ifdef HAVE_PIDINFO
+#if HAVE_GID
 	} else if (!strcmp(key, "subscribe_gid")) {
-		a->gid_access = atoi(val);
-		return a->gid_access >= 0 ? 0 : CFG_GROUP;
+		return decode_positive_int(val, &c->gid_access);
 
 	} else if (!strcmp(key, "subscribe_group")) {
-		if (!strcmp(val, "any")) {
-			a->gid_access = -1;
-			return 0;
-		}
-		a->gid_access = lookup_group(val);
-		return a->gid_access >= 0 ? 0 : CFG_GROUP;
+		return decode_group(val, &c->gid_access);
 
 	} else if (!strcmp(key, "publish_gid")) {
-		a->gid_owner = atoi(val);
-		return a->gid_owner >= 0 ? 0 : CFG_GROUP;
+		return decode_positive_int(val, &c->gid_owner);
 
 	} else if (!strcmp(key, "publish_group")) {
-		if (!strcmp(val, "any")) {
-			a->gid_owner = -1;
-			return 0;
-		}
-		a->gid_owner = lookup_group(val);
-		return a->gid_owner >= 0 ? 0 : CFG_GROUP;
+		return decode_group(val, &c->gid_owner);
 #endif
 
 	} else {
@@ -820,7 +878,8 @@ static int load_next_file(struct stack_entry *s, const char *file)
 	}
 	init_ini(&s->ini, data, sz);
 	s->heap = data;
-	s->fn = strdup(file);
+	sz = strlen(file) + 1;
+	s->fn = memcpy(fmalloc(sz), file, sz);
 	return 0;
 }
 
@@ -828,7 +887,7 @@ static void load_string(struct stack_entry *s, const char *str)
 {
 	init_ini(&s->ini, str, strlen(str));
 	s->heap = NULL;
-	s->fn = strdup("cmdline");
+	s->fn = memcpy(fmalloc(8), "cmdline", 8);
 	s->dir = NULL;
 }
 
@@ -879,8 +938,8 @@ next_file:
 	return s;
 }
 
-static int do_parse(struct parse_stack *p, struct config *cfg, CRBTree *taddr,
-		    CRBTree *tiface)
+static int do_parse(struct parse_stack *p, struct config *cfg,
+		    struct addrtree *taddr, struct addrtree *tiface)
 {
 	struct stack_entry *s = p->v;
 	struct stack_entry *sbot = p->v;
@@ -920,13 +979,14 @@ static int do_parse(struct parse_stack *p, struct config *cfg, CRBTree *taddr,
 			size_t pfx = strlen("interface.");
 			struct address *a =
 				get_address(tiface, key, klen, &pfx);
-			err = a ? parse_interface_config(a, key + pfx, val) :
+			err = a ? parse_interface_config(a->cfg, key + pfx,
+							 val) :
 				  CFG_OVERLONG;
 
 		} else if (has_prefix(key, klen, "address.", 8)) {
 			size_t pfx = strlen("address.");
 			struct address *a = get_address(taddr, key, klen, &pfx);
-			err = a ? parse_address_config(a, key + pfx, val) :
+			err = a ? parse_address_config(a->cfg, key + pfx, val) :
 				  CFG_OVERLONG;
 
 		} else {
@@ -965,12 +1025,12 @@ static int do_parse(struct parse_stack *p, struct config *cfg, CRBTree *taddr,
 	return -1;
 }
 
-static void free_tree(CRBTree *t)
+static void free_tree(struct addrtree *t)
 {
-	// Use postorder traversal, that is children first and then parent. That
-	// way we can safely free the data as we go.
+	// Use postorder traversal, that is children first and then
+	// parent. That way we can safely free the data as we go.
 
-	CRBNode *n = c_rbtree_first_postorder(t);
+	CRBNode *n = c_rbtree_first_postorder(&t->tree);
 	while (n) {
 		CRBNode *next = c_rbnode_next_postorder(n);
 		struct address *a = node_to_addr(n);
@@ -982,10 +1042,9 @@ static void free_tree(CRBTree *t)
 int load_config(struct bus *b, struct config_arguments *args)
 {
 	struct config *cfg = new_config();
-	CRBTree taddr;
-	CRBTree tiface;
-	c_rbtree_init(&taddr);
-	c_rbtree_init(&tiface);
+	struct addrtree taddr, tiface;
+	memset(&taddr, 0, sizeof(taddr));
+	memset(&tiface, 0, sizeof(tiface));
 
 	for (int i = 0; i < args->num; i++) {
 		struct parse_stack s;
@@ -1001,14 +1060,42 @@ int load_config(struct bus *b, struct config_arguments *args)
 	}
 
 	struct rcu_object *objs = NULL;
+	struct rcu_object *released = NULL;
 	const struct rcu_data *od = rcu_root(b->rcu);
 	struct rcu_data *nd = edit_rcu_data(&objs, od);
 	rcu_register_gc(&objs, &free_config, &nd->config->rcu);
 	nd->config = cfg;
-	nd->destinations = merge_addresses(&objs, nd->destinations, &taddr);
-	nd->interfaces = merge_addresses(&objs, nd->interfaces, &tiface);
+	nd->destinations = merge_addresses(&objs, &released, nd->destinations,
+					   &taddr,
+					   cfg->allow_unknown_destinations);
+	nd->interfaces = merge_addresses(&objs, &objs, nd->interfaces, &tiface,
+					 cfg->allow_unknown_interfaces);
 	rcu_commit(b->rcu, nd, objs);
-	// we consumed all the data, reset to blank, so don't need to free it
+
+	// we consumed the trees and config, so don't need to free them
+
+	// We may have released some names. Need to notify people. The commit
+	// above updated the name list so we can now notify about the name
+	// changes. Because we kept the address structs out of the collected
+	// objects we can still use that data to do the notifications. Just have
+	// to collect the address structs when we're done.
+	if (!released) {
+		return 0;
+	}
+
+	for (struct rcu_object *o = released; o != NULL; o = o->next) {
+		struct address *a = container_of(o, struct address, rcu);
+		if (a->tx) {
+			char buf[NAME_OWNER_CHANGED_BUFSZ];
+			notify_name_changed(b, buf, false, a->tx, &a->name);
+		}
+	}
+
+	// now we do another RCU update in order to bump the RCU version and
+	// collect the released address structures
+	nd = edit_rcu_data(&released, nd);
+	rcu_commit(b->rcu, nd, released);
+
 	return 0;
 
 error:
