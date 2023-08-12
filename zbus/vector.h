@@ -10,7 +10,7 @@ struct vector {
 
 struct void_vector {
 	struct vector h;
-	const void *v[0];
+	const void *v[1];
 };
 
 static int vector_len(const struct vector *m);

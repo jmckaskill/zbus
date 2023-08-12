@@ -5,7 +5,7 @@
 
 struct txmap {
 	struct vector hdr;
-	struct tx *v[0];
+	struct tx *v[1];
 };
 
 int bsearch_tx(const struct txmap *m, int id);

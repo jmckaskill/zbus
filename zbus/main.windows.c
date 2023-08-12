@@ -1,6 +1,4 @@
 #include "config.h"
-
-#ifdef _WIN32
 #include "bus.h"
 #include "lib/windows.h"
 #include "lib/log.h"
@@ -83,7 +81,7 @@ static int install()
 	return 0;
 }
 
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 int sys_launch(struct bus *bus, const str8_t *name, char *exec)
 {
 	return -1;
@@ -203,4 +201,3 @@ int wmain(int argc, wchar_t *argv[])
 		return 0;
 	}
 }
-#endif

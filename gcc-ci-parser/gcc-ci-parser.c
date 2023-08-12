@@ -22,7 +22,7 @@ struct node {
 	struct edge *edges;
 };
 
-KHASH_MAP_INIT_STR(node, struct node *);
+KHASH_MAP_INIT_STR(node, struct node *)
 static khash_t(node) * g_nodes;
 
 static struct node *get_node(char *title)
@@ -306,8 +306,7 @@ static void print_stack(struct node *root)
 			if (size > s->max) {
 				s->max = size;
 			}
-			fprintf(stdout, "%d +%d %s\n", size, t->size,
-				t->title);
+			fprintf(stdout, "%d +%d %s\n", size, t->size, t->title);
 
 			if (s == end) {
 				dump_stack(s, stack);

@@ -67,7 +67,7 @@ error:
 struct sysdir {
 	DIR *dir;
 	size_t dlen;
-	char path[0];
+	char path[1];
 };
 
 int sys_opendir(struct sysdir **pdir, const char *pn)
@@ -80,7 +80,7 @@ int sys_opendir(struct sysdir **pdir, const char *pn)
 	if (!dir) {
 		return -1;
 	}
-	struct sysdir *d = fmalloc(sizeof(*d) + len + 1 + MAX_FILENAME_LEN + 1);
+	struct sysdir *d = fmalloc(sizeof(*d) + len + 1 + MAX_FILENAME_LEN);
 	d->dir = dir;
 	if (pn[len - 1] == '/') {
 		len--;

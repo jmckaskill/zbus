@@ -281,7 +281,7 @@ int request_name(struct bus *b, struct rx *r, const str8_t *name,
 		}
 	}
 
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 	bool autolaunch = false;
 #endif
 	struct rcu_object *objs = NULL;
@@ -297,7 +297,7 @@ int request_name(struct bus *b, struct rx *r, const str8_t *name,
 		nm->v[idx] = na;
 		nd->destinations = nm;
 
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 		autolaunch = oa && oa->cfg && oa->cfg->exec;
 #endif
 	}
@@ -311,7 +311,7 @@ int request_name(struct bus *b, struct rx *r, const str8_t *name,
 	if (nd) {
 		rcu_commit(b->rcu, nd, objs);
 		notify_name_changed(b, r->txbuf, true, tx, name);
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 		if (autolaunch) {
 			cnd_broadcast(&b->launch);
 		}
@@ -374,7 +374,7 @@ int release_name(struct bus *b, struct rx *r, const str8_t *name,
 ///////////////////////////////
 // autolaunch functions
 
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 int autolaunch_service(struct bus *b, const str8_t *name,
 		       const struct address **paddr)
 {
@@ -789,7 +789,7 @@ static int parse_global_config(struct config *c, const char *key,
 	}
 }
 
-#if HAVE_GID
+#if HAVE_UNIX_GROUPS
 static int decode_group(const char *val, int *pgid)
 {
 	*pgid = lookup_group(val);
@@ -803,13 +803,13 @@ static int parse_address_config(struct addrcfg *c, const char *key,
 	if (!strcmp(key, "description")) {
 		return 0;
 
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 	} else if (!strcmp(key, "exec")) {
 		realloc_str(&c->exec, val);
 		return 0;
 #endif
 
-#if HAVE_GID
+#if HAVE_UNIX_GROUPS
 	} else if (!strcmp(key, "owner_gid")) {
 		return decode_positive_int(val, &c->gid_owner);
 
@@ -834,7 +834,7 @@ static int parse_interface_config(struct addrcfg *c, const char *key,
 	if (!strcmp(key, "description")) {
 		return 0;
 
-#if HAVE_GID
+#if HAVE_UNIX_GROUPS
 	} else if (!strcmp(key, "subscribe_gid")) {
 		return decode_positive_int(val, &c->gid_access);
 
@@ -926,16 +926,17 @@ static struct stack_entry *next_file(struct stack_entry *s)
 		return s - 1;
 	}
 
-next_file:
-	const char *fn = sys_nextfile(s->dir);
-	if (!fn) {
-		sys_closedir(s->dir);
-		return s - 1;
+	for (;;) {
+		const char *fn = sys_nextfile(s->dir);
+		if (!fn) {
+			sys_closedir(s->dir);
+			return s - 1;
+		}
+		if (load_next_file(s, fn)) {
+			continue;
+		}
+		return s;
 	}
-	if (load_next_file(s, fn)) {
-		goto next_file;
-	}
-	return s;
 }
 
 static int do_parse(struct parse_stack *p, struct config *cfg,

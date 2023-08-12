@@ -1,6 +1,6 @@
 #define _POSIX_C_SOURCE 199309UL
 #define _GNU_SOURCE
-#include "socket-posix.h"
+#include "socket.posix.h"
 
 #ifndef _WIN32
 #include "log.h"
@@ -158,7 +158,7 @@ int start_send3(struct txconn *c, char *p1, int n1, char *p2, int n2, char *p3,
 
 static int cancel_signal;
 
-static void on_cancel(int)
+static void on_cancel(int sig)
 {
 }
 

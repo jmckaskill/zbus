@@ -39,5 +39,5 @@ void cancel_send(struct txconn *c);
 void close_rx(struct rxconn *c);
 void close_tx(struct txconn *c);
 
-#include "socket-win32.h"
-#include "socket-posix.h"
+#include "socket.windows.h"
+#include "socket.posix.h"

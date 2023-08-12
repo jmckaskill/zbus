@@ -1,6 +1,6 @@
 #include "sec.h"
 
-#if HAVE_SID
+#if HAVE_WINDOWS_SID
 #include "lib/windows.h"
 #include "lib/log.h"
 #include <sddl.h>

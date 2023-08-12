@@ -3,3 +3,7 @@
 /.vscode
 /bin
 /obj
+/configure
+/configure.exe
+/config.h
+/build.ninja

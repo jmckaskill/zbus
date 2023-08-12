@@ -1,3 +1,4 @@
+#define _DEFAULT_SOURCE
 #include "client.h"
 #include "socket.h"
 #include "dbus/auth.h"

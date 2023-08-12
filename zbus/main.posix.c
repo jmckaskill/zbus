@@ -1,7 +1,5 @@
-#include "config.h"
-
-#ifndef _WIN32
 #define _GNU_SOURCE
+#include "config.h"
 #include "tx.h"
 #include "rx.h"
 #include "bus.h"
@@ -30,12 +28,12 @@ static inline bool have_sighup(void)
 	return !atomic_flag_test_and_set(&g_sighup);
 }
 
-static void on_sighup(int)
+static void on_sighup(int sig)
 {
 	atomic_flag_clear(&g_sighup);
 }
 
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 static atomic_flag g_sigchld;
 
 static inline bool have_sigchld(void)
@@ -43,7 +41,7 @@ static inline bool have_sigchld(void)
 	return !atomic_flag_test_and_set(&g_sigchld);
 }
 
-static void on_sigchld(int)
+static void on_sigchld(int sig)
 {
 	atomic_flag_clear(&g_sigchld);
 }
@@ -54,7 +52,7 @@ static void on_sigchld(int)
 static void default_sigmask(sigset_t *ss)
 {
 	sigemptyset(ss);
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 	sigaddset(ss, SIGCHLD);
 #endif
 	sigaddset(ss, SIGHUP);
@@ -75,7 +73,7 @@ int setup_signals(void)
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
 
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 	atomic_flag_test_and_set(&g_sigchld);
 	sa.sa_handler = &on_sigchld;
 	if (sigaction(SIGCHLD, &sa, NULL)) {
@@ -102,14 +100,14 @@ int setup_signals(void)
 	return 0;
 }
 
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 struct child_info {
 	struct bus *bus;
 	pid_t pid;
 	str8_t name;
 };
 
-KHASH_MAP_INIT_INT(child_info, struct child_info *);
+KHASH_MAP_INIT_INT(child_info, struct child_info *)
 
 static mtx_t child_lk;
 static khash_t(child_info) children;
@@ -379,7 +377,7 @@ int main(int argc, char *argv[])
 		int n = ppoll(&pfd, 1, NULL, &ss);
 		if (n == 1) {
 			continue;
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 		} else if (have_sigchld() && reap_children()) {
 			return 1;
 #endif
@@ -398,4 +396,3 @@ int main(int argc, char *argv[])
 		}
 	}
 }
-#endif

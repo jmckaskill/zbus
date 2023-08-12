@@ -36,6 +36,7 @@ struct subscription *new_subscription(const char *mstr, struct match m)
 	memset(s, 0, sizeof(*s));
 	s->m = m;
 	memcpy(s->mstr, mstr, m.len);
+	s->mstr[m.len] = 0;
 	return s;
 }
 

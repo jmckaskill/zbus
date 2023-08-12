@@ -1,4 +1,4 @@
-#include "socket-win32.h"
+#include "socket.windows.h"
 
 #ifdef _WIN32
 void close_rx(struct rxconn *c)

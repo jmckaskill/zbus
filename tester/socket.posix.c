@@ -15,24 +15,25 @@ int sys_send(fd_t fd, const char *buf, int sz)
 
 int sys_recv(fd_t fd, char *buf, int sz)
 {
-try_again:
-	int r = read(fd, buf, sz);
-	if (r < 0 && errno == EINTR) {
-		goto try_again;
-	} else if (r < 0) {
-		ERROR("read,errno:%m,fd:%d", fd);
-		return -1;
-	} else if (r == 0) {
-		ERROR("recv early EOF,fd:%d", fd);
-		return -1;
+	for (;;) {
+		int r = read(fd, buf, sz);
+		if (r < 0 && errno == EINTR) {
+			continue;
+		} else if (r < 0) {
+			ERROR("read,errno:%m,fd:%d", fd);
+			return -1;
+		} else if (r == 0) {
+			ERROR("recv early EOF,fd:%d", fd);
+			return -1;
+		}
+		struct logbuf b;
+		if (start_debug(&b, "read")) {
+			log_int(&b, "fd", fd);
+			log_bytes(&b, "data", buf, r);
+			finish_log(&b);
+		}
+		return r;
 	}
-	struct logbuf b;
-	if (start_debug(&b, "read")) {
-		log_int(&b, "fd", fd);
-		log_bytes(&b, "data", buf, r);
-		finish_log(&b);
-	}
-	return r;
 }
 
 void sys_close(fd_t fd)

@@ -14,7 +14,7 @@
 struct addrcfg {
 	int ref;
 
-#if HAVE_GID
+#if HAVE_UNIX_GROUPS
 	// for destinations, who can own it
 	// for interfaces, who can publish to it
 	int gid_owner;
@@ -23,7 +23,7 @@ struct addrcfg {
 	int gid_access;
 #endif
 
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 	char *exec;
 #endif
 };
@@ -41,7 +41,7 @@ struct address {
 	struct submap *subs;
 	struct addrcfg *cfg;
 
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 	time_t last_launch;
 	bool running;
 #endif
@@ -50,7 +50,7 @@ struct address {
 
 struct addrmap {
 	struct vector hdr;
-	const struct address *v[0];
+	const struct address *v[1];
 };
 
 struct addrtree {

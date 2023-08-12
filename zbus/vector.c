@@ -21,7 +21,7 @@ struct vector *edit_vector(struct rcu_object **objs, const struct vector *ob,
 		return NULL;
 	}
 
-	struct void_vector *nv = fmalloc(sizeof(*nv) + (n + num) * esz);
+	struct void_vector *nv = fmalloc(sizeof(nv->h) + (n + num) * esz);
 	if (num > 0) {
 		memcpy((void *)(nv->v), ov->v, idx * esz);
 		memset((void *)(nv->v + idx), 0, num * esz);

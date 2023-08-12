@@ -16,12 +16,12 @@ struct subscription {
 	struct tx *tx;
 	struct match m;
 	uint32_t serial;
-	char mstr[0];
+	char mstr[1];
 };
 
 struct submap {
 	struct vector hdr;
-	const struct subscription *v[0];
+	const struct subscription *v[1];
 };
 
 struct subscription *new_subscription(const char *mstr, struct match m);

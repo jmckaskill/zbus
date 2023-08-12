@@ -317,7 +317,7 @@ static int ref_named(struct rx *r, const str8_t *name, bool should_autostart,
 				err = ERR_NOT_ALLOWED;
 			} else if (a->tx) {
 				tx = ref_tx(a->tx);
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 			} else if (a->cfg && a->cfg->exec && should_autostart) {
 				err = 0;
 #endif
@@ -331,7 +331,7 @@ static int ref_named(struct rx *r, const str8_t *name, bool should_autostart,
 		return 0;
 	}
 
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 	if (err) {
 		return err;
 	}
@@ -385,7 +385,7 @@ static int ref_remote(struct rx *r, const str8_t *name, struct tx **ptx)
 ///////////////////////////////////////////
 // ListNames
 
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 static void encode_activatable(struct builder *b, struct array_data ad,
 			       const struct addrmap *m)
 {
@@ -434,7 +434,7 @@ static int list_names(struct rx *r, uint32_t request_serial, bool activatable)
 	if (!activatable) {
 		encode_names(&b, ad, d->destinations);
 		encode_unique_names(&b, ad, d->remotes);
-#if HAVE_AUTOLAUNCH
+#if ENABLE_AUTOSTART
 	} else {
 		encode_activatable(&b, ad, d->destinations);
 #endif
@@ -477,7 +477,7 @@ static int get_credentials(struct rx *r, uint32_t serial, const str8_t *name)
 	append_uint32(&b, s->pid);
 	end_variant(&b, vd);
 
-#if HAVE_SID
+#if HAVE_WINDOWS_SID
 	start_dict_entry(&b, dd);
 	append_string8(&b, S8("\012WindowsSID"));
 	vd = start_variant(&b, "s");
@@ -485,15 +485,13 @@ static int get_credentials(struct rx *r, uint32_t serial, const str8_t *name)
 	end_variant(&b, vd);
 #endif
 
-#if HAVE_UID
+#if HAVE_UNIX_GROUPS
 	start_dict_entry(&b, dd);
 	append_string8(&b, S8("\012UnixUserID"));
 	vd = start_variant(&b, "u");
 	append_uint32(&b, s->uid);
 	end_variant(&b, vd);
-#endif
 
-#if HAVE_GID
 	start_dict_entry(&b, dd);
 	append_string8(&b, S8("\014UnixGroupIDs"));
 	vd = start_variant(&b, "au");
@@ -615,7 +613,7 @@ int bus_method(struct rx *r, struct message *m, struct iterator *ii)
 		case 21:
 
 			if (str8eq(m->member, METHOD_GET_UNIX_USER)) {
-#if HAVE_UID
+#if HAVE_UNIX_GROUPS
 				return get_sec_u32(
 					r, m->serial, parse_string8(ii),
 					offsetof(struct security, uid));

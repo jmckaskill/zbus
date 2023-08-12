@@ -13,16 +13,13 @@
 struct security {
 	uint32_t pid;
 
-#if HAVE_UID
-	uint32_t uid;
-#endif
-
-#if HAVE_SID
+#if HAVE_WINDOWS_SID
 	char *sid;
-#elif defined HAVE_GID
+#elif defined HAVE_UNIX_GROUPS
+	uint32_t uid;
 	struct {
 		int n;
-		int v[0];
+		int v[1];
 	} groups;
 #endif
 };
@@ -34,7 +31,7 @@ void free_security(struct security *p);
 
 int getentropy(void *buf, size_t sz);
 
-#if HAVE_GID
+#if HAVE_UNIX_GROUPS
 bool has_group(const struct security *p, int group);
 int lookup_group(const char *name);
 #else
