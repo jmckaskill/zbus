@@ -57,6 +57,7 @@ static void default_sigmask(sigset_t *ss)
 #endif
 	sigaddset(ss, SIGHUP);
 	sigaddset(ss, CANCEL_SIGNAL);
+	sigaddset(ss, SIGPIPE);
 }
 
 int setup_signals(void)
@@ -86,12 +87,6 @@ int setup_signals(void)
 	sa.sa_handler = &on_sighup;
 	if (sigaction(SIGHUP, &sa, NULL)) {
 		ERROR("setup sighup,errno:%m");
-		return -1;
-	}
-
-	sa.sa_handler = SIG_IGN;
-	if (sigaction(SIGPIPE, &sa, NULL)) {
-		ERROR("setup SIGPIPE,errno:%m");
 		return -1;
 	}
 

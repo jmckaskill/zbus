@@ -1,6 +1,6 @@
 #include "socket.windows.h"
+#include <limits.h>
 
-#ifdef _WIN32
 void close_rx(struct rxconn *c)
 {
 	CloseHandle(c->ol.hEvent);
@@ -12,8 +12,9 @@ void close_tx(struct txconn *c)
 	CloseHandle(c->h);
 }
 
-int block_recv1(struct rxconn *c, char *p, int n)
+int block_recv1(struct rxconn *c, char *p, size_t n)
 {
+	assert(n < INT_MAX);
 	DWORD read;
 	if (ReadFile(c->h, p, n, &read, &c->ol)) {
 		return (int)read;
@@ -40,8 +41,9 @@ int block_recv1(struct rxconn *c, char *p, int n)
 	}
 }
 
-int start_send1(struct txconn *c, char *p, int n)
+int start_send1(struct txconn *c, char *p, size_t n)
 {
+	assert(n < INT_MAX);
 	DWORD write;
 	if (WriteFile(c->h, p, n, &write, &c->ol)) {
 		return (int)write;
@@ -67,4 +69,3 @@ void cancel_send(struct txconn *c)
 {
 	CancelIoEx(c->h, &c->ol);
 }
-#endif

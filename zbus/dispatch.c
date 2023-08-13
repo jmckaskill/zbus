@@ -532,8 +532,8 @@ static int get_sec_u32(struct rx *r, uint32_t serial, const str8_t *name,
 
 int bus_method(struct rx *r, struct message *m, struct iterator *ii)
 {
-	// methods are guarenteed to have a valid path, member, and
-	// serial. interface may be unspecified
+	// methods are guarenteed to have a valid path, member, interface and
+	// serial
 
 	if (!str8eq(m->path, BUS_PATH)) {
 		// we don't support method calls on the bus on anything but the
@@ -541,7 +541,7 @@ int bus_method(struct rx *r, struct message *m, struct iterator *ii)
 		return ERR_NOT_FOUND;
 	}
 
-	if (!m->interface || str8eq(m->interface, BUS_INTERFACE)) {
+	if (str8eq(m->interface, BUS_INTERFACE)) {
 		switch (m->member->len) {
 		case 5:
 			if (str8eq(m->member, METHOD_GET_ID)) {

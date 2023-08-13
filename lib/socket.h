@@ -11,17 +11,17 @@ struct txconn;
 // +ve - number of bytes read
 // 0 - EOF
 // -ve - error
-int block_recv1(struct rxconn *c, char *p, int n);
-int block_recv2(struct rxconn *c, char *p1, int n1, char *p2, int n2);
+int block_recv1(struct rxconn *c, char *p, size_t n);
+int block_recv2(struct rxconn *c, char *p1, size_t n1, char *p2, size_t n2);
 
 // start an async send that may finish synchronously if async == true
 // returns
 // +ve - number of bytes sent
 // 0 - send scheduled
 // -ve - error
-int start_send1(struct txconn *c, char *p, int n);
-int start_send3(struct txconn *c, char *p1, int n1, char *p2, int n2, char *p3,
-		int n3);
+int start_send1(struct txconn *c, char *p, size_t n);
+int start_send3(struct txconn *c, char *p1, size_t n1, char *p2, size_t n2,
+		char *p3, size_t n3);
 
 // waits for the send to finish, unlocks lk while blocked
 // returns

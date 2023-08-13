@@ -17,6 +17,18 @@
 #include <unistd.h>
 #endif
 
+#if defined __GNUC__
+#define x_strchrnul strchrnul
+#else
+static inline char *x_strchrnul(const char *s, char ch)
+{
+	while (*s && *s != ch) {
+		s++;
+	}
+	return (char *)s;
+}
+#endif
+
 enum log_level g_log_level = LOG_NOTICE;
 enum log_type g_log_type = LOG_TEXT;
 
@@ -345,6 +357,15 @@ void log_bool_2(struct logbuf *b, const char *key, size_t klen, bool val)
 	}
 }
 
+void log_tag_2(struct logbuf *b, const char *tag, size_t tlen)
+{
+	if (g_log_type == LOG_TEXT) {
+		log_nstring_2(b, tag, tlen, "", 0);
+	} else {
+		log_bool_2(b, tag, tlen, true);
+	}
+}
+
 void log_errno_2(struct logbuf *b, const char *key, size_t klen)
 {
 #ifdef _WIN32
@@ -630,15 +651,20 @@ int log_vargs(struct logbuf *b, const char *fmt, va_list ap)
 {
 	while (*fmt) {
 		const char *key = fmt;
-		const char *pct = strchr(key, '%');
-		if (!pct) {
+		const char *next = strchrnul(key, ',');
+		size_t klen = next - key;
+		const char *colon = memchr(key, ':', klen);
+		if (!colon) {
+			log_tag_2(b, key, klen);
+			fmt = *next ? next + 1 : next;
+			continue;
+		}
+
+		klen = colon - key;
+		fmt = colon + 1;
+		if (*(fmt++) != '%') {
 			goto error;
 		}
-		size_t klen = pct - key;
-		if (klen && key[klen - 1] == ':') {
-			klen--;
-		}
-		fmt = pct + 1;
 		switch (*(fmt++)) {
 		case '.': {
 			if (*(fmt++) != '*' || *(fmt++) != 's') {
@@ -725,9 +751,7 @@ int log_vargs(struct logbuf *b, const char *fmt, va_list ap)
 		default:
 			goto error;
 		}
-		if (*fmt == ',') {
-			fmt++;
-		}
+		fmt = *next ? next + 1 : next;
 	}
 	return 0;
 
@@ -742,18 +766,6 @@ int log_args(struct logbuf *b, const char *fmt, ...)
 	va_start(ap, fmt);
 	return log_vargs(b, fmt, ap);
 }
-
-#if defined __GNUC__
-#define x_strchrnul strchrnul
-#else
-static inline char *x_strchrnul(const char *s, char ch)
-{
-	while (*s && *s != ch) {
-		s++;
-	}
-	return (char *)s;
-}
-#endif
 
 int flog(enum log_level lvl, const char *fmt, ...)
 {

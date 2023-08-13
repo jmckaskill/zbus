@@ -48,94 +48,95 @@ void close_client(struct client *c)
 	}
 }
 
+static int on_connected(void *udata, struct client *c, struct message *m,
+			struct iterator *ii)
+{
+	unregister_cb(c, m->reply_serial);
+	if (m->type != MSG_REPLY) {
+		goto error;
+	}
+	const str8_t *addr = parse_string8(ii);
+	if (!addr) {
+		goto error;
+	}
+	LOG("connected,address:%s", addr->p);
+	return 0;
+
+error:
+	ERROR("failed to connect");
+	return -1;
+}
+
 struct client *open_client(const char *sockpn)
 {
-	struct client *c = NULL;
 	fd_t fd;
 	if (sys_open(&fd, sockpn)) {
 		ERROR("failed to open dbus socket,errno:%m");
 		return NULL;
 	}
 
-	char uidbuf[64];
-	const char *uid = sys_userid(uidbuf, sizeof(uidbuf));
-
-	char inbuf[256], outbuf[256];
-	int insz = 0;
-	int state = 0;
-	uint32_t serial;
-
-	for (;;) {
-		char *in = inbuf;
-		char *out = outbuf;
-		int err = step_client_auth(&state, &in, insz, &out,
-					   sizeof(outbuf), uid, &serial);
-
-		if (write_all(fd, outbuf, out - outbuf, "state:%d", state)) {
-			goto error;
-		}
-
-		if (err == AUTH_OK) {
-			break;
-		} else if (err != AUTH_READ_MORE) {
-			goto error;
-		}
-
-		int n = (int)(inbuf + insz - in);
-		memmove(inbuf, in, n);
-		insz = n;
-
-		n = sys_recv(fd, inbuf + insz, sizeof(inbuf) - insz);
-		if (n < 0) {
-			goto error;
-		}
-		insz += n;
-	}
-
 	size_t msgsz = 4096;
 	size_t defrag = 1024;
-	c = fmalloc(sizeof(*c) + msgsz + defrag);
+	struct client *c = fmalloc(sizeof(*c) + msgsz + defrag);
 	c->fd = fd;
 	c->cb_available = UINT16_MAX;
 	memset(&c->cbs, 0, sizeof(c->cbs));
-	init_msg_stream(&c->in, c->buf, msgsz, defrag);
+	init_msg_stream(&c->in, msgsz, defrag);
 
-	struct message m;
-	struct iterator ii;
-	if (read_message(c, &m, &ii) || m.type != MSG_REPLY ||
-	    m.reply_serial != serial) {
-		goto error;
-	}
-	const str8_t *addr = parse_string8(&ii);
-	if (iter_error(&ii)) {
-		goto error;
-	}
-	LOG("connected,address:%s", addr->p);
+	char uidbuf[64];
+	const char *uid = sys_userid(uidbuf, sizeof(uidbuf));
+
+	uint32_t serial = register_cb(c, &on_connected, c);
+	char buf[256];
+	int n = write_client_auth(buf, sizeof(buf), uid, serial);
+	write_all(fd, buf, n, "send_auth,fd:%u", (unsigned)fd);
+
 	return c;
-error:
-	free(c);
-	sys_close(fd);
-	return NULL;
 }
 
 uint32_t register_cb(struct client *c, message_fn fn, void *udata)
 {
+	assert(fn != NULL);
 	int idx = ffs(c->cb_available);
 	if (!idx) {
 		return 0;
 	}
-	c->cbs[idx - 1].fn = fn;
-	c->cbs[idx - 1].udata = udata;
+	struct message_cb *cb = &c->cbs[idx - 1];
+	cb->fn = fn;
+	cb->udata = udata;
+	cb->counter++;
 	c->cb_available &= ~(1U << (idx - 1));
-	return idx;
+	uint32_t serial = idx | (((uint32_t)cb->counter) << 16);
+	return serial;
 }
 
 void unregister_cb(struct client *c, uint32_t serial)
 {
-	assert(0 < serial && serial <= sizeof(c->cbs) / sizeof(c->cbs[0]));
-	c->cb_available |= 1U << (serial - 1);
-	c->cbs[serial - 1].fn = NULL;
-	c->cbs[serial - 1].udata = NULL;
+	int idx = serial & UINT16_MAX;
+	uint16_t counter = (uint16_t)(serial >> 16);
+	struct message_cb *cb = &c->cbs[idx - 1];
+	assert(0 < idx && idx <= sizeof(c->cbs) / sizeof(c->cbs[0]));
+	assert(counter == cb->counter);
+	assert(!(c->cb_available & (1U << (idx - 1))));
+	c->cb_available |= 1U << (idx - 1);
+	cb->fn = NULL;
+	cb->udata = NULL;
+}
+
+int distribute_message(struct client *c, struct message *m,
+		       struct iterator *body)
+{
+	unsigned idx = m->reply_serial & UINT16_MAX;
+	uint16_t counter = (uint16_t)(m->reply_serial >> 16);
+	if (!idx || idx > sizeof(c->cbs) / sizeof(c->cbs[0])) {
+		return 0;
+	}
+	struct message_cb *cb = &c->cbs[idx - 1];
+	if (cb->fn && counter == cb->counter) {
+		return cb->fn(cb->udata, c, m, body);
+	} else {
+		return 0;
+	}
 }
 
 int vsend_signal(struct client *c, const str8_t *path, const str8_t *iface,
@@ -279,22 +280,51 @@ int call_bus_method(struct client *c, uint32_t serial, const str8_t *member,
 			    S8("\024org.freedesktop.DBus"), member, sig, ap);
 }
 
+int read_data(struct client *c)
+{
+	char *p1, *p2;
+	size_t n1, n2;
+	rx_buffers(&c->in, &p1, &n1, &p2, &n2);
+	int n = sys_recv(c->fd, p1, (int)n1);
+	if (n < 0) {
+		return -1;
+	}
+	c->in.have += n;
+	return 0;
+}
+
+static int read_more(struct client *c)
+{
+	char *p1, *p2;
+	size_t n1, n2;
+	rx_buffers(&c->in, &p1, &n1, &p2, &n2);
+	int n = sys_recv(c->fd, p1, (int)n1);
+	if (n < 0) {
+		return -1;
+	}
+	c->in.have += n;
+	return 0;
+}
+
+int read_auth(struct client *c)
+{
+	for (;;) {
+		int err = read_auth_stream(&c->in);
+		if (!err) {
+			return 0;
+		} else if (err == STREAM_MORE && !read_more(c)) {
+			continue;
+		} else {
+			return -1;
+		}
+	}
+}
+
 int read_message(struct client *c, struct message *msg, struct iterator *body)
 {
 	for (;;) {
-		int err = stream_next(&c->in, msg);
-
-		if (err == STREAM_MORE) {
-			char *p1, *p2;
-			size_t n1, n2;
-			stream_buffers(&c->in, &p1, &n1, &p2, &n2);
-			int n = sys_recv(c->fd, p1, (int)n1);
-			if (n < 0) {
-				return -1;
-			}
-			c->in.have += n;
-			continue;
-		} else if (err == STREAM_OK) {
+		int err = read_msg_stream(&c->in, msg);
+		if (!err) {
 			struct logbuf lb;
 			if (start_debug(&lb, "read message")) {
 				log_uint(&lb, "fd", (unsigned)c->fd);
@@ -302,23 +332,11 @@ int read_message(struct client *c, struct message *msg, struct iterator *body)
 				finish_log(&lb);
 			}
 			return defragment_body(&c->in, msg, body);
+
+		} else if (err == STREAM_MORE && !read_more(c)) {
+			continue;
 		} else {
 			return -1;
 		}
-	}
-}
-
-int distribute_message(struct client *c, struct message *m,
-		       struct iterator *body)
-{
-	if (!(0 < m->reply_serial &&
-	      m->reply_serial <= sizeof(c->cbs) / sizeof(c->cbs[0]))) {
-		return 0;
-	}
-	int idx = m->reply_serial - 1;
-	if (c->cb_available & (1U << idx)) {
-		return 0;
-	} else {
-		return c->cbs[idx].fn(c->cbs[idx].udata, c, m, body);
 	}
 }

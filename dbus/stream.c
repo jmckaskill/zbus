@@ -1,65 +1,90 @@
 #include "stream.h"
+#include "auth.h"
+#include "encode.h"
 #include <assert.h>
 
-void init_msg_stream(struct msg_stream *s, char *buf, size_t msgsz,
-		     size_t defragsz)
+void init_msg_stream(struct msg_stream *s, size_t msgsz, size_t hdrsz)
 {
 	assert((msgsz & (msgsz - 1)) == 0);
-	assert(defragsz >= DBUS_MIN_MSG_SIZE);
-	s->buf = buf;
+	assert(hdrsz >= DBUS_MIN_MSG_SIZE);
+
 	s->cap = msgsz;
-	s->defrag = defragsz;
+	s->defrag = hdrsz;
 	s->have = 0;
 	s->used = 0;
 }
 
-void stream_buffers(struct msg_stream *s, char **p1, size_t *n1, char **p2,
-		    size_t *n2)
+void rx_buffers(struct msg_stream *s, char **p1, size_t *n1, char **p2,
+		size_t *n2)
 {
 	// shouldn't be possible to overflow the buffer
 	assert(s->have <= s->used + s->cap);
 
-	if (s->have < s->used) {
-		// skipping data
+	// Cases (+ = unparsed data, - = buffer room to fill)
+	// 1. used > have - skipping data
+	// 2. used == have - empty buffer - |-----EB---|
+	// 3. begin < end - good data in one section - |--B++++E---|
+	// 4. begin > end - good data in two sections - |++E---B++|
+	// 5. begin == end - full buffer - |+++EB++++|
+
+	size_t cap = s->cap;
+	size_t mask = s->cap - 1;
+	size_t used = s->used;
+	size_t have = s->have;
+	size_t begin = used & mask;
+	size_t end = have & mask;
+
+	if (have < used) {
+		// 1. used > have - skipping data
+		// Read full buffer lengths up until used == have. We'll then
+		// fall in to case #2 and reset the offsets.
 		*p1 = s->buf;
-		*n1 = s->used - s->have;
-		if (*n1 > s->cap) {
-			*n1 = s->cap;
+		*n1 = used - have;
+		if (*n1 > cap) {
+			*n1 = cap;
 		}
 		*n2 = 0;
-	} else if (s->have == s->used) {
-		// empty buffer
+	} else if (have == used) {
+		// 2. used == have - empty buffer - |-----EB---|
+		// Reset the offsets to reduce fragementation.
 		s->used = 0;
 		s->have = 0;
 		*p1 = s->buf;
-		*n1 = s->cap;
+		*n1 = cap;
 		*n2 = 0;
-	} else if (s->have < s->used + s->cap) {
-		// normal buffer use
-		size_t begin = s->used & (s->cap - 1);
-		size_t end = s->have & (s->cap - 1);
-		*p1 = s->buf + begin;
-		if (begin < end) {
-			// begin < end:  |  B+++E  | want +s
-			*n1 = end - begin;
-			*n2 = 0;
-		} else {
-			// want +s
-			// !end: |E   B++++|
-			// end < begin: |++E   B++|
-			// end == begin: |++++EB+++|
-			*n1 = s->cap - begin;
-			*p2 = s->buf;
-			*n2 = end;
-		}
+	} else if (begin < end) {
+		// 3. begin < end - good data in one section - |--B++++E---|
+		*p1 = s->buf + end;
+		*n1 = cap - end;
+		*p2 = s->buf;
+		*n2 = begin;
 	} else {
-		// full buffer
-		*n1 = 0;
+		// 4. begin > end - good data in two sections - |++E---B++|
+		// 5. begin == end - full buffer - |+++EB++++|
+		*p1 = s->buf + end;
+		*n1 = begin - end;
 		*n2 = 0;
 	}
 }
 
-int stream_next(struct msg_stream *s, struct message *msg)
+int read_auth_stream(struct msg_stream *s)
+{
+	assert(!s->used);
+	if (!s->have) {
+		return STREAM_MORE;
+	} else if (s->have == s->cap) {
+		return STREAM_ERROR;
+	}
+
+	int rd = read_client_auth(s->buf, s->have);
+	if (rd < 0) {
+		return STREAM_ERROR;
+	}
+	s->used += rd;
+	return STREAM_OK;
+}
+
+int read_msg_stream(struct msg_stream *s, struct message *msg)
 {
 	for (;;) {
 		size_t used = s->used;

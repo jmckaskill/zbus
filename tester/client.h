@@ -13,6 +13,7 @@ typedef int (*message_fn)(void *, struct client *, struct message *,
 struct message_cb {
 	message_fn fn;
 	void *udata;
+	uint16_t counter;
 };
 
 struct client {
@@ -20,7 +21,6 @@ struct client {
 	uint16_t cb_available;
 	struct message_cb cbs[16];
 	struct msg_stream in;
-	char buf[1];
 };
 
 struct client *open_client(const char *sockpn);
@@ -46,6 +46,7 @@ int send_reply(struct client *c, const struct message *req, const char *sig,
 int vsend_reply(struct client *c, const struct message *req, const char *sig,
 		va_list ap);
 int send_error(struct client *c, uint32_t request_serial, const str8_t *err);
+int read_auth(struct client *c);
 int read_message(struct client *c, struct message *m, struct iterator *body);
 int distribute_message(struct client *c, struct message *m,
 		       struct iterator *body);

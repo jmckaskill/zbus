@@ -9,21 +9,20 @@ struct msg_stream {
 	size_t have;
 	char *body;
 	size_t bsz[2];
-	char *buf;
+	char buf[1];
 };
 
 // msgsz must be a power of 2
-void init_msg_stream(struct msg_stream *s, char *buf, size_t msgsz,
-		     size_t defragsz);
-
-void stream_buffers(struct msg_stream *s, char **p1, size_t *n1, char **p2,
-		    size_t *n2);
+void init_msg_stream(struct msg_stream *s, size_t msgsz, size_t hdrsz);
+void rx_buffers(struct msg_stream *s, char **p1, size_t *n1, char **p2,
+		size_t *n2);
 
 #define STREAM_OK 0
 #define STREAM_MORE 1
 #define STREAM_ERROR -1
 
-int stream_next(struct msg_stream *s, struct message *m);
+int read_msg_stream(struct msg_stream *s, struct message *m);
+int read_auth_stream(struct msg_stream *s);
 int defragment_body(struct msg_stream *s, struct message *m,
 		    struct iterator *ii);
 

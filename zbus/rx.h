@@ -6,6 +6,7 @@
 #include "dispatch.h"
 #include "txmap.h"
 #include "lib/socket.h"
+#include "dbus/stream.h"
 #include "dbus/str8.h"
 
 // this is the largest potential message we have to generate

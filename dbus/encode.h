@@ -73,8 +73,8 @@ struct builder start_message(char *buf, size_t bufsz, const struct message *m);
 int end_message(struct builder b);
 
 // These functions let you modify a written header buffer in place
-void set_serial(char *buf, uint32_t serial);
-void set_reply_serial(char *buf, uint32_t serial);
+static void set_serial(char *buf, uint32_t serial);
+static void set_reply_serial(char *buf, uint32_t serial);
 
 ///////////////////////////////////////////////////////
 // Inline implementationns
@@ -189,4 +189,18 @@ static inline void append_signature(struct builder *b, const char *sig)
 static inline void start_dict_entry(struct builder *b, struct dict_data d)
 {
 	start_array_entry(b, d.a);
+}
+
+static inline void set_serial(char *buf, uint32_t serial)
+{
+	struct raw_header *h = (struct raw_header *)buf;
+	memcpy(h->serial, &serial, 4);
+}
+
+static inline void set_reply_serial(char *buf, uint32_t reply_serial)
+{
+	// this function assumes that we created the header
+	// in which case the reply serial is right after the raw header
+	assert(buf[sizeof(struct raw_header)] == FIELD_REPLY_SERIAL);
+	memcpy(buf + sizeof(struct raw_header) + 4, &reply_serial, 4);
 }

@@ -43,37 +43,39 @@ static int split_line(char **pin, char *end, char **pstart, char **pend)
 	return 0;
 }
 
-static int append(char **pout, char *oute, const char *str)
+static char *append(char *out, char *end, const void *str, size_t len)
 {
-	size_t len = strlen(str);
-	if (*pout + len > oute) {
-		return -1;
+	if (out + len > end) {
+		return end + 1;
 	}
-	memcpy(*pout, str, len);
-	*pout += len;
-	return 0;
+	memcpy(out, str, len);
+	return out + len;
 }
 
-static int append_char(char **pout, char *oute, char ch)
+static inline char * append_cstr(char *out, char *end, const char *str)
 {
-	if (*pout >= oute) {
-		return -1;
-	}
-	*((*pout)++) = ch;
-	return 0;
+	return append(out, end, str, strlen(str));
 }
 
-static int append_hex(char **pout, char *oute, const uint8_t *data, size_t sz)
+static inline char *append_char(char *out, char *end, char ch)
+{
+	if (out < end) {
+		*(out++) = ch;
+	}
+	return out;
+}
+
+static char *append_hex(char *out, char *end, const uint8_t *data, size_t sz)
 {
 	static const char hexdigits[] = "0123456789abcdef";
-	if (*pout + (sz * 2) > oute) {
-		return -1;
+	if (out + (sz * 2) > end) {
+		return end + 1;
 	}
 	for (size_t i = 0; i < sz; i++) {
-		*((*pout)++) = hexdigits[data[i] >> 4];
-		*((*pout)++) = hexdigits[data[i] & 15];
+		*(out++) = hexdigits[data[i] >> 4];
+		*(out++) = hexdigits[data[i] & 15];
 	}
-	return 0;
+	return out;
 }
 
 enum {
@@ -83,97 +85,109 @@ enum {
 	SERVER_WAIT_FOR_HELLO,
 };
 
-int step_server_auth(int *pstate, char **pin, int insz, char **pout, int outsz,
+int step_server_auth(int *pstate, char **pin, char *ie, char **pout, char *oe,
 		     const char *busid, uint32_t *pserial)
 {
-	char *ine = *pin + insz;
-	char *oute = *pout + outsz;
+	char *in = *pin;
+	char *out = *pout;
 
 	switch (*pstate) {
 	case SERVER_WAIT_FOR_NUL:
-		if ((*pin) == ine) {
+		if (in == ie) {
 			return AUTH_READ_MORE;
 		}
-		if (**pin) {
+		if (*in) {
 			return AUTH_ERROR;
 		}
-		(*pin)++;
+		in++;
 		goto wait_for_auth;
 
 	wait_for_auth:
+		*pin = in;
+		*pout = out;
 		*pstate = SERVER_WAIT_FOR_AUTH;
 	case SERVER_WAIT_FOR_AUTH: {
 		char *line, *nl;
-		int err = split_line(pin, ine, &line, &nl);
+		int err = split_line(&in, ie, &line, &nl);
 		if (err) {
 			return err;
 		}
 
 		if (!begins_with(line, nl, "AUTH ")) {
 			// unexpected command
-			if (append(pout, oute, "ERROR\r\n")) {
-				return AUTH_ERROR;
+			out = append_cstr(out, oe, "ERROR\r\n");
+			if (out > oe) {
+				return AUTH_SEND_MORE;
 			}
 			goto wait_for_auth;
 		}
 
 		if (!begins_with(line, nl, "AUTH EXTERNAL ")) {
 			// unsupported auth type
-			if (append(pout, oute, "REJECTED EXTERNAL\r\n")) {
-				return AUTH_ERROR;
+			out = append_cstr(out, oe, "REJECTED EXTERNAL\r\n");
+			if (out > oe) {
+				return AUTH_SEND_MORE;
 			}
 			goto wait_for_auth;
 		}
 
 		// for now ignore the argument
-		if (append(pout, oute, "OK ") || append(pout, oute, busid) ||
-		    append(pout, oute, "\r\n")) {
-			return AUTH_ERROR;
+		out = append_cstr(out, oe, "OK ");
+		out = append_cstr(out, oe, busid);
+		out = append_cstr(out, oe, "\r\n");
+		if (out > oe) {
+			return AUTH_SEND_MORE;
 		}
 		goto wait_for_begin;
 	}
 
 	wait_for_begin:
+		*pin = in;
+		*pout = out;
 		*pstate = SERVER_WAIT_FOR_BEGIN;
 	case SERVER_WAIT_FOR_BEGIN: {
 		char *line, *nl;
-		int err = split_line(pin, ine, &line, &nl);
+		int err = split_line(&in, ie, &line, &nl);
 		if (err) {
 			return err;
 		}
 		if (equals(line, nl, "BEGIN ")) {
 			goto wait_for_hello;
 		} else if (equals(line, nl, "NEGOTIATE_UNIX_FD ")) {
-			if (append(pout, oute, "AGREE_UNIX_FD\r\n")) {
-				return AUTH_ERROR;
+			out = append_cstr(out, oe, "AGREE_UNIX_FD\r\n");
+			if (out > oe) {
+				return AUTH_SEND_MORE;
 			}
 			goto wait_for_begin;
 		} else {
-			if (append(pout, oute, "ERROR\r\n")) {
-				return AUTH_ERROR;
+			out = append_cstr(out, oe, "ERROR\r\n");
+			if (out > oe) {
+				return AUTH_SEND_MORE;
 			}
 			goto wait_for_begin;
 		}
 	}
 
 	wait_for_hello:
+		*pin = in;
+		*pout = out;
 		*pstate = SERVER_WAIT_FOR_HELLO;
 	case SERVER_WAIT_FOR_HELLO: {
 		// process the Hello header
 
 		size_t hsz, bsz;
-		if (*pin + DBUS_MIN_MSG_SIZE > ine) {
+		if (in + DBUS_MIN_MSG_SIZE > ie) {
 			return AUTH_READ_MORE;
-		} else if (parse_message_size(*pin, &hsz, &bsz)) {
+		} else if (parse_message_size(in, &hsz, &bsz)) {
 			return AUTH_ERROR;
-		} else if (*pin + hsz + bsz > ine) {
+		} else if (in + hsz + bsz > ie) {
 			return AUTH_READ_MORE;
 		}
 
 		// verify the fields
 		// method fields always have serial, path & member
 		struct message m;
-		if (parse_header(&m, *pin) || m.type != MSG_METHOD ||
+		if (parse_header(&m, in) || m.type != MSG_METHOD ||
 		    !m.destination || !str8eq(m.destination, BUS_DESTINATION) ||
 		    !str8eq(m.path, BUS_PATH) || !m.interface ||
 		    !str8eq(m.interface, BUS_INTERFACE) ||
@@ -181,69 +195,79 @@ int step_server_auth(int *pstate, char **pin, int insz, char **pout, int outsz,
 			return AUTH_ERROR;
 		}
 
-		*pin += hsz + bsz;
 		*pserial = m.serial;
-		return AUTH_OK;
+		*pin = in + hsz + bsz;
+		return AUTH_FINISHED;
 	}
 	default:
 		return AUTH_ERROR;
 	}
 }
 
-enum {
-	CLIENT_SEND_NUL,
-	CLIENT_WAIT_FOR_OK,
-};
+static const char hello[] = "\0\x01\0\x01\0\0\0\0" // hdr & body len
+			    "\0\0\0\0\0\0\0\0" // serial & field len
+			    "\x01\x01o\0\0\0\0\0" // path
+			    "/org/fre"
+			    "edesktop"
+			    "/DBus\0\0\0"
+			    "\x02\x01s\0\0\0\0\0" // interface
+			    "org.free"
+			    "desktop."
+			    "DBus\0\0\0\0"
+			    "\x03\01s\0\0\0\0\0" // member
+			    "Hello\0\0\0"
+			    "\x06\x01s\0\0\0\0\0" // destination
+			    "org.free"
+			    "desktop."
+			    "DBus\0\0\0\0";
 
-int step_client_auth(int *pstate, char **pin, int insz, char **pout, int outsz,
-		     const char *uid, uint32_t *pserial)
+static_assert(sizeof(hello) - 1 == 128, "");
+
+static inline void write32(void *p, uint32_t u)
 {
-	char *ine = *pin + insz;
-	char *oute = *pout + outsz;
+	memcpy(p, &u, 4);
+}
 
-	switch (*pstate) {
-	case CLIENT_SEND_NUL:
-		if (append_char(pout, oute, '\0') ||
-		    append(pout, oute, "AUTH EXTERNAL ") ||
-		    append_hex(pout, oute, (uint8_t *)uid, strlen(uid)) ||
-		    append(pout, oute, "\r\n")) {
-			return AUTH_ERROR;
-		}
-		goto wait_for_ok;
+int write_client_auth(char *buf, size_t bufsz, const char *uid, uint32_t serial)
+{
+	char *out = buf;
+	char *end = buf + bufsz;
+	out = append_char(out, end, '\0');
+	out = append_cstr(out, end, "AUTH EXTERNAL ");
+	out = append_hex(out, end, (uint8_t *)uid, strlen(uid));
+	out = append_cstr(out, end, "\r\nBEGIN\r\n");
+	char *msg = out;
+	out = append(out, end, hello, sizeof(hello) - 1);
 
-	wait_for_ok:
-		*pstate = CLIENT_WAIT_FOR_OK;
-	case CLIENT_WAIT_FOR_OK: {
-		char *line, *nl;
-		int err = split_line(pin, ine, &line, &nl);
-		if (err) {
-			return err;
-		}
-
-		// ignore bus id for now
-		if (!begins_with(line, nl, "OK ")) {
-			return AUTH_ERROR;
-		}
-		if (append(pout, oute, "BEGIN\r\n")) {
-			return AUTH_ERROR;
-		}
-		struct message m;
-		init_message(&m, MSG_METHOD, 1);
-		m.destination = BUS_DESTINATION;
-		m.path = BUS_PATH;
-		m.interface = BUS_INTERFACE;
-		m.member = HELLO;
-
-		struct builder b = start_message(*pout, oute - *pout, &m);
-		int sz = end_message(b);
-		if (sz < 0) {
-			return AUTH_ERROR;
-		}
-		*pout += sz;
-		*pserial = 1;
-		return AUTH_OK;
+	if (out > end) {
+		return -1;
 	}
-	default:
+
+	msg[0] = native_endian();
+	set_serial(msg, serial);
+	write32(msg + 12, 128 - 16 /*raw header*/ - 3 /*end padding*/);
+	write32(msg + 20, 21); // path len
+	write32(msg + 52, 20); // interface len
+	write32(msg + 84, 5); // member len
+	write32(msg + 100, 20); // destination len
+
+	return out - buf;
+}
+
+int read_client_auth(char *buf, size_t sz)
+{
+	char *in = buf;
+	char *end = in + sz;
+	char *line, *nl;
+	int err = split_line(&in, end, &line, &nl);
+	if (err) {
+		return err;
+	}
+
+	// ignore bus id for now
+	if (!begins_with(line, nl, "OK ")) {
 		return AUTH_ERROR;
 	}
+
+	return in - buf;
 }

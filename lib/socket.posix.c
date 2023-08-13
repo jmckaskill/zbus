@@ -1,8 +1,6 @@
 #define _POSIX_C_SOURCE 199309UL
 #define _GNU_SOURCE
 #include "socket.posix.h"
-
-#ifndef _WIN32
 #include "log.h"
 #include <sys/socket.h>
 #include <unistd.h>
@@ -11,6 +9,7 @@
 #include <poll.h>
 #include <assert.h>
 #include <signal.h>
+#include <limits.h>
 
 static void close_all_fds(struct rxconn *c)
 {
@@ -61,11 +60,12 @@ void close_tx(struct txconn *c)
 	close(c->fd);
 }
 
-int block_recv2(struct rxconn *c, char *p1, int n1, char *p2, int n2)
+int block_recv2(struct rxconn *c, char *p1, size_t n1, char *p2, size_t n2)
 {
 	if (c->clen) {
 		close_all_fds(c);
 	}
+	assert(n1 && n1 + n2 < INT_MAX);
 
 	for (;;) {
 		struct iovec v[2];
@@ -109,10 +109,10 @@ int block_recv2(struct rxconn *c, char *p1, int n1, char *p2, int n2)
 	}
 }
 
-int start_send3(struct txconn *c, char *p1, int n1, char *p2, int n2, char *p3,
-		int n3)
+int start_send3(struct txconn *c, char *p1, size_t n1, char *p2, size_t n2,
+		char *p3, size_t n3)
 {
-	assert(n1);
+	assert(n1 && n1 + n2 + n3 < INT_MAX);
 
 	struct iovec v[3];
 	v[0].iov_base = p1;
@@ -205,5 +205,3 @@ int finish_send(struct txconn *c, mtx_t *lk)
 	c->is_async = false;
 	return n < 0 ? -1 : 0;
 }
-
-#endif

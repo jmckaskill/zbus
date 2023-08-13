@@ -558,20 +558,6 @@ static inline void init_builder(struct builder *b, char *buf, size_t bufsz,
 	}
 }
 
-void set_serial(char *buf, uint32_t serial)
-{
-	struct raw_header *h = (struct raw_header *)buf;
-	memcpy(h->serial, &serial, 4);
-}
-
-void set_reply_serial(char *buf, uint32_t reply_serial)
-{
-	// this function assumes that we created the header
-	// in which case the reply serial is right after the raw header
-	assert(buf[sizeof(struct raw_header)] == FIELD_REPLY_SERIAL);
-	memcpy(buf + sizeof(struct raw_header) + 4, &reply_serial, 4);
-}
-
 static int append_header(struct builder *b, const struct message *m,
 			 size_t blen)
 {

@@ -741,18 +741,15 @@ void init_message(struct message *m, enum msg_type type, uint32_t serial)
 
 static_assert(sizeof(struct raw_header) == 16, "");
 
-static uint32_t swap32(uint32_t v)
+static inline void swap32(void *p)
 {
-	union {
-		uint32_t u;
-		uint8_t v[4];
-	} in, out;
-	in.u = v;
-	out.v[0] = in.v[3];
-	out.v[1] = in.v[2];
-	out.v[2] = in.v[1];
-	out.v[3] = in.v[0];
-	return out.u;
+	uint8_t *u = p;
+	uint8_t u0 = u[0];
+	uint8_t u1 = u[1];
+	u[0] = u[3];
+	u[1] = u[2];
+	u[2] = u1;
+	u[3] = u0;
 }
 
 int parse_message_size(char *p, size_t *phdr, size_t *pbody)
@@ -766,8 +763,8 @@ int parse_message_size(char *p, size_t *phdr, size_t *pbody)
 	memcpy(&flen, &h->field_len, 4);
 	memcpy(&blen, &h->body_len, 4);
 	if (h->endian != native_endian()) {
-		flen = swap32(flen);
-		blen = swap32(blen);
+		swap32(&flen);
+		swap32(&blen);
 	}
 	uint32_t fpadded = ALIGN_UINT_UP(flen, 8);
 	if (fpadded > DBUS_MAX_VALUE_SIZE || blen > DBUS_MAX_MSG_SIZE ||
@@ -905,13 +902,13 @@ int parse_header(struct message *msg, char *p)
 
 	switch (msg->type) {
 	case MSG_METHOD:
-		return !msg->path || !msg->member;
+		return !msg->path || !msg->interface || !msg->member;
 	case MSG_SIGNAL:
 		return !msg->path || !msg->interface || !msg->member;
 	case MSG_REPLY:
 		return !msg->reply_serial;
 	case MSG_ERROR:
-		return !msg->error || !msg->reply_serial;
+		return !msg->reply_serial || !msg->error;
 	default:
 		return -1;
 	}

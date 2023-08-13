@@ -84,15 +84,14 @@ int load_security(struct txconn *c, struct security **pp)
 	path[n] = 0;
 
 	FILE *f = fopen(path, "r");
-	if (f) {
-		parse_proc_groups(p, max_groups, uc.pid, f);
-		fclose(f);
-	} else {
-		p->groups.v[0] = uc.gid;
-		p->groups.n = 1;
-		WARN("unable to get supplementary groups,errno:%m,pid:%d",
-		     (int)uc.pid);
+	if (!f) {
+		ERROR("unable to get supplementary groups,errno:%m,pid:%d",
+		      (int)uc.pid);
+		free(p);
+		return -1;
 	}
+	parse_proc_groups(p, max_groups, uc.pid, f);
+	fclose(f);
 	*pp = p;
 	return 0;
 }

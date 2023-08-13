@@ -168,6 +168,11 @@ static struct client *start_server(const char *sockpn)
 			     "com.example.Service", (uint32_t)0),
 	     "send RequestName");
 
+	if (read_auth(c)) {
+		close_client(c);
+		return NULL;
+	}
+
 	for (;;) {
 		struct message m;
 		struct iterator ii;

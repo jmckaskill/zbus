@@ -50,6 +50,7 @@ int log_args(struct logbuf *b, const char *fmt, ...) GNU_PRINTF_ATTRIBUTE(2, 3);
 int log_vargs(struct logbuf *b, const char *fmt, va_list ap)
 	GNU_PRINTF_ATTRIBUTE(2, 0);
 void log_errno_2(struct logbuf *b, const char *key, size_t klen);
+void log_tag_2(struct logbuf *b, const char *tag, size_t tlen);
 void log_bool_2(struct logbuf *b, const char *key, size_t klen, bool val);
 void log_cstring_2(struct logbuf *b, const char *key, size_t klen,
 		   const char *str);
@@ -79,6 +80,10 @@ static inline int start_log(struct logbuf *b, char *buf, size_t sz,
 static inline void log_errno(struct logbuf *b, const char *key)
 {
 	log_errno_2(b, key, strlen(key));
+}
+static inline void log_tag(struct logbuf *b, const char *tag)
+{
+	log_tag_2(b, tag, strlen(tag));
 }
 static inline void log_bool(struct logbuf *b, const char *key, bool val)
 {
