@@ -5,7 +5,7 @@ static bool is_space(char ch)
 	return ch == ' ' || ch == '\t' || ch == '\r';
 }
 
-static const char *trim_left_space(const char *b, const char *e)
+static char *trim_left_space(char *b, char *e)
 {
 	while (b < e && is_space(b[0])) {
 		b++;
@@ -13,7 +13,7 @@ static const char *trim_left_space(const char *b, const char *e)
 	return b;
 }
 
-static const char *trim_right_space(const char *b, const char *e)
+static char *trim_right_space(char *b, char *e)
 {
 	while (b < e && is_space(e[-1])) {
 		e--;
@@ -21,7 +21,7 @@ static const char *trim_right_space(const char *b, const char *e)
 	return e;
 }
 
-static const char *trim_left_dots(const char *b, const char *e)
+static char *trim_left_dots(char *b, char *e)
 {
 	while (b < e && *b == '.') {
 		b++;
@@ -29,7 +29,7 @@ static const char *trim_left_dots(const char *b, const char *e)
 	return b;
 }
 
-static const char *trim_right_dots(const char *b, const char *e)
+static char *trim_right_dots(char *b, char *e)
 {
 	while (b < e && e[-1] == '.') {
 		e--;
@@ -37,7 +37,7 @@ static const char *trim_right_dots(const char *b, const char *e)
 	return e;
 }
 
-static const char *find_line(const char *p, const char *e, const char **pnl)
+static char *find_line(char *p, char *e, char **pnl)
 {
 	while (p < e) {
 		switch (*p++) {
@@ -47,7 +47,7 @@ static const char *find_line(const char *p, const char *e, const char **pnl)
 		case ';':
 		case '#':
 			*pnl = p - 1;
-			const char *nl = memchr(p, '\n', e - p);
+			char *nl = memchr(p, '\n', e - p);
 			return nl ? (nl + 1) : e;
 		case '\0':
 			return NULL;
@@ -57,7 +57,7 @@ static const char *find_line(const char *p, const char *e, const char **pnl)
 	return p;
 }
 
-void init_ini(struct ini_reader *p, const char *data, size_t sz)
+void init_ini(struct ini_reader *p, char *data, size_t sz)
 {
 	p->data = data;
 	p->end = data + sz;
@@ -66,11 +66,11 @@ void init_ini(struct ini_reader *p, const char *data, size_t sz)
 	p->seclen = 0;
 }
 
-int read_ini(struct ini_reader *p, char *key, char *val)
+int read_ini(struct ini_reader *p, char *key, size_t *pksz, char **pval)
 {
 	while (p->data < p->end) {
-		const char *e;
-		const char *s = p->data;
+		char *e;
+		char *s = p->data;
 		p->data = find_line(s, p->end, &e);
 		if (!p->data) {
 			return INI_ERROR;
@@ -83,7 +83,7 @@ int read_ini(struct ini_reader *p, char *key, char *val)
 		if (s == e) {
 			continue;
 		} else if (*s == '[') {
-			const char *close = memchr(s, ']', e - s);
+			char *close = memchr(s, ']', e - s);
 			if (!close) {
 				return INI_ERROR;
 			}
@@ -93,27 +93,21 @@ int read_ini(struct ini_reader *p, char *key, char *val)
 			e = trim_right_space(s, e);
 			s = trim_left_dots(s, e);
 			e = trim_right_dots(s, e);
-			p->seclen = 0;
-			size_t n = e - s;
-			if (n == 0 || n > INI_BUFLEN - 16) {
-				return INI_ERROR;
-			}
 			p->section = s;
-			p->seclen = n;
+			p->seclen = e - s;
 			continue;
 		} else {
-			const char *equals = memchr(s, '=', e - s);
+			char *equals = memchr(s, '=', e - s);
 			if (!equals) {
 				return INI_ERROR;
 			}
-			const char *ks = s;
-			const char *ke = trim_right_space(ks, equals);
+			char *ks = s;
+			char *ke = trim_right_space(ks, equals);
 			size_t kn = ke - ks;
-			const char *vs = trim_left_space(equals + 1, e);
-			const char *ve = e;
+			char *vs = trim_left_space(equals + 1, e);
+			char *ve = e;
 			size_t vn = ve - vs;
-			if (!kn || p->seclen + 1 + kn + 1 > INI_BUFLEN ||
-			    vn + 1 > INI_BUFLEN) {
+			if (!kn || p->seclen + 1 + kn + 1 > *pksz) {
 				return INI_ERROR;
 			}
 
@@ -122,13 +116,15 @@ int read_ini(struct ini_reader *p, char *key, char *val)
 				key[p->seclen] = '.';
 				memcpy(key + p->seclen + 1, ks, kn);
 				key[p->seclen + 1 + kn] = 0;
+				*pksz = p->seclen + 1 + kn;
 			} else {
 				memcpy(key, ks, kn);
 				key[kn] = 0;
+				*pksz = kn;
 			}
 
-			memcpy(val, vs, vn);
-			val[vn] = 0;
+			*pval = vs;
+			*ve = 0;
 
 			return INI_OK;
 		}

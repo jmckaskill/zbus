@@ -109,7 +109,7 @@ static int build_signal(struct txmsg *m)
 	// keep signature
 	m->m.fdnum = 0;
 	m->m.serial = NO_REPLY_SERIAL;
-	m->m.reply_serial = 0; // will be overwritten before each send
+	m->m.reply_serial = 1; // will be overwritten before each send
 	assert(m->m.type == MSG_SIGNAL);
 	m->m.flags &= FLAG_MASK;
 	// keep body[0] and body[1]
@@ -274,7 +274,7 @@ static int rmname(struct rx *r, struct message *req, struct iterator *ii)
 	// release the name from the bus. This could still return an error if
 	// the bus kicked our name out in the interim.
 	mtx_lock(&r->bus->lk);
-	int err = release_name(r->bus, r, name, req->serial);
+	int err = release_name(r->bus, r, name, req->serial, true);
 	mtx_unlock(&r->bus->lk);
 
 	return err;
@@ -284,7 +284,7 @@ void rm_all_names_locked(struct rx *r)
 {
 	for (struct rxname *n = r->names; n != NULL;) {
 		struct rxname *next = n->next;
-		release_name(r->bus, r, &n->name, 0);
+		release_name(r->bus, r, &n->name, 0, false);
 		free(n);
 		n = next;
 	}

@@ -5,6 +5,8 @@
 #include "lib/log.h"
 #include <sddl.h>
 
+#pragma comment(lib, "advapi32.lib")
+
 void free_security(struct security *p)
 {
 	if (p) {

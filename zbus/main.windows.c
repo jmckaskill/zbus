@@ -3,83 +3,9 @@
 #include "lib/windows.h"
 #include "lib/log.h"
 #include "lib/print.h"
-
-#pragma comment(lib, "advapi32.lib")
-
-#define SVC_NAME L"ZBUS"
-
-static SERVICE_STATUS_HANDLE g_service;
-
-static void WINAPI SvcControl(DWORD control)
-{
-	SERVICE_STATUS st;
-	memset(&st, 0, sizeof(st));
-
-	switch (control) {
-	case SERVICE_CONTROL_STOP:
-		SetServiceStatus(g_service, &st);
-		break;
-	case SERVICE_CONTROL_INTERROGATE:
-		break;
-	default:
-		break;
-	}
-}
-
-static void WINAPI SvcMain(DWORD argv, const wchar_t *argc[])
-{
-	static const wchar_t logfn[] = L"zbus-log.txt";
-	wchar_t path[MAX_PATH + sizeof(logfn) + 1];
-	size_t len = GetTempPathW(MAX_PATH, path);
-	memcpy(&path[len], logfn, sizeof(logfn));
-
-	HANDLE log_fd = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_WRITE, NULL,
-				    OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (log_fd == INVALID_HANDLE_VALUE) {
-		FATAL("unable to open log file,errno:%m");
-	}
-	SetFilePointer(log_fd, 0, NULL, FILE_END);
-	g_log_fd = (intptr_t)log_fd;
-	g_log_type = LOG_JSON;
-
-	g_service = RegisterServiceCtrlHandlerW(SVC_NAME, &SvcControl);
-	if (!g_service) {
-		FATAL("failed to register service handler,errno:%m");
-	}
-}
-
-static int install()
-{
-	wchar_t path[1 + MAX_PATH + sizeof("\" launcher")];
-	path[0] = L'\"';
-	size_t len = GetModuleFileNameW(NULL, path + 1, MAX_PATH);
-	if (!len) {
-		FATAL("failed to get exe location,errno:%m");
-	}
-	memcpy(path + 1 + len, L"\" launcher", sizeof(L"\" launcher"));
-
-	SC_HANDLE sc = OpenSCManagerW(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
-	if (!sc) {
-		FATAL("failed to open service manager,errno:%m");
-	}
-
-	SC_HANDLE svc = CreateServiceW(sc, SVC_NAME, L"ZBUS Bus Daemon",
-				       SERVICE_ALL_ACCESS,
-				       SERVICE_WIN32_OWN_PROCESS,
-				       SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
-				       path, NULL, NULL, NULL,
-				       NULL /*LocalSystem Account*/, L"");
-
-	if (!svc) {
-		FATAL("failed to install service,errno:%m");
-	}
-
-	LOG("installed service");
-
-	CloseServiceHandle(svc);
-	CloseServiceHandle(sc);
-	return 0;
-}
+#include "lib/pipe.windows.h"
+#include <stdatomic.h>
+#include <stdio.h>
 
 #if ENABLE_AUTOSTART
 int sys_launch(struct bus *bus, const str8_t *name, char *exec)
@@ -87,6 +13,19 @@ int sys_launch(struct bus *bus, const str8_t *name, char *exec)
 	return -1;
 }
 #endif
+
+static int create_pipe(HANDLE *phandle, const char *pipename, bool first)
+{
+	*phandle = CreateNamedPipeA(
+		pipename,
+		PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED |
+			(first ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0),
+		PIPE_TYPE_BYTE | PIPE_READMODE_BYTE |
+			PIPE_REJECT_REMOTE_CLIENTS,
+		PIPE_UNLIMITED_INSTANCES, 1024 * 1024, 1024 * 1024,
+		0 /*default timeout*/, NULL);
+	return *phandle == INVALID_HANDLE_VALUE || *phandle == NULL;
+}
 
 static wchar_t *load_pipe_name(const char *sockpn)
 {
@@ -100,10 +39,14 @@ static wchar_t *load_pipe_name(const char *sockpn)
 	return ret;
 }
 
+static atomic_int g_num_threads;
+
 static DWORD WINAPI rx_thread(void *udata)
 {
 	struct rx *r = udata;
-	return run_rx(r);
+	run_rx(r);
+	atomic_fetch_sub_explicit(&g_num_threads, 1, memory_order_release);
+	return 0;
 }
 
 static void start_remote_thread(struct bus *b, HANDLE pipe, int id)
@@ -113,6 +56,7 @@ static void start_remote_thread(struct bus *b, HANDLE pipe, int id)
 	win_init_rxconn(&rx->conn, pipe);
 	win_init_txconn(&rx->tx->conn, pipe);
 
+	atomic_fetch_add_explicit(&g_num_threads, 1, memory_order_relaxed);
 	HANDLE thrd = CreateThread(NULL, 0, &rx_thread, rx, 0, NULL);
 	if (thrd == INVALID_HANDLE_VALUE) {
 		FATAL("failed to launch rx thread");
@@ -120,85 +64,167 @@ static void start_remote_thread(struct bus *b, HANDLE pipe, int id)
 	CloseHandle(thrd);
 }
 
-static void run_bus(const wchar_t *fn16)
+static void autoexit_check()
 {
-	size_t len16 = wcslen(fn16);
-	char *fn8 = fmalloc(UTF8_SPACE(len16) + 1);
-	char *nul = utf16_to_utf8(fn8, fn16, len16);
-	*nul = 0;
-
-	struct config_arguments args;
-	args.num = 1;
-	args.v[0].cmdline = NULL;
-	args.v[0].file = fn8;
-
-	struct bus bus;
-	if (init_bus(&bus) || load_config(&bus, &args)) {
-		FATAL("failed to setup bus");
+	if (atomic_load_explicit(&g_num_threads, memory_order_acquire) == 0) {
+		VERBOSE("autoexit");
+		exit(0);
 	}
+}
 
-	const struct rcu_data *d = rcu_root(bus.rcu);
-	const struct config *c = d->config;
-	wchar_t *pipename = load_pipe_name(c->listenpn);
-
-	SECURITY_ATTRIBUTES sec;
-	memset(&sec, 0, sizeof(sec));
-	sec.nLength = sizeof(sec);
-	sec.bInheritHandle = FALSE;
-
+static void run_bus(struct bus *b, HANDLE hpipe, const char *pipename,
+		    bool autoexit)
+{
 	OVERLAPPED ol;
 	memset(&ol, 0, sizeof(ol));
 	ol.hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
 
 	int next_id = 1;
+	DWORD timeout = autoexit ? 5000 : INFINITE;
 
 	for (;;) {
-		HANDLE h = CreateNamedPipeW(
-			pipename, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
-			PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES,
-			1 * 1024 * 1024, 1 * 1024 * 1024, 0, &sec);
-		if (h == INVALID_HANDLE_VALUE) {
-			FATAL("failed to create named pipe server,errno:%m");
+		if (ConnectNamedPipe(hpipe, &ol)) {
+			VERBOSE("synchronous connect pipe,pipe:%s", pipename);
+		} else if (GetLastError() == ERROR_IO_PENDING) {
+			VERBOSE("waiting for connection,pipe:%s", pipename);
+			while (WaitForSingleObject(ol.hEvent, timeout) ==
+			       WAIT_TIMEOUT) {
+				autoexit_check();
+			}
+		} else {
+			FATAL("connect named pipe,errno:%m,pipe:%s", pipename);
 		}
 
-		if (ConnectNamedPipe(h, &ol)) {
-			start_remote_thread(&bus, h, next_id++);
-		} else if (GetLastError() == ERROR_IO_PENDING) {
-			LOG("waiting for connection,pipe:%S", pipename);
-			WaitForSingleObject(ol.hEvent, INFINITE);
-			start_remote_thread(&bus, h, next_id++);
-		} else {
-			FATAL("connect named pipe,errno:%m");
+		HANDLE hnext;
+		if (create_pipe(&hnext, pipename, false)) {
+			FATAL("failed to create named pipe,errno:%m");
 		}
+		start_remote_thread(b, hpipe, next_id++);
+		hpipe = hnext;
 	}
 }
 
-int wmain(int argc, wchar_t *argv[])
+static void add_default_config(struct config_arguments *args)
 {
-	LOG("startup");
-
-	if (argc < 2) {
-		return 2;
+	static const wchar_t filename[] = L"zbus.ini";
+	wchar_t buf[MAX_PATH];
+	DWORD sz = GetModuleFileNameW(NULL, buf, sizeof(buf) - 1);
+	buf[sz] = 0;
+	wchar_t *slash = wcsrchr(buf, L'\\');
+	if (slash == NULL || sz + sizeof(filename) > sizeof(buf)) {
+		FATAL("failed to determine default config path");
 	}
+	memcpy(slash + 1, filename, sizeof(filename));
+	args->v[args->num].key = "include";
+	args->v[args->num].klen = strlen("include");
+	args->v[args->num++].value = utf8dup(buf);
+	VERBOSE("loading default config,path:%S", buf);
+}
 
-	if (!wcscmp(argv[1], L"install")) {
-		return install();
-	} else if (!wcscmp(argv[1], L"launcher")) {
-		SERVICE_TABLE_ENTRYW dispatch[] = {
-			{ SVC_NAME, &SvcMain },
-			{ NULL, NULL },
-		};
+static int usage(void)
+{
+	fputs("usage: zbus [config] [--] [config-files]\n", stderr);
+	fputs("\tCommand line config can be any of:\n", stderr);
+	fputs("\t\t--key=value\n", stderr);
+	fputs("\t\t--key value\n", stderr);
+	fputs("\t\t-key=value\n", stderr);
+	fputs("\t\t-key value\n", stderr);
+	fputs("\t\t/key=value\n", stderr);
+	fputs("\t\t/key value\n", stderr);
+	fputs("\tAny arguments not prefixed with '-' or after '--' will be treated as config files\n",
+	      stderr);
+	return 2;
+}
 
-		if (!StartServiceCtrlDispatcherW(dispatch)) {
-			FATAL("failed to start service dispatcher,errno:%m");
+int wmain(int argc, wchar_t *wargv[])
+{
+	char **argv = utf8argv(argc, wargv);
+	struct config_arguments args;
+	args.num = 0;
+
+	add_default_config(&args);
+
+	bool more_options = true;
+	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h") ||
+		    !strcmp(argv[i], "/?") || !strcmp(argv[i], "/h")) {
+			return usage();
+		} else if (args.num == MAX_ARGUMENTS) {
+			fputs("too many arguments", stderr);
+			return 2;
 		}
-		return 1;
-	} else {
-		// running in single bus mode, take the argument as the config
-		// file path
-		g_enable_security = false;
-		g_log_level = LOG_DEBUG;
-		run_bus(argv[1]);
-		return 0;
+		if (!strcmp(argv[i], "--")) {
+			more_options = false;
+		} else if (more_options &&
+			   (argv[i][0] == '-' || argv[i][0] == '/')) {
+			char *key = argv[i] + 1;
+			if (key[-1] == '-' && key[0] == '-') {
+				// allow -foo=bar or --foo=bar
+				key++;
+			}
+			size_t klen = strlen(key);
+			char *eq = memchr(key, '=', klen);
+			char *value;
+			if (eq) {
+				// --foo=bar or -foo=bar
+				klen = eq - key;
+				value = eq + 1;
+			} else if (i == argc - 1) {
+				fputs("expected argument\n", stderr);
+				return 2;
+			} else {
+				// --foo bar or -foo bar
+				value = argv[++i];
+			}
+			args.v[args.num].key = key;
+			args.v[args.num].klen = klen;
+			args.v[args.num++].value = value;
+		} else {
+			args.v[args.num].key = "include";
+			args.v[args.num].klen = strlen("include");
+			args.v[args.num++].value = argv[i];
+		}
 	}
+
+	struct bus b;
+	if (init_bus(&b) || load_config(&b, &args)) {
+		return 1;
+	}
+
+	const struct rcu_data *d = rcu_root(b.rcu);
+	const struct config *c = d->config;
+
+	if (!c->listenpn) {
+		ERROR("no shm name specified in config");
+		return 1;
+	}
+
+	VERBOSE("bind,shm:%s", c->listenpn);
+	wchar_t *mapname = utf16dup(c->listenpn);
+	struct winmmap m;
+	if (create_win_pipename(&m, mapname) < 0) {
+		FATAL("failed to create pipename mapping,errno:%m,name:%S",
+		      mapname);
+	}
+	free(mapname);
+
+	char pipename[256];
+	static const char pfx[] = "\\\\.\\pipe\\";
+	memcpy(pipename, pfx, strlen(pfx));
+	memcpy(pipename + strlen(pfx), b.busid.p, b.busid.len);
+	pipename[strlen(pfx) + b.busid.len] = 0;
+
+	HANDLE hpipe;
+	if (create_pipe(&hpipe, pipename, true)) {
+		FATAL("failed to create first named pipe,pipe:%s,errno:%m",
+		      pipename);
+	}
+
+	if (write_win_pipename(&m, pipename)) {
+		FATAL("failed to write pipename mapping");
+	}
+
+	run_bus(&b, hpipe, pipename, c->autoexit);
+
+	return 0;
 }

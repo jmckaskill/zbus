@@ -1,4 +1,5 @@
 #include "print.h"
+#include "log.h"
 #include <string.h>
 #include <limits.h>
 
@@ -308,4 +309,42 @@ uint16_t *utf8_to_utf16(uint16_t *dst, const char *src, size_t len)
 		}
 	}
 	return dp;
+}
+
+char **utf8argv(int argc, const uint16_t **wargv)
+{
+	uintptr_t *sizes = fmalloc((argc + 1) * sizeof(sizes[0]));
+	size_t total = 0;
+	for (int i = 0; i < argc; i++) {
+		sizes[i] = u16len(wargv[i]);
+		total += sizes[i] + 1;
+	}
+	char **argv = (char **)sizes;
+	char *buf = fmalloc(total);
+	for (int i = 0; i < argc; i++) {
+		size_t sz = sizes[i];
+		argv[i] = buf;
+		buf = utf16_to_utf8(buf, wargv[i], sz);
+		*(buf++) = 0;
+	}
+	argv[argc] = NULL;
+	return argv;
+}
+
+char *utf8dup(const wchar_t *wstr)
+{
+	size_t len = wcslen(wstr);
+	char *str = fmalloc(UTF8_SPACE(len) + 1);
+	char *nul = utf16_to_utf8(str, wstr, len);
+	*nul = 0;
+	return str;
+}
+
+wchar_t *utf16dup(const char *str)
+{
+	size_t len8 = strlen(str);
+	wchar_t *wstr = fmalloc(UTF16_SPACE(len8) + 2);
+	wchar_t *nul = utf8_to_utf16(wstr, str, len8);
+	*nul = 0;
+	return wstr;
 }

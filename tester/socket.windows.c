@@ -4,6 +4,7 @@
 #include "lib/windows.h"
 #include "lib/log.h"
 #include "lib/print.h"
+#include "lib/pipe.windows.h"
 #include <sddl.h>
 
 #pragma comment(lib, "advapi32.lib")
@@ -39,17 +40,25 @@ void sys_close(fd_t fd)
 	CloseHandle((HANDLE)fd);
 }
 
-int sys_open(fd_t *pfd, const char *sockpn)
+int sys_open(fd_t *pfd, const char *mapname)
 {
-	static const wchar_t pfx[] = L"\\\\.\\pipe\\";
-	size_t len = strlen(sockpn);
-	wchar_t *fn = fmalloc(sizeof(pfx) + UTF16_SPACE(len) + 2);
-	memcpy(fn, pfx, sizeof(pfx));
-	wchar_t *nul = utf8_to_utf16(fn + wcslen(pfx), sockpn, len);
-	*nul = L'\0';
+	struct winmmap map;
+	wchar_t *wmapname = utf16dup(mapname);
+	int err = open_win_pipename(&map, wmapname);
+	free(wmapname);
+	if (err) {
+		return -1;
+	}
+	char pipename[256];
+	int sz = read_win_pipename(&map, pipename, sizeof(pipename));
+	unmap_win_pipename(&map);
+	if (sz <= 0) {
+		return -1;
+	}
+
 	for (;;) {
-		HANDLE h = CreateFileW(fn, GENERIC_READ | GENERIC_WRITE, 0,
-				       NULL, OPEN_EXISTING, 0, NULL);
+		HANDLE h = CreateFileA(pipename, GENERIC_READ | GENERIC_WRITE,
+				       0, NULL, OPEN_EXISTING, 0, NULL);
 		if (h != INVALID_HANDLE_VALUE) {
 			*pfd = (uintptr_t)h;
 			return 0;
@@ -57,7 +66,7 @@ int sys_open(fd_t *pfd, const char *sockpn)
 			return -1;
 		}
 
-		if (!WaitNamedPipeW(fn, NMPWAIT_USE_DEFAULT_WAIT)) {
+		if (!WaitNamedPipeA(pipename, NMPWAIT_USE_DEFAULT_WAIT)) {
 			return -1;
 		}
 	}

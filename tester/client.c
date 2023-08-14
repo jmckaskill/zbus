@@ -71,8 +71,7 @@ struct client *open_client(const char *sockpn)
 {
 	fd_t fd;
 	if (sys_open(&fd, sockpn)) {
-		ERROR("failed to open dbus socket,errno:%m");
-		return NULL;
+		FATAL("failed to open dbus socket,errno:%m");
 	}
 
 	size_t msgsz = 4096;

@@ -26,10 +26,9 @@ struct config {
 
 	bool allow_unknown_destinations;
 	bool allow_unknown_interfaces;
+	bool autoexit;
 
-#if HAVE_LISTENFD
 	int listenfd;
-#endif
 	char *listenpn;
 	char *address; // address in dbus format
 	char *type;
@@ -76,7 +75,7 @@ void service_exited(struct bus *b, const str8_t *name);
 int request_name(struct bus *b, struct rx *r, const str8_t *name,
 		 uint32_t serial);
 int release_name(struct bus *b, struct rx *r, const str8_t *name,
-		 uint32_t serial);
+		 uint32_t serial, bool send_name_lost);
 
 #define DBUS_RELEASE_NAME_REPLY_RELEASED 1
 #define DBUS_RELEASE_NAME_REPLY_NON_EXISTENT 2
@@ -90,8 +89,9 @@ int update_sub(struct bus *b, bool add, struct rx *r, const char *str,
 struct config_arguments {
 	int num;
 	struct {
-		const char *cmdline;
-		const char *file;
+		const char *key;
+		size_t klen;
+		const char *value;
 	} v[MAX_ARGUMENTS];
 };
 

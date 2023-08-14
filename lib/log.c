@@ -370,9 +370,20 @@ void log_errno_2(struct logbuf *b, const char *key, size_t klen)
 {
 #ifdef _WIN32
 	char estr[256];
-	size_t len = FormatMessageA(
-		FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-		NULL, (DWORD)b->err, 0, estr, sizeof(estr), NULL);
+	size_t len = print_uint32(estr, b->err);
+	estr[len++] = ' ';
+	estr[len++] = '-';
+	estr[len++] = ' ';
+	len += FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM |
+				      FORMAT_MESSAGE_IGNORE_INSERTS,
+			      NULL, (DWORD)b->err, 0, estr + len,
+			      (DWORD)(sizeof(estr) - len), NULL);
+	if (estr[len - 1] == '\n') {
+		len--;
+	}
+	if (estr[len - 1] == '\r') {
+		len--;
+	}
 #else
 	const char *estr = strerror(b->err);
 	size_t len = strlen(estr);

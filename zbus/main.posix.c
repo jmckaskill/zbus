@@ -5,9 +5,9 @@
 #include "bus.h"
 #include "config.h"
 #include "lib/log.h"
+#include "vendor/getopt-master/getopt.h"
 #include <signal.h>
 #include <stdio.h>
-#include <getopt.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <threads.h>

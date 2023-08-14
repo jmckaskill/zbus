@@ -119,11 +119,9 @@ static struct rcu_data *edit_rcu_data(struct rcu_object **objs,
 ////////////////////
 // NameOwerChanged
 
-static void notify_name_changed(struct bus *bus, char *buf, bool acquired,
-				struct tx *tx, const str8_t *name)
+static void notify_name_acquired(struct bus *bus, char *buf, bool acquired,
+				 struct tx *tx, const str8_t *name)
 {
-	int id = tx->id;
-
 	// send the NameAcquired/NameLost Signal
 	struct txmsg m;
 	init_message(&m.m, MSG_SIGNAL, NO_REPLY_SERIAL);
@@ -142,9 +140,13 @@ static void notify_name_changed(struct bus *bus, char *buf, bool acquired,
 	append_string8(&b, name);
 	int sz = end_message(b);
 	if (send_data(tx, false, &m, buf, sz)) {
-		ERROR("failed to send NameAcquired/Lost message,id:%d", id);
+		ERROR("failed to send NameAcquired/Lost message,id:%d", tx->id);
 	}
+}
 
+static void notify_name_changed(struct bus *bus, char *buf, bool acquired,
+				int id, const str8_t *name)
+{
 	const struct rcu_data *d = rcu_root(bus->rcu);
 	const struct submap *subs = d->name_changed;
 	int nsubs = vector_len(&subs->hdr);
@@ -153,6 +155,7 @@ static void notify_name_changed(struct bus *bus, char *buf, bool acquired,
 	}
 
 	// send the NameOwnerChanged signal
+	struct txmsg m;
 	init_message(&m.m, MSG_SIGNAL, NO_REPLY_SERIAL);
 	m.m.path = BUS_PATH;
 	m.m.interface = BUS_INTERFACE;
@@ -165,7 +168,7 @@ static void notify_name_changed(struct bus *bus, char *buf, bool acquired,
 	// leave reply_serial as 0
 	// leave flags as 0
 
-	b = start_message(buf, NAME_OWNER_CHANGED_BUFSZ, &m.m);
+	struct builder b = start_message(buf, NAME_OWNER_CHANGED_BUFSZ, &m.m);
 	append_string8(&b, name);
 	if (acquired) {
 		append_string8(&b, S8("\0"));
@@ -174,7 +177,7 @@ static void notify_name_changed(struct bus *bus, char *buf, bool acquired,
 		append_id_address(&b, id);
 		append_string8(&b, S8("\0"));
 	}
-	sz = end_message(b);
+	int sz = end_message(b);
 
 	for (int i = 0; i < nsubs; i++) {
 		struct tx *to = subs->v[i]->tx;
@@ -210,7 +213,8 @@ int register_remote(struct bus *b, struct rx *r, const str8_t *name,
 	nd->remotes = nm;
 	rcu_commit(b->rcu, nd, objs);
 
-	notify_name_changed(b, r->txbuf, true, tx, name);
+	notify_name_acquired(b, r->txbuf, true, tx, name);
+	notify_name_changed(b, r->txbuf, true, tx->id, name);
 
 	*preader = new_rcu_reader(b->rcu);
 	return 0;
@@ -237,7 +241,9 @@ int unregister_remote(struct bus *b, struct rx *r, const str8_t *name,
 	nd->remotes = nm;
 	rcu_commit(b->rcu, nd, objs);
 
-	notify_name_changed(b, r->txbuf, false, tx, name);
+	// don't need to send NameLost when unregistering the unique address as
+	// the remote is already gone
+	notify_name_changed(b, r->txbuf, false, tx->id, name);
 	return 0;
 }
 
@@ -310,7 +316,8 @@ int request_name(struct bus *b, struct rx *r, const str8_t *name,
 	// then everyone else
 	if (nd) {
 		rcu_commit(b->rcu, nd, objs);
-		notify_name_changed(b, r->txbuf, true, tx, name);
+		notify_name_acquired(b, r->txbuf, true, tx, name);
+		notify_name_changed(b, r->txbuf, true, tx->id, name);
 #if ENABLE_AUTOSTART
 		if (autolaunch) {
 			cnd_broadcast(&b->launch);
@@ -321,7 +328,7 @@ int request_name(struct bus *b, struct rx *r, const str8_t *name,
 }
 
 int release_name(struct bus *b, struct rx *r, const str8_t *name,
-		 uint32_t serial)
+		 uint32_t serial, bool send_name_lost)
 {
 	int sts;
 	const struct rcu_data *od = rcu_root(b->rcu);
@@ -365,7 +372,10 @@ int release_name(struct bus *b, struct rx *r, const str8_t *name,
 	// then everyone else
 	if (nd) {
 		rcu_commit(b->rcu, nd, objs);
-		notify_name_changed(b, r->txbuf, false, tx, name);
+		if (send_name_lost) {
+			notify_name_acquired(b, r->txbuf, false, tx, name);
+		}
+		notify_name_changed(b, r->txbuf, false, tx->id, name);
 	}
 
 	return 0;
@@ -599,6 +609,7 @@ static void realloc_str(char **ps, const char *str)
 		*ps = memcpy(frealloc(*ps, sz), str, sz);
 	} else {
 		free(*ps);
+		*ps = NULL;
 	}
 }
 
@@ -626,12 +637,11 @@ static struct config *new_config(void)
 	c->listenpn = NULL;
 	c->address = NULL;
 	c->type = NULL;
+	c->autoexit = false;
 #if HAVE_READY_FIFO
 	c->readypn = NULL;
 #endif
-#if HAVE_LISTENFD
 	c->listenfd = -1;
-#endif
 	return c;
 }
 
@@ -679,12 +689,24 @@ static int decode_positive_int(const char *val, int *pval)
 	return (n <= 0 || val[n]) ? CFG_VALUE : 0;
 }
 
-static int parse_global_config(struct config *c, const char *key,
+static int decode_bool(const char *val, bool *pval)
+{
+	if (!strcmp(val, "true")) {
+		*pval = true;
+	} else if (!strcmp(val, "false")) {
+		*pval = false;
+	} else {
+		return CFG_VALUE;
+	}
+	return 0;
+}
+
+static int parse_global_config(struct config *c, const char *key, size_t klen,
 			       const char *val)
 {
-	switch (strlen(key)) {
+	switch (klen) {
 	case 4:
-		if (!strcmp(key, "type")) {
+		if (!memcmp(key, "type", 4)) {
 			realloc_str(&c->type, val);
 			return 0;
 		} else {
@@ -692,10 +714,8 @@ static int parse_global_config(struct config *c, const char *key,
 		}
 
 	case 6:
-		if (!strcmp(key, "listen")) {
-#if HAVE_LISTENFD
+		if (!memcmp(key, "listen", 6)) {
 			c->listenfd = -1;
-#endif
 			realloc_str(&c->listenpn, val);
 			return 0;
 		} else {
@@ -703,7 +723,7 @@ static int parse_global_config(struct config *c, const char *key,
 		}
 
 	case 7:
-		if (!strcmp(key, "address")) {
+		if (!memcmp(key, "address", 7)) {
 			realloc_str(&c->address, val);
 			return 0;
 		} else {
@@ -711,7 +731,7 @@ static int parse_global_config(struct config *c, const char *key,
 		}
 
 	case 8:
-		if (!strcmp(key, "log_type")) {
+		if (!memcmp(key, "log_type", 8)) {
 			if (!strcmp(val, "json")) {
 				g_log_type = LOG_JSON;
 			} else if (!strcmp(val, "text")) {
@@ -720,17 +740,17 @@ static int parse_global_config(struct config *c, const char *key,
 				return CFG_VALUE;
 			}
 			return 0;
-#if HAVE_LISTENFD
-		} else if (!strcmp(key, "listenfd")) {
+		} else if (!memcmp(key, "autoexit", 8)) {
+			return decode_bool(val, &c->autoexit);
+		} else if (!memcmp(key, "listenfd", 8)) {
 			realloc_str(&c->listenpn, NULL);
 			return decode_positive_int(val, &c->listenfd);
-#endif
 		} else {
 			return CFG_KEY;
 		}
 
 	case 9:
-		if (!strcmp(key, "log_level")) {
+		if (!memcmp(key, "log_level", 9)) {
 			if (!strcmp(val, "debug")) {
 				g_log_level = LOG_DEBUG;
 			} else if (!strcmp(val, "verbose")) {
@@ -751,7 +771,7 @@ static int parse_global_config(struct config *c, const char *key,
 
 #if HAVE_READY_FIFO
 	case 10:
-		if (!strcmp(key, "ready_fifo")) {
+		if (!memcmp(key, "ready_fifo", 10)) {
 			realloc_str(&c->readypn, val);
 			return 0;
 		} else {
@@ -759,28 +779,14 @@ static int parse_global_config(struct config *c, const char *key,
 		}
 #endif
 	case 23:
-		if (!strcmp(key, "allow_unknown_addresses")) {
-			if (!strcmp(val, "true")) {
-				c->allow_unknown_destinations = true;
-			} else if (!strcmp(val, "false")) {
-				c->allow_unknown_destinations = false;
-			} else {
-				return CFG_VALUE;
-			}
-			return 0;
+		if (!memcmp(key, "allow_unknown_addresses", 23)) {
+			return decode_bool(val, &c->allow_unknown_destinations);
 		} else {
 			return CFG_KEY;
 		}
 	case 24:
-		if (!strcmp(key, "allow_unknown_interfaces")) {
-			if (!strcmp(val, "true")) {
-				c->allow_unknown_interfaces = true;
-			} else if (!strcmp(val, "false")) {
-				c->allow_unknown_interfaces = false;
-			} else {
-				return CFG_VALUE;
-			}
-			return 0;
+		if (!memcmp(key, "allow_unknown_interfaces", 24)) {
+			return decode_bool(val, &c->allow_unknown_interfaces);
 		} else {
 			return CFG_KEY;
 		}
@@ -797,29 +803,29 @@ static int decode_group(const char *val, int *pgid)
 }
 #endif
 
-static int parse_address_config(struct addrcfg *c, const char *key,
+static int parse_address_config(struct addrcfg *c, const char *key, size_t klen,
 				const char *val)
 {
-	if (!strcmp(key, "description")) {
+	if (klen == 11 && !memcmp(key, "description", 11)) {
 		return 0;
 
 #if ENABLE_AUTOSTART
-	} else if (!strcmp(key, "exec")) {
+	} else if (klen == 4 && !memcmp(key, "exec", 4)) {
 		realloc_str(&c->exec, val);
 		return 0;
 #endif
 
 #if HAVE_UNIX_GROUPS
-	} else if (!strcmp(key, "owner_gid")) {
+	} else if (klen == 9 && !memcmp(key, "owner_gid", 9)) {
 		return decode_positive_int(val, &c->gid_owner);
 
-	} else if (!strcmp(key, "owner_group")) {
+	} else if (klen == 11 && !memcmp(key, "owner_group", 11)) {
 		return decode_group(val, &c->gid_owner);
 
-	} else if (!strcmp(key, "access_gid")) {
+	} else if (klen == 10 && !memcmp(key, "access_gid", 10)) {
 		return decode_positive_int(val, &c->gid_access);
 
-	} else if (!strcmp(key, "access_group")) {
+	} else if (klen == 12 && !memcmp(key, "access_group", 12)) {
 		return decode_group(val, &c->gid_access);
 #endif
 
@@ -829,22 +835,22 @@ static int parse_address_config(struct addrcfg *c, const char *key,
 }
 
 static int parse_interface_config(struct addrcfg *c, const char *key,
-				  const char *val)
+				  size_t klen, const char *val)
 {
-	if (!strcmp(key, "description")) {
+	if (klen == 11 && !memcmp(key, "description", 11)) {
 		return 0;
 
 #if HAVE_UNIX_GROUPS
-	} else if (!strcmp(key, "subscribe_gid")) {
+	} else if (klen == 13 && !memcmp(key, "subscribe_gid", 13)) {
 		return decode_positive_int(val, &c->gid_access);
 
-	} else if (!strcmp(key, "subscribe_group")) {
+	} else if (klen == 15 && !memcmp(key, "subscribe_group", 15)) {
 		return decode_group(val, &c->gid_access);
 
-	} else if (!strcmp(key, "publish_gid")) {
+	} else if (klen == 11 && !memcmp(key, "publish_gid", 11)) {
 		return decode_positive_int(val, &c->gid_owner);
 
-	} else if (!strcmp(key, "publish_group")) {
+	} else if (klen == 13 && !memcmp(key, "publish_group", 13)) {
 		return decode_group(val, &c->gid_owner);
 #endif
 
@@ -860,8 +866,8 @@ static bool has_prefix(char *str, size_t len, const char *pfx, size_t plen)
 
 struct stack_entry {
 	struct ini_reader ini;
-	char *fn;
-	char *heap;
+	const char *filename;
+	char *data;
 	struct sysdir *dir;
 };
 
@@ -869,7 +875,22 @@ struct parse_stack {
 	struct stack_entry v[16];
 };
 
-static int load_next_file(struct stack_entry *s, const char *file)
+static void init_parser(struct parse_stack *s, const char *key, size_t klen,
+			const char *val)
+{
+	size_t vlen = strlen(val);
+	char *kv = fmalloc(klen + 1 + vlen + 1);
+	memcpy(kv, key, klen);
+	kv[klen] = '=';
+	memcpy(kv + klen + 1, val, vlen + 1);
+	struct stack_entry *e = &s->v[0];
+	init_ini(&e->ini, kv, klen + 1 + vlen);
+	e->filename = NULL;
+	e->data = kv;
+	e->dir = NULL;
+}
+
+static int load_file(struct stack_entry *s, const char *file)
 {
 	char *data;
 	size_t sz;
@@ -877,24 +898,10 @@ static int load_next_file(struct stack_entry *s, const char *file)
 		return CFG_READ_FILE;
 	}
 	init_ini(&s->ini, data, sz);
-	s->heap = data;
-	sz = strlen(file) + 1;
-	s->fn = memcpy(fmalloc(sz), file, sz);
+	s->filename = file;
+	s->data = data;
+	s->dir = NULL;
 	return 0;
-}
-
-static void load_string(struct stack_entry *s, const char *str)
-{
-	init_ini(&s->ini, str, strlen(str));
-	s->heap = NULL;
-	s->fn = memcpy(fmalloc(8), "cmdline", 8);
-	s->dir = NULL;
-}
-
-static int load_file(struct stack_entry *s, const char *pn)
-{
-	s->dir = NULL;
-	return load_next_file(s, pn);
 }
 
 static int load_dir(struct stack_entry *s, const char *pn)
@@ -904,37 +911,37 @@ static int load_dir(struct stack_entry *s, const char *pn)
 		return CFG_OPEN_DIR;
 	}
 	init_ini(&s->ini, NULL, 0);
+	s->filename = NULL;
+	s->data = NULL;
 	s->dir = d;
-	s->heap = NULL;
-	s->fn = NULL;
 	return 0;
 }
 
 static void close_file(struct stack_entry *s)
 {
-	free(s->fn);
-	free(s->heap);
+	free(s->data);
 	sys_closedir(s->dir);
 }
 
 static struct stack_entry *next_file(struct stack_entry *s)
 {
-	free(s->fn);
-	free(s->heap);
+	free(s->data);
 
 	if (!s->dir) {
 		return s - 1;
 	}
 
+	struct sysdir *dir = s->dir;
 	for (;;) {
-		const char *fn = sys_nextfile(s->dir);
-		if (!fn) {
-			sys_closedir(s->dir);
+		const char *filename = sys_nextfile(dir);
+		if (!filename) {
+			sys_closedir(dir);
 			return s - 1;
 		}
-		if (load_next_file(s, fn)) {
+		if (load_file(s, filename)) {
 			continue;
 		}
+		s->dir = dir;
 		return s;
 	}
 }
@@ -947,51 +954,62 @@ static int do_parse(struct parse_stack *p, struct config *cfg,
 	struct stack_entry *stop = p->v + sizeof(p->v) / sizeof(p->v[0]);
 
 	for (;;) {
-		char key[INI_BUFLEN];
-		char val[INI_BUFLEN];
-		int sts = read_ini(&s->ini, key, val);
+		char key[256];
+		size_t klen = sizeof(key);
+		char *val;
+		int sts = read_ini(&s->ini, key, &klen, &val);
 		if (sts == INI_EOF) {
 			s = next_file(s);
 			if (s < sbot) {
 				return 0;
 			}
+			continue;
 		} else if (sts != INI_OK) {
-			ERROR("parse error,file:%s,line:%d", s->fn,
+			ERROR("parse error,file:%s,line:%d", s->filename,
 			      s->ini.lineno);
 			break;
 		}
 
 		int lineno = s->ini.lineno;
 		int err;
-		size_t klen = strlen(key);
-		if (!strcmp(key, "include")) {
+		if (klen == strlen("include") &&
+		    !memcmp(key, "include", strlen("include"))) {
 			if (++s == stop) {
 				ERROR("parse include depth too deep");
 				break;
 			}
 			err = load_file(s, val);
-		} else if (!strcmp(key, "includedir")) {
+		} else if (klen == strlen("includedir") &&
+			   !memcmp(key, "includedir", strlen("includedir"))) {
 			if (++s == stop) {
 				ERROR("parse include depth too deep");
 				break;
 			}
 			err = load_dir(s, val);
 		} else if (has_prefix(key, klen, "interface.", 10)) {
-			size_t pfx = strlen("interface.");
+			size_t plen = strlen("interface.");
 			struct address *a =
-				get_address(tiface, key, klen, &pfx);
-			err = a ? parse_interface_config(a->cfg, key + pfx,
-							 val) :
-				  CFG_OVERLONG;
+				get_address(tiface, key, klen, &plen);
+			if (a) {
+				err = parse_interface_config(a->cfg, key + plen,
+							     klen - plen, val);
+			} else {
+				err = CFG_OVERLONG;
+			}
 
 		} else if (has_prefix(key, klen, "address.", 8)) {
-			size_t pfx = strlen("address.");
-			struct address *a = get_address(taddr, key, klen, &pfx);
-			err = a ? parse_address_config(a->cfg, key + pfx, val) :
-				  CFG_OVERLONG;
+			size_t plen = strlen("address.");
+			struct address *a =
+				get_address(taddr, key, klen, &plen);
+			if (a) {
+				err = parse_address_config(a->cfg, key + plen,
+							   klen - plen, val);
+			} else {
+				err = CFG_OVERLONG;
+			}
 
 		} else {
-			err = parse_global_config(cfg, key, val);
+			err = parse_global_config(cfg, key, klen, val);
 		}
 
 		switch (err) {
@@ -1001,20 +1019,20 @@ static int do_parse(struct parse_stack *p, struct config *cfg,
 			ERROR("failed to open config dir,dir:%s,errno:%m", val);
 			return -1;
 		case CFG_OVERLONG:
-			ERROR("overlong config value,file:%s,line:%d", s->fn,
-			      lineno);
+			ERROR("overlong config value,file:%s,line:%d",
+			      s->filename, lineno);
 			return -1;
 		case CFG_KEY:
 			ERROR("unknown config key,file:%s,line:%d,key:%s",
-			      s->fn, lineno, key);
+			      s->filename, lineno, key);
 			return -1;
 		case CFG_VALUE:
 			ERROR("unknown config value,file:%s,line:%d,key:%s,val:%s",
-			      s->fn, lineno, key, val);
+			      s->filename, lineno, key, val);
 			return -1;
 		case CFG_GROUP:
 			ERROR("failed to lookup group in config file,file:%s,line:%d,group:%s",
-			      s->fn, lineno, val);
+			      s->filename, lineno, val);
 		default:
 			return -1;
 		}
@@ -1049,11 +1067,8 @@ int load_config(struct bus *b, struct config_arguments *args)
 
 	for (int i = 0; i < args->num; i++) {
 		struct parse_stack s;
-		if (args->v[i].cmdline) {
-			load_string(&s.v[0], args->v[i].cmdline);
-		} else if (load_file(&s.v[0], args->v[i].file)) {
-			goto error;
-		}
+		init_parser(&s, args->v[i].key, args->v[i].klen,
+			    args->v[i].value);
 
 		if (do_parse(&s, cfg, &taddr, &tiface)) {
 			goto error;
@@ -1088,7 +1103,8 @@ int load_config(struct bus *b, struct config_arguments *args)
 		struct address *a = container_of(o, struct address, rcu);
 		if (a->tx) {
 			char buf[NAME_OWNER_CHANGED_BUFSZ];
-			notify_name_changed(b, buf, false, a->tx, &a->name);
+			notify_name_acquired(b, buf, false, a->tx, &a->name);
+			notify_name_changed(b, buf, false, a->tx->id, &a->name);
 		}
 	}
 

@@ -24,6 +24,10 @@ int parse_pos_int(const char *p, int *pval);
 char *utf16_to_utf8(char *dst, const uint16_t *src, size_t len);
 uint16_t *utf8_to_utf16(uint16_t *dst, const char *src, size_t len);
 
+char **utf8argv(int argc, const uint16_t **wargv);
+char *utf8dup(const wchar_t *wstr);
+wchar_t *utf16dup(const char *str);
+
 static inline size_t u16len(const uint16_t *str)
 {
 	if (sizeof(wchar_t) == sizeof(uint16_t)) {

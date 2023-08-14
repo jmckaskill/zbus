@@ -14,10 +14,13 @@ static inline void must(int error, const char *cmd)
 	}
 }
 
+static int remaining_client_replies;
+
 static int on_list_names(void *udata, struct client *c, struct message *m,
 			 struct iterator *ii)
 {
 	unregister_cb(c, m->reply_serial);
+	remaining_client_replies--;
 
 	if (m->error) {
 		ERROR("ListNames,error:%s", m->error->p);
@@ -25,6 +28,9 @@ static int on_list_names(void *udata, struct client *c, struct message *m,
 		struct array_data ad = parse_array(ii);
 		while (array_has_more(ii, &ad)) {
 			const str8_t *str = parse_string8(ii);
+			if (!str) {
+				FATAL("failed to parse ListNames reply");
+			}
 			VERBOSE("ListName,name:%s", str->p);
 		}
 	}
@@ -35,6 +41,7 @@ static int on_list_names(void *udata, struct client *c, struct message *m,
 static int on_test_signal(void *udata, struct client *c, struct message *m,
 			  struct iterator *ii)
 {
+	remaining_client_replies--;
 	const char *match = udata;
 	switch (m->type) {
 	case MSG_REPLY:
@@ -60,6 +67,7 @@ static int on_test_method(void *udata, struct client *c, struct message *m,
 			  struct iterator *ii)
 {
 	unregister_cb(c, m->reply_serial);
+	remaining_client_replies--;
 
 	if (m->error) {
 		ERROR("TestMethod,error:%s", m->error->p);
@@ -79,6 +87,7 @@ static int on_autostart(void *udata, struct client *c, struct message *m,
 			struct iterator *ii)
 {
 	unregister_cb(c, m->reply_serial);
+	remaining_client_replies--;
 
 	if (m->error) {
 		ERROR("Autostart,error:%.*s", S_PRI(*m->error));
@@ -99,6 +108,7 @@ static int run_client(void *udata)
 	must(!list_names, "register ListNames");
 	must(call_bus_method(c, list_names, S8("\011ListNames"), ""),
 	     "send ListNames");
+	remaining_client_replies++;
 
 	const char *ucast = "sender='com.example.Service',"
 			    "interface='com.example.Service',"
@@ -107,6 +117,7 @@ static int run_client(void *udata)
 	must(!test_signal, "register TestSignal");
 	must(call_bus_method(c, test_signal, S8("\010AddMatch"), "s", ucast),
 	     "send AddMatch");
+	remaining_client_replies += 2; // AddMatch response and signal
 
 	const char *bcast = "interface='com.example.Service',"
 			    "member='TestSignal2'";
@@ -114,6 +125,7 @@ static int run_client(void *udata)
 	must(!test_signal2, "register TestSignal");
 	must(call_bus_method(c, test_signal2, S8("\010AddMatch"), "s", bcast),
 	     "send AddMatch");
+	remaining_client_replies += 2; // AddMatch response and signal
 
 	uint32_t test_method = register_cb(c, &on_test_method, NULL);
 	must(!test_method, "register TestMethod");
@@ -121,6 +133,7 @@ static int run_client(void *udata)
 			 S8("\001/"), S8("\023com.example.Service"),
 			 S8("\012TestMethod"), "us", 0, "TestString"),
 	     "send TestMethod");
+	remaining_client_replies++;
 
 	uint32_t test_autostart = register_cb(c, &on_autostart, NULL);
 	must(!test_autostart, "register autostart");
@@ -128,11 +141,22 @@ static int run_client(void *udata)
 			 S8("\001/"), S8("\023com.example.Service"),
 			 S8("\005Hello"), ""),
 	     "send autostart");
+	remaining_client_replies++;
+
+	if (read_auth(c)) {
+		close_client(c);
+		return 2;
+	}
 
 	struct message m;
 	struct iterator ii;
-	while (!read_message(c, &m, &ii) && !distribute_message(c, &m, &ii)) {
+	while (!read_message(c, &m, &ii) && !distribute_message(c, &m, &ii) &&
+	       remaining_client_replies) {
 	}
+
+	must(call_method(c, 0, S8("\023com.example.Service"), S8("\001/"),
+			 S8("\023com.example.Service"), S8("\010Shutdown"), ""),
+	     "send shutdown");
 
 	close_client(c);
 	return 0;
@@ -186,8 +210,8 @@ static struct client *start_server(const char *sockpn)
 	}
 }
 
-static void server_message(struct client *c, const struct message *m,
-			   struct iterator *ii)
+static int server_message(struct client *c, const struct message *m,
+			  struct iterator *ii)
 {
 	if (str8eq(m->member, S8("\012TestMethod"))) {
 		uint32_t u = parse_uint32(ii);
@@ -206,6 +230,12 @@ static void server_message(struct client *c, const struct message *m,
 				  S8("\013TestSignal2"), "su", "TestString2",
 				  15);
 		must(err, "send TestSignal2");
+		return 0;
+	} else if (str8eq(m->member, S8("\010Shutdown"))) {
+		return 1;
+	} else {
+		FATAL("unexpected server message");
+		return 1;
 	}
 }
 
@@ -235,7 +265,9 @@ int main(int argc, char *argv[])
 	while (!read_message(c, &m, &ii)) {
 		if (m.type == MSG_METHOD && m.interface &&
 		    str8eq(m.interface, S8("\023com.example.Service"))) {
-			server_message(c, &m, &ii);
+			if (server_message(c, &m, &ii)) {
+				break;
+			}
 		}
 	}
 

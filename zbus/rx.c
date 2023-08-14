@@ -150,7 +150,7 @@ static void read_messages(struct rx *r, struct msg_stream *s)
 			size_t n1, n2;
 			rx_buffers(s, &p1, &n1, &p2, &n2);
 			int n = block_recv2(&r->conn, p1, (int)n1, p2, (int)n2);
-			if (n < 0) {
+			if (n <= 0) {
 				return;
 			}
 			s->have += n;

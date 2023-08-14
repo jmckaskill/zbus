@@ -172,13 +172,12 @@ char *start_string(struct builder *b, size_t *psz)
 {
 	uint32_t lenoff = align4(b->base, b->next);
 	uint32_t stroff = lenoff + 4;
-	b->next = stroff + 1;
-	if (b->next > b->end || *b->sig != TYPE_STRING) {
+	if (stroff + 1 > b->end || *b->sig != TYPE_STRING) {
 		b->next = b->end + 1;
 		*psz = 0;
 		return NULL;
 	} else {
-		*psz = b->end - b->next;
+		*psz = b->end - stroff - 1;
 		return b->base + stroff;
 	}
 }
@@ -186,10 +185,16 @@ char *start_string(struct builder *b, size_t *psz)
 void finish_string(struct builder *b, size_t sz)
 {
 	assert(sz < DBUS_MAX_VALUE_SIZE);
-	b->next += (uint32_t)sz;
-	if (b->next <= b->end) {
-		b->base[b->next - 1] = 0;
+	if (b->next > b->end) {
+		return;
 	}
+	uint32_t len32 = (uint32_t)sz;
+	memcpy(b->base + b->next, &len32, 4);
+	b->next += 4 + len32;
+	b->base[b->next++] = 0;
+	assert(b->next <= b->end);
+	assert(*b->sig == TYPE_STRING);
+	b->sig++;
 }
 
 struct variant_data start_variant(struct builder *b, const char *sig)
