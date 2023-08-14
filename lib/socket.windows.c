@@ -16,7 +16,7 @@ int block_recv1(struct rxconn *c, char *p, size_t n)
 {
 	assert(n < INT_MAX);
 	DWORD read;
-	if (ReadFile(c->h, p, n, &read, &c->ol)) {
+	if (ReadFile(c->h, p, (DWORD)n, &read, &c->ol)) {
 		return (int)read;
 	}
 	switch (GetLastError()) {
@@ -45,7 +45,7 @@ int start_send1(struct txconn *c, char *p, size_t n)
 {
 	assert(n < INT_MAX);
 	DWORD write;
-	if (WriteFile(c->h, p, n, &write, &c->ol)) {
+	if (WriteFile(c->h, p, (DWORD)n, &write, &c->ol)) {
 		return (int)write;
 	}
 	switch (GetLastError()) {

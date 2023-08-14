@@ -88,13 +88,14 @@ int sys_launch(struct bus *bus, const str8_t *name, char *exec)
 }
 #endif
 
-static wchar_t *load_pipe_name(const str8_t *sockpn)
+static wchar_t *load_pipe_name(const char *sockpn)
 {
 	static const wchar_t pfx[] = L"\\\\.\\pipe\\";
 	static const size_t pfxlen = sizeof(pfx) - 1;
-	wchar_t *ret = fmalloc(sizeof(pfx) + UTF16_SPACE(sockpn->len) + 2);
+	size_t pnlen = strlen(sockpn);
+	wchar_t *ret = fmalloc(sizeof(pfx) + UTF16_SPACE(pnlen) + 2);
 	memcpy(ret, pfx, sizeof(pfx));
-	wchar_t *nul = utf8_to_utf16(ret + wcslen(pfx), sockpn->p, sockpn->len);
+	wchar_t *nul = utf8_to_utf16(ret + wcslen(pfx), sockpn, pnlen);
 	*nul = L'\0';
 	return ret;
 }
@@ -138,7 +139,7 @@ static void run_bus(const wchar_t *fn16)
 
 	const struct rcu_data *d = rcu_root(bus.rcu);
 	const struct config *c = d->config;
-	wchar_t *pipename = load_pipe_name(c->sockpn);
+	wchar_t *pipename = load_pipe_name(c->listenpn);
 
 	SECURITY_ATTRIBUTES sec;
 	memset(&sec, 0, sizeof(sec));

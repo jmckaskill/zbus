@@ -37,7 +37,7 @@ int check_member(const char *s, size_t len)
 	if (!len || len > 255) {
 		return -1;
 	}
-	const char *p = p;
+	const char *p = s;
 	const char *begin = p;
 	const char *end = p + len;
 	while (p < end) {

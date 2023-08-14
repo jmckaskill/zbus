@@ -651,7 +651,7 @@ int log_vargs(struct logbuf *b, const char *fmt, va_list ap)
 {
 	while (*fmt) {
 		const char *key = fmt;
-		const char *next = strchrnul(key, ',');
+		const char *next = x_strchrnul(key, ',');
 		size_t klen = next - key;
 		const char *colon = memchr(key, ':', klen);
 		if (!colon) {

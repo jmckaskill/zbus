@@ -52,7 +52,7 @@ static char *append(char *out, char *end, const void *str, size_t len)
 	return out + len;
 }
 
-static inline char * append_cstr(char *out, char *end, const char *str)
+static inline char *append_cstr(char *out, char *end, const char *str)
 {
 	return append(out, end, str, strlen(str));
 }
@@ -251,7 +251,7 @@ int write_client_auth(char *buf, size_t bufsz, const char *uid, uint32_t serial)
 	write32(msg + 84, 5); // member len
 	write32(msg + 100, 20); // destination len
 
-	return out - buf;
+	return (int)(out - buf);
 }
 
 int read_client_auth(char *buf, size_t sz)
@@ -269,5 +269,5 @@ int read_client_auth(char *buf, size_t sz)
 		return AUTH_ERROR;
 	}
 
-	return in - buf;
+	return (int)(in - buf);
 }
