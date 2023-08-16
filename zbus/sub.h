@@ -14,7 +14,7 @@ struct subscription {
 	// tx ptr here does not contain an active ref. This is covered by the
 	// ref in the txmap.
 	struct tx *tx;
-	struct match m;
+	struct zb_matcher m;
 	uint32_t serial;
 	char mstr[1];
 };
@@ -24,7 +24,7 @@ struct submap {
 	const struct subscription *v[1];
 };
 
-struct subscription *new_subscription(const char *mstr, struct match m);
+struct subscription *new_subscription(const char *mstr, struct zb_matcher m);
 
 static void free_submap(struct submap *m);
 static struct submap *edit_submap(struct rcu_object **objs,
@@ -32,14 +32,14 @@ static struct submap *edit_submap(struct rcu_object **objs,
 
 struct submap *add_subscription(struct rcu_object **objs,
 				const struct submap *om, struct tx *tx,
-				const char *mstr, struct match match,
+				const char *mstr, struct zb_matcher match,
 				uint32_t serial);
 
 struct submap *rm_subscription(struct rcu_object **objs,
 			       const struct submap *om, int idx);
 
 int bsearch_subscription(const struct submap *s, struct tx *tx, const char *str,
-			 struct match m);
+			 struct zb_matcher m);
 
 ///////////////////////
 // inline

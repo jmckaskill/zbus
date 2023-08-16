@@ -56,7 +56,7 @@ static char *parse_token(char *p, char **pstr)
 	return skip_space(p + 1);
 }
 
-static char *parse_string(char *p, char **pstr)
+static char *zb_parse_string(char *p, char **pstr)
 {
 	if (*p != '"') {
 		FATAL("expected open quote");
@@ -125,11 +125,11 @@ static char *parse_edge(char *p)
 		char *key;
 		p = parse_key(p, &key);
 		if (!strcmp(key, "sourcename")) {
-			p = parse_string(p, &src);
+			p = zb_parse_string(p, &src);
 		} else if (!strcmp(key, "targetname")) {
-			p = parse_string(p, &tgt);
+			p = zb_parse_string(p, &tgt);
 		} else if (!strcmp(key, "label")) {
-			p = parse_string(p, &label);
+			p = zb_parse_string(p, &label);
 		} else {
 			FATAL("unexpected edge key,key:%s", key);
 		}
@@ -179,10 +179,10 @@ static char *parse_node(char *p)
 		char *key;
 		p = parse_key(p, &key);
 		if (!strcmp(key, "title")) {
-			p = parse_string(p, &title);
+			p = zb_parse_string(p, &title);
 		} else if (!strcmp(key, "label")) {
 			char *label;
-			p = parse_string(p, &label);
+			p = zb_parse_string(p, &label);
 			name = get_line(&label);
 			loc = get_line(&label);
 			stack = get_line(&label);
@@ -220,7 +220,7 @@ static char *parse_graph(char *p)
 			p = parse_edge(p);
 		} else if (!strcmp(key, "title")) {
 			char *title;
-			p = parse_string(p, &title);
+			p = zb_parse_string(p, &title);
 			VERBOSE("graph title,title:%s", title);
 		} else {
 			FATAL("unexpected graph component,key:%s", key);

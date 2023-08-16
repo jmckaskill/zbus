@@ -16,8 +16,8 @@ static inline void must(int error, const char *cmd)
 
 static int remaining_client_replies;
 
-static int on_list_names(void *udata, struct client *c, struct message *m,
-			 struct iterator *ii)
+static int on_list_names(void *udata, struct client *c, struct zb_message *m,
+			 struct zb_iterator *ii)
 {
 	unregister_cb(c, m->reply_serial);
 	remaining_client_replies--;
@@ -25,36 +25,37 @@ static int on_list_names(void *udata, struct client *c, struct message *m,
 	if (m->error) {
 		ERROR("ListNames,error:%s", m->error->p);
 	} else {
-		struct array_data ad = parse_array(ii);
-		while (array_has_more(ii, &ad)) {
-			const str8_t *str = parse_string8(ii);
+		struct zb_scope array;
+		zb_enter_array(ii, &array);
+		while (zb_array_has_more(ii, &array)) {
+			const zb_str8 *str = zb_parse_str8(ii);
 			if (!str) {
 				FATAL("failed to parse ListNames reply");
 			}
 			VERBOSE("ListName,name:%s", str->p);
 		}
 	}
-	must(iter_error(ii), "parse ListNames reply");
+	must(zb_get_iter_error(ii), "parse ListNames reply");
 	return 0;
 }
 
-static int on_test_signal(void *udata, struct client *c, struct message *m,
-			  struct iterator *ii)
+static int on_test_signal(void *udata, struct client *c, struct zb_message *m,
+			  struct zb_iterator *ii)
 {
 	remaining_client_replies--;
 	const char *match = udata;
 	switch (m->type) {
-	case MSG_REPLY:
+	case ZB_REPLY:
 		LOG("TestSignal registered,match:%s", match);
 		break;
-	case MSG_ERROR:
+	case ZB_ERROR:
 		ERROR("failed to register TestSignal,error:%s,match:%s",
 		      m->error->p, match);
 		break;
-	case MSG_SIGNAL: {
-		uint32_t u = parse_uint32(ii);
+	case ZB_SIGNAL: {
+		uint32_t u = zb_parse_u32(ii);
 		size_t sz;
-		const char *str = parse_string(ii, &sz);
+		const char *str = zb_parse_string(ii, &sz);
 		LOG("recv TestSignal,number:%u,string:%.*s,match:%s", u,
 		    (int)sz, str, match);
 		break;
@@ -63,8 +64,8 @@ static int on_test_signal(void *udata, struct client *c, struct message *m,
 	return 0;
 }
 
-static int on_test_method(void *udata, struct client *c, struct message *m,
-			  struct iterator *ii)
+static int on_test_method(void *udata, struct client *c, struct zb_message *m,
+			  struct zb_iterator *ii)
 {
 	unregister_cb(c, m->reply_serial);
 	remaining_client_replies--;
@@ -72,10 +73,10 @@ static int on_test_method(void *udata, struct client *c, struct message *m,
 	if (m->error) {
 		ERROR("TestMethod,error:%s", m->error->p);
 	} else {
-		uint32_t u = parse_uint32(ii);
+		uint32_t u = zb_parse_u32(ii);
 		size_t sz;
-		const char *str = parse_string(ii, &sz);
-		int err = iter_error(ii);
+		const char *str = zb_parse_string(ii, &sz);
+		int err = zb_get_iter_error(ii);
 		LOG("TestMethod reply,number:%u,string:%.*s,parse:%d", u,
 		    (int)sz, str, err);
 	}
@@ -83,8 +84,8 @@ static int on_test_method(void *udata, struct client *c, struct message *m,
 	return 0;
 }
 
-static int on_autostart(void *udata, struct client *c, struct message *m,
-			struct iterator *ii)
+static int on_autostart(void *udata, struct client *c, struct zb_message *m,
+			struct zb_iterator *ii)
 {
 	unregister_cb(c, m->reply_serial);
 	remaining_client_replies--;
@@ -148,8 +149,8 @@ static int run_client(void *udata)
 		return 2;
 	}
 
-	struct message m;
-	struct iterator ii;
+	struct zb_message m;
+	struct zb_iterator ii;
 	while (!read_message(c, &m, &ii) && !distribute_message(c, &m, &ii) &&
 	       remaining_client_replies) {
 	}
@@ -167,15 +168,15 @@ static int run_client(void *udata)
 #define DBUS_REQUEST_NAME_REPLY_EXISTS 3
 #define DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER 4
 
-static int on_request_name(void *udata, struct client *c, struct message *m,
-			   struct iterator *ii)
+static int on_request_name(void *udata, struct client *c, struct zb_message *m,
+			   struct zb_iterator *ii)
 {
 	unregister_cb(c, m->reply_serial);
 
 	if (m->error) {
 		FATAL("RequestName failed,error:%.*s", S_PRI(*m->error));
 	} else {
-		int errcode = parse_uint32(ii);
+		int errcode = zb_parse_u32(ii);
 		if (errcode != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
 			FATAL("RequestName failed,errcode:%d", errcode);
 		}
@@ -198,8 +199,8 @@ static struct client *start_server(const char *sockpn)
 	}
 
 	for (;;) {
-		struct message m;
-		struct iterator ii;
+		struct zb_message m;
+		struct zb_iterator ii;
 		if (read_message(c, &m, &ii)) {
 			close_client(c);
 			return NULL;
@@ -210,13 +211,13 @@ static struct client *start_server(const char *sockpn)
 	}
 }
 
-static int server_message(struct client *c, const struct message *m,
-			  struct iterator *ii)
+static int server_message(struct client *c, const struct zb_message *m,
+			  struct zb_iterator *ii)
 {
-	if (str8eq(m->member, S8("\012TestMethod"))) {
-		uint32_t u = parse_uint32(ii);
+	if (zb_eq_str8(m->member, S8("\012TestMethod"))) {
+		uint32_t u = zb_parse_u32(ii);
 		size_t sz;
-		const char *str = parse_string(ii, &sz);
+		const char *str = zb_parse_string(ii, &sz);
 		LOG("server TestMethod,number:%d,string:%.*s", u, (int)sz, str);
 		int err = send_reply(c, m, "us", u + 1, "response");
 		must(err, "send TestMethod reply");
@@ -231,7 +232,7 @@ static int server_message(struct client *c, const struct message *m,
 				  15);
 		must(err, "send TestSignal2");
 		return 0;
-	} else if (str8eq(m->member, S8("\010Shutdown"))) {
+	} else if (zb_eq_str8(m->member, S8("\010Shutdown"))) {
 		return 1;
 	} else {
 		FATAL("unexpected server message");
@@ -260,11 +261,11 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	struct message m;
-	struct iterator ii;
+	struct zb_message m;
+	struct zb_iterator ii;
 	while (!read_message(c, &m, &ii)) {
-		if (m.type == MSG_METHOD && m.interface &&
-		    str8eq(m.interface, S8("\023com.example.Service"))) {
+		if (m.type == ZB_METHOD && m.interface &&
+		    zb_eq_str8(m.interface, S8("\023com.example.Service"))) {
 			if (server_message(c, &m, &ii)) {
 				break;
 			}

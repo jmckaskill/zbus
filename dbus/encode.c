@@ -1,5 +1,7 @@
 #include "encode.h"
 #include "decode.h"
+#include "str8.h"
+#include "internal.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <limits.h>
@@ -19,7 +21,7 @@ static uint32_t align2(char *base, uint32_t off)
 
 static uint32_t align4(char *base, uint32_t off)
 {
-	uint32_t aligned = ALIGN_UINT_UP(off, 4);
+	uint32_t aligned = ZB_ALIGN_UP(off, 4);
 	while (off < aligned) {
 		base[off++] = 0;
 	}
@@ -28,14 +30,14 @@ static uint32_t align4(char *base, uint32_t off)
 
 static uint32_t align8(char *base, uint32_t off)
 {
-	uint32_t aligned = ALIGN_UINT_UP(off, 8);
+	uint32_t aligned = ZB_ALIGN_UP(off, 8);
 	while (off < aligned) {
 		base[off++] = 0;
 	}
 	return off;
 }
 
-void align_buffer_8(struct builder *b)
+void align_buffer_8(struct zb_builder *b)
 {
 	// buffer is guarenteed to have 8 byte alignment so this should never
 	// fail
@@ -45,25 +47,25 @@ void align_buffer_8(struct builder *b)
 static uint32_t alignx(char *base, uint32_t off, char type)
 {
 	switch (type) {
-	case TYPE_INT16:
-	case TYPE_UINT16:
+	case ZB_INT16:
+	case ZB_UINT16:
 		return align2(base, off);
-	case TYPE_BOOL:
-	case TYPE_INT32:
-	case TYPE_UINT32:
-	case TYPE_STRING:
-	case TYPE_PATH:
-	case TYPE_ARRAY:
+	case ZB_BOOL:
+	case ZB_INT32:
+	case ZB_UINT32:
+	case ZB_STRING:
+	case ZB_PATH:
+	case ZB_ARRAY:
 		return align4(base, off);
-	case TYPE_INT64:
-	case TYPE_UINT64:
-	case TYPE_DOUBLE:
-	case TYPE_DICT_BEGIN:
-	case TYPE_STRUCT_BEGIN:
+	case ZB_INT64:
+	case ZB_UINT64:
+	case ZB_DOUBLE:
+	case ZB_DICT_BEGIN:
+	case ZB_STRUCT_BEGIN:
 		return align8(base, off);
-	case TYPE_BYTE:
-	case TYPE_SIGNATURE:
-	case TYPE_VARIANT:
+	case ZB_BYTE:
+	case ZB_SIGNATURE:
+	case ZB_VARIANT:
 	default:
 		return off;
 	}
@@ -72,107 +74,105 @@ static uint32_t alignx(char *base, uint32_t off, char type)
 ///////////////////////////////
 // raw data encoding
 
-void append_raw(struct builder *b, const char *sig, const void *p, size_t len)
+void zb_add_raw(struct zb_builder *b, const char *sig, const void *p,
+		size_t len)
 {
-	assert(len < DBUS_MAX_MSG_SIZE);
+	assert(len < ZB_MAX_MSG_SIZE);
 	uint32_t off = alignx(b->base, b->next, *sig);
 	b->next = off + (uint32_t)len;
-	if (!is_signature(b->sig, sig)) {
+	if (zb_cmp_signature(b->nextsig, sig)) {
 		b->next = b->end + 1;
 	} else if (!len && b->next <= b->end) {
 		memcpy(b->base + off, p, len);
-		b->sig += strlen(sig);
+		b->nextsig += strlen(sig);
 	}
 }
 
-void append_byte(struct builder *b, uint8_t v)
+void zb_add_byte(struct zb_builder *b, uint8_t v)
 {
-	if (*b->sig != TYPE_BYTE) {
+	if (*b->nextsig != ZB_BYTE) {
 		b->next = b->end + 1;
 	} else if (b->next < b->end) {
 		*(uint8_t *)(b->base + b->next) = v;
 		b->next++;
-		b->sig++;
+		b->nextsig++;
 	}
 }
 
-void _append2(struct builder *b, uint16_t u, char type)
+void _zb_add2(struct zb_builder *b, uint16_t u, char type)
 {
 	uint32_t off = align2(b->base, b->next);
 	b->next = off + 2;
-	if (*b->sig != type) {
+	if (*b->nextsig != type) {
 		b->next = b->end + 1;
 	} else if (b->next <= b->end) {
 		memcpy(b->base + off, &u, 2);
-		b->sig++;
+		b->nextsig++;
 	}
 }
 
-void _append4(struct builder *b, uint32_t u, char type)
+void _zb_add4(struct zb_builder *b, uint32_t u, char type)
 {
 	uint32_t off = align4(b->base, b->next);
 	b->next = off + 4;
-	if (*b->sig != type) {
+	if (*b->nextsig != type) {
 		b->next = b->end + 1;
 	} else if (b->next <= b->end) {
 		memcpy(b->base + off, &u, 4);
-		b->sig++;
+		b->nextsig++;
 	}
 }
 
-void _append8(struct builder *b, uint64_t u, char type)
+void _zb_add8(struct zb_builder *b, uint64_t u, char type)
 {
 	uint32_t off = align8(b->base, b->next);
 	b->next = off + 8;
-	if (*b->sig != type) {
+	if (*b->nextsig != type) {
 		b->next = b->end + 1;
 	} else if (b->next <= b->end) {
 		memcpy(b->base + off, &u, 8);
-		b->sig++;
+		b->nextsig++;
 	}
 }
 
-int _append_string(struct builder *b, const char *str, size_t len, char type)
+void _zb_add_string(struct zb_builder *b, const char *str, size_t len,
+		    char type)
 {
 	uint32_t lenoff = align4(b->base, b->next);
 	uint32_t stroff = lenoff + 4;
 	uint32_t nuloff = stroff + (uint32_t)len;
 	b->next = nuloff + 1;
-	if (*b->sig != type || len > DBUS_MAX_VALUE_SIZE) {
+	if (*b->nextsig != type || len > ZB_MAX_VALUE_SIZE) {
 		b->next = b->end + 1;
-		return -1;
 	} else if (b->next <= b->end) {
 		uint32_t len32 = (uint32_t)len;
 		memcpy(b->base + lenoff, &len32, 4);
 		memcpy(b->base + stroff, str, len);
 		b->base[nuloff] = 0;
-		b->sig++;
-		return 0;
-	} else {
-		return -1;
+		b->nextsig++;
 	}
 }
 
-void _append_signature(struct builder *b, const char *sig, char type)
+void _zb_add_signature(struct zb_builder *b, const char *sig, char type)
 {
 	size_t len = strlen(sig);
 	uint32_t lenoff = b->next;
 	uint32_t stroff = lenoff + 1;
 	b->next = stroff + (uint32_t)len + 1;
-	if (len > 255 || *b->sig != type) {
+	if (len > 255 || *b->nextsig != type) {
 		b->next = b->end + 1;
 	} else if (b->next <= b->end) {
 		*(uint8_t *)(b->base + lenoff) = (uint8_t)len;
 		memcpy(b->base + stroff, sig, len + 1);
-		b->sig++;
+		b->nextsig++;
 	}
 }
 
-char *start_string(struct builder *b, size_t *psz)
+char *zb_start_string(struct zb_builder *b, size_t *psz)
 {
 	uint32_t lenoff = align4(b->base, b->next);
 	uint32_t stroff = lenoff + 4;
-	if (stroff + 1 > b->end || *b->sig != TYPE_STRING) {
+	if (stroff + 1 > b->end || *b->nextsig != ZB_STRING) {
 		b->next = b->end + 1;
 		*psz = 0;
 		return NULL;
@@ -182,9 +182,9 @@ char *start_string(struct builder *b, size_t *psz)
 	}
 }
 
-void finish_string(struct builder *b, size_t sz)
+void zb_end_string(struct zb_builder *b, size_t sz)
 {
-	assert(sz < DBUS_MAX_VALUE_SIZE);
+	assert(sz < ZB_MAX_VALUE_SIZE);
 	if (b->next > b->end) {
 		return;
 	}
@@ -193,74 +193,81 @@ void finish_string(struct builder *b, size_t sz)
 	b->next += 4 + len32;
 	b->base[b->next++] = 0;
 	assert(b->next <= b->end);
-	assert(*b->sig == TYPE_STRING);
-	b->sig++;
+	assert(*b->nextsig == ZB_STRING);
+	b->nextsig++;
 }
 
-struct variant_data start_variant(struct builder *b, const char *sig)
+struct variant_data {
+	const char *nextsig;
+};
+
+void zb_start_variant(struct zb_builder *b, const char *sig, struct zb_scope *s)
 {
-	_append_signature(b, sig, TYPE_VARIANT);
-	struct variant_data vd = { .nextsig = b->sig };
-	b->sig = sig;
-	return vd;
+	_zb_add_signature(b, sig, ZB_VARIANT);
+	struct variant_data *v = (void *)s;
+	v->nextsig = b->nextsig;
+	b->nextsig = sig;
 }
 
-void end_variant(struct builder *b, struct variant_data vd)
+void zb_end_variant(struct zb_builder *b, struct zb_scope *s)
 {
 	// should have consumed the signature
-	if (*b->sig) {
+	if (*b->nextsig) {
 		b->next = b->end + 1;
 	}
-	b->sig = vd.nextsig;
+	struct variant_data *v = (void *)s;
+	b->nextsig = v->nextsig;
 }
 
-void append_variant(struct builder *b, const struct variant *v)
+void zb_add_variant(struct zb_builder *b, const struct zb_variant *v)
 {
-	struct variant_data vd = start_variant(b, v->sig);
+	struct zb_scope s;
+	zb_start_variant(b, v->sig, &s);
 	const char *sig = v->sig;
 	char type = *sig++;
 	switch (type) {
-	case TYPE_BOOL:
-		append_bool(b, v->u.b);
+	case ZB_BOOL:
+		zb_add_bool(b, v->u.b);
 		break;
-	case TYPE_BYTE:
-		append_byte(b, v->u.u8);
+	case ZB_BYTE:
+		zb_add_byte(b, v->u.u8);
 		break;
-	case TYPE_INT16:
-	case TYPE_UINT16:
-		_append2(b, v->u.u16, type);
+	case ZB_INT16:
+	case ZB_UINT16:
+		_zb_add2(b, v->u.u16, type);
 		break;
-	case TYPE_INT32:
-	case TYPE_UINT32:
-		_append4(b, v->u.u32, type);
+	case ZB_INT32:
+	case ZB_UINT32:
+		_zb_add4(b, v->u.u32, type);
 		break;
-	case TYPE_INT64:
-	case TYPE_UINT64:
-	case TYPE_DOUBLE:
-		_append8(b, v->u.u64, type);
+	case ZB_INT64:
+	case ZB_UINT64:
+	case ZB_DOUBLE:
+		_zb_add8(b, v->u.u64, type);
 		break;
-	case TYPE_STRING:
-	case TYPE_PATH:
-		_append_string(b, v->u.str.p, v->u.str.len, type);
+	case ZB_STRING:
+	case ZB_PATH:
+		_zb_add_string(b, v->u.str.p, v->u.str.len, type);
 		break;
-	case TYPE_SIGNATURE:
-		append_signature(b, v->u.sig);
+	case ZB_SIGNATURE:
+		zb_add_signature(b, v->u.sig);
 		break;
-	case TYPE_ARRAY: {
-		struct iterator ii = v->u.array;
-		struct array_data ad = start_array(b);
-		append_raw(b, ii.sig, ii.base + ii.next, ii.end - ii.next);
-		end_array(b, ad);
-		break;
-	}
-	case TYPE_STRUCT_BEGIN: {
-		struct iterator ii = v->u.record;
-		append_raw(b, ii.sig, ii.base + ii.next, ii.end - ii.next);
+	case ZB_ARRAY: {
+		struct zb_iterator ii = v->u.array;
+		struct zb_scope array;
+		zb_start_array(b, &array);
+		zb_add_raw(b, ii.nextsig, ii.base + ii.next, ii.end - ii.next);
+		zb_end_array(b, &array);
 		break;
 	}
-	case TYPE_VARIANT: {
-		struct iterator ii = v->u.variant;
-		append_raw_variant(b, ii.sig, ii.base + ii.next,
+	case ZB_STRUCT_BEGIN: {
+		struct zb_iterator ii = v->u.record;
+		zb_add_raw(b, ii.nextsig, ii.base + ii.next, ii.end - ii.next);
+		break;
+	}
+	case ZB_VARIANT: {
+		struct zb_iterator ii = v->u.variant;
+		zb_add_raw_variant(b, ii.nextsig, ii.base + ii.next,
 				   ii.end - ii.next);
 		break;
 	}
@@ -268,90 +275,104 @@ void append_variant(struct builder *b, const struct variant *v)
 		b->next = b->end + 1;
 		break;
 	}
-	end_variant(b, vd);
+	zb_end_variant(b, &s);
 }
 
-void append_raw_variant(struct builder *b, const char *sig, const void *raw,
+void zb_add_raw_variant(struct zb_builder *b, const char *sig, const void *raw,
 			size_t len)
 {
-	struct variant_data vd = start_variant(b, sig);
-	append_raw(b, sig, raw, len);
-	end_variant(b, vd);
+	struct zb_scope s;
+	zb_start_variant(b, sig, &s);
+	zb_add_raw(b, sig, raw, len);
+	zb_end_variant(b, &s);
 }
 
-void start_struct(struct builder *b)
+void zb_start_struct(struct zb_builder *b)
 {
 	// alignment can't fail
-	if (*b->sig == TYPE_STRUCT_BEGIN) {
+	if (*b->nextsig == ZB_STRUCT_BEGIN) {
 		b->next = align8(b->base, b->next);
-		b->sig++;
+		b->nextsig++;
 	} else {
 		b->next = b->end + 1;
 	}
 }
 
-void end_struct(struct builder *b)
+void zb_end_struct(struct zb_builder *b)
 {
-	if (*b->sig == TYPE_STRUCT_END) {
-		b->sig++;
+	if (*b->nextsig == ZB_STRUCT_END) {
+		b->nextsig++;
 	} else {
 		b->next = b->end + 1;
 	}
 }
 
-struct array_data start_array(struct builder *b)
+struct build_array {
+	const char *sig_start;
+	uint32_t data_start;
+	uint8_t siglen;
+	uint8_t hdrlen;
+};
+
+static_assert(sizeof(struct build_array) <= sizeof(struct zb_scope), "");
+
+void zb_start_array(struct zb_builder *b, struct zb_scope *s)
 {
-	struct array_data a;
-	if (*b->sig != TYPE_ARRAY) {
+	struct build_array *a = (void *)s;
+	if (*b->nextsig != ZB_ARRAY) {
 		goto error;
 	}
-	const char *sig = b->sig++;
+	const char *sig = b->nextsig++;
 	uint32_t lenoff = align4(b->base, b->next);
 	b->next = alignx(b->base, lenoff + 4, sig[1]);
-	if (b->next > b->end || skip_signature(&sig)) {
+	if (b->next > b->end || zb_skip_signature(&sig)) {
 		goto error;
 	}
-	a.sig = b->sig;
-	a.siglen = (uint8_t)(sig - b->sig);
-	a.off = b->next;
-	a.hdr = (uint8_t)(b->next - lenoff);
-	return a;
+	a->sig_start = b->nextsig;
+	a->siglen = (uint8_t)(sig - b->nextsig);
+	a->data_start = b->next;
+	a->hdrlen = (uint8_t)(b->next - lenoff);
+	return;
 error:
-	// setup an error state such that start_array_entry and end_array don't
-	// crash
-	a.sig = "";
-	a.siglen = 0;
-	a.off = 0;
-	a.hdr = 0;
+	// setup an error state such that zb_add_array_entry and zb_end_array
+	// don't crash
+	a->sig_start = "";
+	a->siglen = 0;
+	a->data_start = 0;
+	a->hdrlen = 0;
 	b->next = b->end + 1;
-	return a;
 }
 
-void start_array_entry(struct builder *b, struct array_data a)
+void zb_add_array_entry(struct zb_builder *b, struct zb_scope *s)
 {
 	// check that the signature is where we expect
-	if (b->sig != ((b->next != a.off) ? (a.sig + a.siglen) : a.sig)) {
+	struct build_array *a = (void *)s;
+	size_t sigoff = (b->next != a->data_start) ? a->siglen : 0;
+	if (b->nextsig != a->sig_start + sigoff) {
 		b->next = b->end + 1;
 	}
-	b->sig = a.sig;
+	b->nextsig = a->sig_start;
 }
 
-void end_array(struct builder *b, struct array_data a)
+void zb_end_array(struct zb_builder *b, struct zb_scope *s)
 {
-	uint32_t len = b->next - a.off;
-	memcpy(b->base + a.off - a.hdr, &len, 4);
+	struct build_array *a = (void *)s;
+
+	uint32_t len = b->next - a->data_start;
+	memcpy(b->base + a->data_start - a->hdrlen, &len, 4);
 
 	// check that the signature is where we expect
-	if (b->sig != (len ? (a.sig + a.siglen) : a.sig)) {
+	size_t sigoff = (b->next != a->data_start) ? a->siglen : 0;
+	if (b->nextsig != a->sig_start + sigoff) {
 		b->next = b->end + 1;
 	}
-	b->sig = a.sig + a.siglen;
+	b->nextsig = a->sig_start + a->siglen;
 }
 
-struct dict_data start_dict(struct builder *b)
+void zb_start_dict(struct zb_builder *b, struct zb_scope *s)
 {
-	struct dict_data d;
-	if (b->sig[0] != TYPE_ARRAY || b->sig[1] != TYPE_DICT_BEGIN) {
+	struct build_array *a = (void *)s;
+	if (b->nextsig[0] != ZB_ARRAY || b->nextsig[1] != ZB_DICT_BEGIN) {
 		goto error;
 	}
 
@@ -363,96 +384,98 @@ struct dict_data start_dict(struct builder *b)
 		dataoff += 4;
 	}
 
-	const char *nextsig = b->sig;
-	b->sig += 2; // want to point to key signature
+	const char *nextsig = b->nextsig;
+	b->nextsig += 2; // want to point to key signature
 	b->next = dataoff;
-	if (b->next > b->end || skip_signature(&nextsig)) {
+	if (b->next > b->end || zb_skip_signature(&nextsig)) {
 		goto error;
 	}
 	nextsig -= 1; // want to point to ending }
 
-	d.a.sig = b->sig;
-	d.a.siglen = (uint8_t)(nextsig - b->sig);
-	d.a.off = b->next;
-	d.a.hdr = (uint8_t)(b->next - lenoff);
-	return d;
+	a->sig_start = b->nextsig;
+	a->siglen = (uint8_t)(nextsig - b->nextsig);
+	a->data_start = b->next;
+	a->hdrlen = (uint8_t)(b->next - lenoff);
+	return;
 error:
 	// setup an error state with siglen = 0 and hdrlen = 0
-	// so that start_dict_entry and end_dict don't crash
-	d.a.sig = "}";
-	d.a.siglen = 0;
-	d.a.off = 0;
-	d.a.hdr = 0;
+	// so that zb_add_dict_entry and zb_end_dict don't crash
+	a->sig_start = "}";
+	a->siglen = 0;
+	a->data_start = 0;
+	a->hdrlen = 0;
 	b->next = b->end + 1;
-	return d;
 }
 
-void end_dict(struct builder *b, struct dict_data d)
+void zb_end_dict(struct zb_builder *b, struct zb_scope *s)
 {
-	end_array(b, d.a);
-	b->sig++; // }
+	zb_end_array(b, s);
+	b->nextsig++; // }
 }
 
-void append_multiv(struct builder *b, const char *sig, va_list ap)
+void zb_add_multiv(struct zb_builder *b, const char *sig, va_list ap)
 {
 	while (*sig) {
 		char type = *sig++;
 		switch (type) {
-		case TYPE_BYTE:
-			append_byte(b, (uint8_t)va_arg(ap, int));
+		case ZB_BYTE:
+			zb_add_byte(b, (uint8_t)va_arg(ap, int));
 			break;
-		case TYPE_BOOL:
-			append_bool(b, (bool)va_arg(ap, int));
+		case ZB_BOOL:
+			zb_add_bool(b, (bool)va_arg(ap, int));
 			break;
-		case TYPE_INT16:
-		case TYPE_UINT16:
-			_append2(b, (uint16_t)va_arg(ap, int), type);
+		case ZB_INT16:
+		case ZB_UINT16:
+			_zb_add2(b, (uint16_t)va_arg(ap, int), type);
 			break;
-		case TYPE_INT32:
-		case TYPE_UINT32:
-			_append4(b, va_arg(ap, uint32_t), type);
+		case ZB_INT32:
+		case ZB_UINT32:
+			_zb_add4(b, va_arg(ap, uint32_t), type);
 			break;
-		case TYPE_INT64:
-		case TYPE_UINT64:
-			_append8(b, va_arg(ap, uint64_t), type);
+		case ZB_INT64:
+		case ZB_UINT64:
+			_zb_add8(b, va_arg(ap, uint64_t), type);
 			break;
-		case TYPE_DOUBLE:
-			append_double(b, va_arg(ap, double));
+		case ZB_DOUBLE:
+			zb_add_double(b, va_arg(ap, double));
 			break;
-		case TYPE_PATH:
-		case TYPE_STRING: {
+		case ZB_PATH:
+		case ZB_STRING: {
 			const char *str = va_arg(ap, const char *);
-			_append_string(b, str, strlen(str), type);
+			_zb_add_string(b, str, strlen(str), type);
 			break;
 		}
-		case TYPE_SIGNATURE:
-			append_signature(b, va_arg(ap, const char *));
+		case ZB_SIGNATURE:
+			zb_add_signature(b, va_arg(ap, const char *));
 			break;
-		case TYPE_VARIANT:
-			append_variant(b, va_arg(ap, struct variant *));
+		case ZB_VARIANT:
+			zb_add_variant(b, va_arg(ap, struct zb_variant *));
 			break;
-		case TYPE_STRUCT_BEGIN: {
-			struct iterator *ii = va_arg(ap, struct iterator *);
-			append_raw(b, ii->sig, ii->base + ii->next,
+		case ZB_STRUCT_BEGIN: {
+			struct zb_iterator *ii =
+				va_arg(ap, struct zb_iterator *);
+			zb_add_raw(b, ii->nextsig, ii->base + ii->next,
 				   ii->end - ii->next);
-			// step back one so skip_signature can pick up that
+			// step back one so zb_skip_signature can pick up that
 			// we're in a struct
 			sig--;
-			if (skip_signature(&sig)) {
+			if (zb_skip_signature(&sig)) {
 				goto error;
 			}
 			break;
 		}
-		case TYPE_ARRAY: {
-			struct iterator *ii = va_arg(ap, struct iterator *);
-			struct array_data ad = start_array(b);
-			append_raw(b, ii->sig, ii->base + ii->next,
+		case ZB_ARRAY: {
+			struct zb_iterator *ii =
+				va_arg(ap, struct zb_iterator *);
+			struct zb_scope array;
+			zb_start_array(b, &array);
+			zb_add_raw(b, ii->nextsig, ii->base + ii->next,
 				   ii->end - ii->next);
-			end_array(b, ad);
-			// step back one so skip_signature can pick up that
+			zb_end_array(b, &array);
+			// step back one so zb_skip_signature can pick up that
 			// we're in an array
 			sig--;
-			if (skip_signature(&sig)) {
+			if (zb_skip_signature(&sig)) {
 				goto error;
 			}
 			break;
@@ -466,18 +489,18 @@ error:
 	b->next = b->next + 1;
 }
 
-void append_multi(struct builder *b, const char *sig, ...)
+void zb_add_multi(struct zb_builder *b, const char *sig, ...)
 {
 	va_list ap;
 	va_start(ap, sig);
-	append_multiv(b, sig, ap);
+	zb_add_multiv(b, sig, ap);
 	va_end(ap);
 }
 
 //////////////////////////////
 // message encoding
 
-static inline void write_little_4(char *p, uint32_t v)
+ZB_INLINE void write_little_4(char *p, uint32_t v)
 {
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 	memcpy(p, &v, 4);
@@ -489,7 +512,7 @@ static inline void write_little_4(char *p, uint32_t v)
 #endif
 }
 
-static void append_uint32_field(struct builder *b, uint32_t tag, uint32_t v)
+static void add_uint32_field(struct zb_builder *b, uint32_t tag, uint32_t v)
 {
 	// should be called first so that we are still aligned
 	assert(!(b->next & 3U));
@@ -502,8 +525,8 @@ static void append_uint32_field(struct builder *b, uint32_t tag, uint32_t v)
 	}
 }
 
-static void append_string_field(struct builder *b, uint32_t tag,
-				const str8_t *str)
+static void add_string_field(struct zb_builder *b, uint32_t tag,
+			     const zb_str8 *str)
 {
 	align_buffer_8(b);
 	uint32_t tagoff = b->next;
@@ -518,8 +541,8 @@ static void append_string_field(struct builder *b, uint32_t tag,
 	}
 }
 
-static void append_signature_field(struct builder *b, uint32_t tag,
-				   const char *sig)
+static void add_signature_field(struct zb_builder *b, uint32_t tag,
+				const char *sig)
 {
 	align_buffer_8(b);
 	size_t len = strlen(sig);
@@ -538,19 +561,19 @@ static void append_signature_field(struct builder *b, uint32_t tag,
 	}
 }
 
-static inline void init_builder(struct builder *b, char *buf, size_t bufsz,
-				const char *sig)
+ZB_INLINE void init_builder(struct zb_builder *b, char *buf, size_t bufsz,
+			    const char *sig)
 {
 	// align the capacity down. This makes alignment calls not fail.
 	size_t cap = bufsz & ~(size_t)7U;
-	if (cap > DBUS_MAX_MSG_SIZE) {
-		cap = DBUS_MAX_MSG_SIZE;
+	if (cap > ZB_MAX_MSG_SIZE) {
+		cap = ZB_MAX_MSG_SIZE;
 	}
 #ifndef NDEBUG
 	memset(buf, 0xBD, cap);
 #endif
 	b->base = buf;
-	b->sig = sig;
+	b->nextsig = sig;
 	b->next = 0;
 	b->end = (uint32_t)cap;
 
@@ -563,12 +586,12 @@ static inline void init_builder(struct builder *b, char *buf, size_t bufsz,
 	}
 }
 
-static int append_header(struct builder *b, const struct message *m,
-			 size_t blen)
+static int add_header(struct zb_builder *b, const struct zb_message *m,
+		      size_t blen)
 {
 	uint32_t start = b->next;
 	b->next += sizeof(struct raw_header);
-	if (b->next > b->end || blen > DBUS_MAX_MSG_SIZE) {
+	if (b->next > b->end || blen > ZB_MAX_MSG_SIZE) {
 		return -1;
 	}
 
@@ -577,31 +600,31 @@ static int append_header(struct builder *b, const struct message *m,
 
 	// fixed length fields go first so we can maintain 8 byte alignment
 	if (m->reply_serial) {
-		append_uint32_field(b, FTAG_REPLY_SERIAL, m->reply_serial);
+		add_uint32_field(b, FTAG_REPLY_SERIAL, m->reply_serial);
 	}
 	if (m->fdnum) {
-		append_uint32_field(b, FTAG_UNIX_FDS, m->fdnum);
+		add_uint32_field(b, FTAG_UNIX_FDS, m->fdnum);
 	}
 	if (*m->signature) {
-		append_signature_field(b, FTAG_SIGNATURE, m->signature);
+		add_signature_field(b, FTAG_SIGNATURE, m->signature);
 	}
 	if (m->path) {
-		append_string_field(b, FTAG_PATH, m->path);
+		add_string_field(b, FTAG_PATH, m->path);
 	}
 	if (m->interface) {
-		append_string_field(b, FTAG_INTERFACE, m->interface);
+		add_string_field(b, FTAG_INTERFACE, m->interface);
 	}
 	if (m->member) {
-		append_string_field(b, FTAG_MEMBER, m->member);
+		add_string_field(b, FTAG_MEMBER, m->member);
 	}
 	if (m->error) {
-		append_string_field(b, FTAG_ERROR_NAME, m->error);
+		add_string_field(b, FTAG_ERROR_NAME, m->error);
 	}
 	if (m->destination) {
-		append_string_field(b, FTAG_DESTINATION, m->destination);
+		add_string_field(b, FTAG_DESTINATION, m->destination);
 	}
 	if (m->sender) {
-		append_string_field(b, FTAG_SENDER, m->sender);
+		add_string_field(b, FTAG_SENDER, m->sender);
 	}
 
 	struct raw_header *h = (struct raw_header *)(b->base + start);
@@ -622,36 +645,35 @@ static int append_header(struct builder *b, const struct message *m,
 	return (b->next > b->end);
 }
 
-int write_header(char *buf, size_t bufsz, const struct message *msg,
-		 size_t bodysz)
+int zb_write_header(char *buf, size_t bufsz, const struct zb_message *msg,
+		    size_t bodysz)
 {
-	struct builder b;
+	struct zb_builder b;
 	init_builder(&b, buf, bufsz, NULL);
-	if (append_header(&b, msg, bodysz)) {
+	if (add_header(&b, msg, bodysz)) {
 		return -1;
 	}
 	return (int)b.next;
 }
 
-struct builder start_message(char *buf, size_t bufsz, const struct message *msg)
+void zb_start(struct zb_builder *b, char *buf, size_t bufsz,
+	      const struct zb_message *msg)
 {
-	struct builder b;
-	init_builder(&b, buf, bufsz, msg->signature);
-	// append_header leaves b in an error state if there was an error
-	append_header(&b, msg, 0);
-	return b;
+	init_builder(b, buf, bufsz, msg->signature);
+	// add_header leaves b in an error state if there was an error
+	add_header(b, msg, 0);
 }
 
-int end_message(struct builder b)
+int zb_end(struct zb_builder *b)
 {
-	if (builder_error(b) || *b.sig) {
+	if (zb_builder_get_error(b) || *b->nextsig) {
 		// error during marshalling or missing arguments
 		return -1;
 	}
-	struct raw_header *h = (struct raw_header *)b.base;
+	struct raw_header *h = (struct raw_header *)b->base;
 	uint32_t fsz;
 	memcpy(&fsz, h->field_len, 4);
-	uint32_t bsz = b.next - ALIGN_UINT_UP(fsz, 8) - sizeof(*h);
+	uint32_t bsz = b->next - ZB_ALIGN_UP(fsz, 8) - sizeof(*h);
 	memcpy(h->body_len, &bsz, 4);
-	return (int)b.next;
+	return (int)b->next;
 }

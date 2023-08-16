@@ -8,7 +8,7 @@
 #include <stdio.h>
 
 #if ENABLE_AUTOSTART
-int sys_launch(struct bus *bus, const str8_t *name, char *exec)
+int sys_launch(struct bus *bus, const zb_str8 *name, char *exec)
 {
 	return -1;
 }

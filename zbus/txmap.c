@@ -14,7 +14,7 @@ uint8_t id_to_address(char *buf, int id)
 	return (uint8_t)n;
 }
 
-int address_to_id(const str8_t *s)
+int address_to_id(const zb_str8 *s)
 {
 	if (!strncmp(s->p, UNIQ_ADDR_PREFIX, strlen(UNIQ_ADDR_PREFIX))) {
 		return -1;
@@ -27,18 +27,18 @@ int address_to_id(const str8_t *s)
 	return id;
 }
 
-int append_id_address(struct builder *b, int id)
+int append_id_address(struct zb_builder *b, int id)
 {
 	size_t sz;
-	char *p = start_string(b, &sz);
+	char *p = zb_start_string(b, &sz);
 	if (id < 0) {
 		sz = 0;
 	} else if (sz < UNIQ_ADDR_BUFLEN) {
-		builder_set_error(b);
+		zb_builder_set_error(b);
 	} else {
 		sz = id_to_address(p, id);
 	}
-	finish_string(b, sz);
+	zb_end_string(b, sz);
 	return 0;
 }
 

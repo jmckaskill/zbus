@@ -11,20 +11,20 @@
 
 // this is the largest potential message we have to generate
 #define NAME_OWNER_CHANGED_BUFSZ                                  \
-	(DBUS_MIN_MSG_SIZE + BUFSZ_FIELD /*reply*/ +              \
-	 (BUFSZ_FIELD + 1 + sizeof("sss")) +                      \
-	 (BUFSZ_FIELD + 4 + sizeof("NameOwnerChanged")) +         \
-	 2 * (BUFSZ_FIELD + 4 + sizeof("org.freedesktop.DBus")) + \
-	 (BUFSZ_FIELD + 4 + sizeof("/org/freedesktop/DBus")) +    \
-	 (BUFSZ_STRING + 256 /*name*/) +                          \
-	 2 * (BUFSZ_STRING + UNIQ_ADDR_BUFLEN))
+	(ZB_MIN_MSG_SIZE + ZB_BUF_FIELD /*reply*/ +              \
+	 (ZB_BUF_FIELD + 1 + sizeof("sss")) +                      \
+	 (ZB_BUF_FIELD + 4 + sizeof("NameOwnerChanged")) +         \
+	 2 * (ZB_BUF_FIELD + 4 + sizeof("org.freedesktop.DBus")) + \
+	 (ZB_BUF_FIELD + 4 + sizeof("/org/freedesktop/DBus")) +    \
+	 (ZB_BUF_STRING + 256 /*name*/) +                          \
+	 2 * (ZB_BUF_STRING + UNIQ_ADDR_BUFLEN))
 
 // full length: mbr,iface,path,sig
 // controlled length: reply,sender
 #define SIGNAL_HDR_BUFSZ                                              \
-	(DBUS_MIN_MSG_SIZE + 4 * (BUFSZ_FIELD + BUFSZ_STRING + 255) + \
-	 (BUFSZ_FIELD + BUFSZ_STRING + UNIQ_ADDR_BUFLEN) /*sender*/ + \
-	 BUFSZ_FIELD /*reply*/)
+	(ZB_MIN_MSG_SIZE + 4 * (ZB_BUF_FIELD + ZB_BUF_STRING + 255) + \
+	 (ZB_BUF_FIELD + ZB_BUF_STRING + UNIQ_ADDR_BUFLEN) /*sender*/ + \
+	 ZB_BUF_FIELD /*reply*/)
 
 // Maximum size of messages we'll process
 #define RX_BUFSZ (128 * 1024)
@@ -39,7 +39,7 @@ static_assert(TX_BUFSZ > SIGNAL_HDR_BUFSZ, "");
 
 struct rxname {
 	struct rxname *next;
-	str8_t name;
+	zb_str8 name;
 };
 
 struct rx {
@@ -52,7 +52,7 @@ struct rx {
 	struct rxname *names;
 	struct subscription *subs;
 	char *txbuf;
-	str8_t addr;
+	zb_str8 addr;
 };
 
 struct rx *new_rx(struct bus *bus, int id);

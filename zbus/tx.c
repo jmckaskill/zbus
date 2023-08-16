@@ -245,8 +245,7 @@ static void release_request(struct requests *s, int idx)
 int route_request(struct rx *r, struct tx *srv, struct txmsg *m)
 {
 	struct tx *client = r->tx;
-	assert(m->m.type == MSG_METHOD &&
-	       !(m->m.flags & FLAG_NO_REPLY_EXPECTED));
+	assert(m->m.type == ZB_METHOD && !(m->m.flags & ZB_NO_REPLY_EXPECTED));
 
 	// acquire the client request in a lock to synchronize with other
 	// replies coming in. After allocation we can modify the request itself
@@ -280,7 +279,7 @@ int route_request(struct rx *r, struct tx *srv, struct txmsg *m)
 
 	// overwrite the serial to something we can use
 	m->m.serial = encode_serial(sreq);
-	set_serial(m->hdr.buf, m->m.serial);
+	zb_set_serial(m->hdr.buf, m->m.serial);
 
 	int err = send_locked(srv, true, m);
 	if (err) {
@@ -318,7 +317,7 @@ int route_reply(struct rx *r, struct txmsg *m)
 	int err = -1;
 	if (!client->closed && creq->remote == srv && creq->reqidx == sidx) {
 		// only release the client request if it matches
-		set_reply_serial(m->hdr.buf, creq->serial);
+		zb_set_reply_serial(m->hdr.buf, creq->serial);
 		release_request(&client->client, cidx);
 		err = send_locked(client, false, m);
 	}

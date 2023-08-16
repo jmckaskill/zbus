@@ -1,206 +1,199 @@
 #pragma once
 
 #include "types.h"
+#include "str8.h"
 #include <assert.h>
 #include <stdarg.h>
 
 /////////////////////////////
 // raw encoded data handling
 
-static inline int builder_error(struct builder b);
+ZB_INLINE int zb_builder_get_error(const struct zb_builder *b);
+ZB_INLINE void zb_builder_set_error(struct zb_builder *b);
 
-extern void append_raw(struct builder *b, const char *sig, const void *p,
-		       size_t len);
+ZB_EXTERN void zb_add_raw(struct zb_builder *b, const char *sig, const void *p,
+			  size_t len);
 
-extern void append_byte(struct builder *b, uint8_t v);
-static void append_bool(struct builder *b, bool v);
-static void append_uint16(struct builder *b, uint16_t v);
-static void append_int16(struct builder *b, int16_t v);
-static void append_uint32(struct builder *b, uint32_t v);
-static void append_int16(struct builder *b, int16_t v);
-static void append_uint64(struct builder *b, uint64_t v);
-static void append_int64(struct builder *b, int64_t v);
-static void append_double(struct builder *b, double v);
-static void append_string(struct builder *b, const char *v, size_t len);
-static int append_string8(struct builder *b, const str8_t *v);
-static void append_path(struct builder *b, const char *v, size_t len);
-static void append_signature(struct builder *b, const char *sig);
-extern void append_multiv(struct builder *b, const char *sig, va_list ap);
-extern void append_multi(struct builder *b, const char *sig, ...);
+ZB_EXTERN void zb_add_byte(struct zb_builder *b, uint8_t v);
+ZB_INLINE void zb_add_bool(struct zb_builder *b, bool v);
+ZB_INLINE void zb_add_u16(struct zb_builder *b, uint16_t v);
+ZB_INLINE void zb_add_i16(struct zb_builder *b, int16_t v);
+ZB_INLINE void zb_add_u32(struct zb_builder *b, uint32_t v);
+ZB_INLINE void zb_add_i16(struct zb_builder *b, int16_t v);
+ZB_INLINE void zb_add_u64(struct zb_builder *b, uint64_t v);
+ZB_INLINE void zb_add_i64(struct zb_builder *b, int64_t v);
+ZB_INLINE void zb_add_double(struct zb_builder *b, double v);
+ZB_INLINE void zb_add_string(struct zb_builder *b, const char *v, size_t len);
+ZB_INLINE void zb_add_str8(struct zb_builder *b, const zb_str8 *v);
+ZB_INLINE void zb_add_path(struct zb_builder *b, const char *v, size_t len);
+ZB_INLINE void zb_add_signature(struct zb_builder *b, const char *sig);
+ZB_EXTERN void zb_add_multiv(struct zb_builder *b, const char *sig, va_list ap);
+ZB_EXTERN void zb_add_multi(struct zb_builder *b, const char *sig, ...);
 
 // Create a string directly in the message buffer.
 // Returned buffer can be written to up to *psz bytes. Nul terminator does not
-// (and generally should not) be written. Then call finish_string to complete
+// (and generally should not) be written. Then call zb_end_string to complete
 // the string with the actual number of bytes written.
-extern char *start_string(struct builder *b, size_t *psz);
-extern void finish_string(struct builder *b, size_t size);
+ZB_EXTERN char *zb_start_string(struct zb_builder *b, size_t *psz);
+ZB_EXTERN void zb_end_string(struct zb_builder *b, size_t size);
 
-extern struct variant_data start_variant(struct builder *b, const char *sig);
-extern void end_variant(struct builder *b, struct variant_data);
-extern void append_variant(struct builder *b, const struct variant *v);
-extern void append_raw_variant(struct builder *b, const char *sig,
-			       const void *raw, size_t len);
+ZB_EXTERN void zb_start_variant(struct zb_builder *b, const char *sig,
+				struct zb_scope *s);
+ZB_EXTERN void zb_end_variant(struct zb_builder *b, struct zb_scope *s);
+ZB_EXTERN void zb_add_variant(struct zb_builder *b, const struct zb_variant *v);
+ZB_EXTERN void zb_add_raw_variant(struct zb_builder *b, const char *sig,
+				  const void *raw, size_t len);
 
-extern void start_struct(struct builder *b);
-extern void end_struct(struct builder *b);
+ZB_EXTERN void zb_start_struct(struct zb_builder *b);
+ZB_EXTERN void zb_end_struct(struct zb_builder *b);
 
-extern struct array_data start_array(struct builder *b);
-extern void end_array(struct builder *b, struct array_data a);
+ZB_EXTERN void zb_start_array(struct zb_builder *b, struct zb_scope *s);
+ZB_EXTERN void zb_end_array(struct zb_builder *b, struct zb_scope *s);
 // should be called before adding each array element
-extern void start_array_entry(struct builder *b, struct array_data a);
+ZB_EXTERN void zb_add_array_entry(struct zb_builder *b, struct zb_scope *s);
 
-extern struct dict_data start_dict(struct builder *b);
-extern void end_dict(struct builder *b, struct dict_data d);
-static void start_dict_entry(struct builder *b, struct dict_data d);
-
-extern void align_buffer_8(struct builder *b);
+ZB_EXTERN void zb_start_dict(struct zb_builder *b, struct zb_scope *s);
+ZB_EXTERN void zb_end_dict(struct zb_builder *b, struct zb_scope *s);
+ZB_INLINE void zb_add_dict_entry(struct zb_builder *b, struct zb_scope *s);
 
 /////////////////////////////////////
 // message handling
 
-void init_message(struct message *m, enum msg_type type, uint32_t serial);
+ZB_EXTERN void zb_init_message(struct zb_message *m, enum zb_msg_type type,
+			       uint32_t serial);
 
 // Writes a message header to the supplied buffer.
 // Supplied buffer must be 8 byte aligned
 // returns -ve on error
 // returns number of bytes consumed on success
-int write_header(char *buf, size_t bufsz, const struct message *m,
-		 size_t bodysz);
+ZB_EXTERN int zb_write_header(char *buf, size_t bufsz,
+			      const struct zb_message *m, size_t bodysz);
 
-// appends a message to the supplied buffer. Returns -ve on error
+// adds a message to the supplied buffer. Returns -ve on error
 // Returns number of bytes consumed on success
-struct builder start_message(char *buf, size_t bufsz, const struct message *m);
-int end_message(struct builder b);
+ZB_EXTERN void zb_start(struct zb_builder *b, char *buf, size_t bufsz,
+			const struct zb_message *m);
+ZB_EXTERN int zb_end(struct zb_builder *b);
 
 // These functions let you modify a written header buffer in place
-static void set_serial(char *buf, uint32_t serial);
-static void set_reply_serial(char *buf, uint32_t serial);
+ZB_INLINE void zb_set_serial(char *buf, uint32_t serial);
+ZB_INLINE void zb_set_reply_serial(char *buf, uint32_t serial);
 
 ///////////////////////////////////////////////////////
 // Inline implementationns
 
-struct dict_data {
-	struct array_data a;
-};
+ZB_EXTERN void _zb_add2(struct zb_builder *b, uint16_t u, char type);
+ZB_EXTERN void _zb_add4(struct zb_builder *b, uint32_t u, char type);
+ZB_EXTERN void _zb_add8(struct zb_builder *b, uint64_t u, char type);
+ZB_EXTERN void _zb_add_string(struct zb_builder *b, const char *str, size_t len,
+			      char type);
+ZB_EXTERN void _zb_add_signature(struct zb_builder *b, const char *sig,
+				 char type);
 
-struct variant_data {
-	const char *nextsig;
-};
-
-void _append2(struct builder *b, uint16_t u, char type);
-void _append4(struct builder *b, uint32_t u, char type);
-void _append8(struct builder *b, uint64_t u, char type);
-
-static inline int builder_error(struct builder b)
+ZB_INLINE int zb_builder_get_error(const struct zb_builder *b)
 {
-	return (intptr_t)((uintptr_t)b.next - (uintptr_t)b.end) > 0;
+	return b->next > b->end;
 }
 
-static inline void builder_set_error(struct builder *b)
+ZB_INLINE void zb_builder_set_error(struct zb_builder *b)
 {
 	b->next = b->end + 1;
 }
 
-static inline void append_bool(struct builder *b, bool v)
+ZB_INLINE void zb_add_bool(struct zb_builder *b, bool v)
 {
-	_append4(b, v ? 1 : 0, TYPE_UINT32);
+	_zb_add4(b, v ? 1 : 0, ZB_UINT32);
 }
 
-static inline void append_int16(struct builder *b, int16_t v)
+ZB_INLINE void zb_add_i16(struct zb_builder *b, int16_t v)
 {
 	union {
 		uint16_t u;
 		int16_t i;
 	} u;
 	u.i = v;
-	_append2(b, u.u, TYPE_UINT16);
+	_zb_add2(b, u.u, ZB_UINT16);
 }
 
-static inline void append_uint16(struct builder *b, uint16_t v)
+ZB_INLINE void zb_add_u16(struct zb_builder *b, uint16_t v)
 {
-	_append2(b, v, TYPE_UINT16);
+	_zb_add2(b, v, ZB_UINT16);
 }
 
-static inline void append_int32(struct builder *b, int32_t v)
+ZB_INLINE void zb_add_i32(struct zb_builder *b, int32_t v)
 {
 	union {
 		uint32_t u;
 		int32_t i;
 	} u;
 	u.i = v;
-	_append4(b, u.u, TYPE_INT32);
+	_zb_add4(b, u.u, ZB_INT32);
 }
 
-static inline void append_uint32(struct builder *b, uint32_t v)
+ZB_INLINE void zb_add_u32(struct zb_builder *b, uint32_t v)
 {
-	_append4(b, v, TYPE_UINT32);
+	_zb_add4(b, v, ZB_UINT32);
 }
 
-static inline void append_int64(struct builder *b, int64_t v)
+ZB_INLINE void zb_add_i64(struct zb_builder *b, int64_t v)
 {
 	union {
 		uint64_t u;
 		int64_t i;
 	} u;
 	u.i = v;
-	_append8(b, u.u, TYPE_INT64);
+	_zb_add8(b, u.u, ZB_INT64);
 }
 
-static inline void append_uint64(struct builder *b, uint64_t v)
+ZB_INLINE void zb_add_u64(struct zb_builder *b, uint64_t v)
 {
-	_append8(b, v, TYPE_UINT64);
+	_zb_add8(b, v, ZB_UINT64);
 }
 
-static inline void append_double(struct builder *b, double v)
+ZB_INLINE void zb_add_double(struct zb_builder *b, double v)
 {
 	union {
 		uint64_t u;
 		double d;
 	} u;
 	u.d = v;
-	_append8(b, u.u, TYPE_DOUBLE);
+	_zb_add8(b, u.u, ZB_DOUBLE);
 }
 
-extern int _append_string(struct builder *b, const char *str, size_t len,
-			  char type);
-
-static inline void append_path(struct builder *b, const char *str, size_t len)
+ZB_INLINE void zb_add_path(struct zb_builder *b, const char *str, size_t len)
 {
-	_append_string(b, str, len, TYPE_PATH);
+	_zb_add_string(b, str, len, ZB_PATH);
 }
 
-static inline void append_string(struct builder *b, const char *str, size_t len)
+ZB_INLINE void zb_add_string(struct zb_builder *b, const char *str, size_t len)
 {
-	_append_string(b, str, len, TYPE_STRING);
+	_zb_add_string(b, str, len, ZB_STRING);
 }
 
-static inline int append_string8(struct builder *b, const str8_t *str)
+ZB_INLINE void zb_add_str8(struct zb_builder *b, const zb_str8 *str)
 {
-	return _append_string(b, str->p, str->len, TYPE_STRING);
+	_zb_add_string(b, str->p, str->len, ZB_STRING);
 }
 
-extern void _append_signature(struct builder *b, const char *sig, char type);
-
-static inline void append_signature(struct builder *b, const char *sig)
+ZB_INLINE void zb_add_signature(struct zb_builder *b, const char *sig)
 {
-	_append_signature(b, sig, TYPE_SIGNATURE);
+	_zb_add_signature(b, sig, ZB_SIGNATURE);
 }
 
-static inline void start_dict_entry(struct builder *b, struct dict_data d)
+ZB_INLINE void zb_add_dict_entry(struct zb_builder *b, struct zb_scope *s)
 {
-	start_array_entry(b, d.a);
+	zb_add_array_entry(b, s);
 }
 
-static inline void set_serial(char *buf, uint32_t serial)
+ZB_INLINE void zb_set_serial(char *buf, uint32_t serial)
 {
-	struct raw_header *h = (struct raw_header *)buf;
-	memcpy(h->serial, &serial, 4);
+	memcpy(buf + 8, &serial, 4);
 }
 
-static inline void set_reply_serial(char *buf, uint32_t reply_serial)
+ZB_INLINE void zb_set_reply_serial(char *buf, uint32_t reply_serial)
 {
 	// this function assumes that we created the header
 	// in which case the reply serial is right after the raw header
-	assert(buf[sizeof(struct raw_header)] == FIELD_REPLY_SERIAL);
-	memcpy(buf + sizeof(struct raw_header) + 4, &reply_serial, 4);
+	assert(buf[16] == ZB_FIELD_REPLY_SERIAL);
+	memcpy(buf + 16 + 4, &reply_serial, 4);
 }

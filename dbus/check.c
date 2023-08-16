@@ -1,6 +1,6 @@
 #include "check.h"
 
-int check_path(const char *s, size_t len)
+int zb_check_path(const char *s, size_t len)
 {
 	if (!len || len > 255 || *s != '/') {
 		// path must begin with / and can not be the empty string
@@ -32,7 +32,7 @@ int check_path(const char *s, size_t len)
 	return p == segment;
 }
 
-int check_member(const char *s, size_t len)
+int zb_check_member(const char *s, size_t len)
 {
 	if (!len || len > 255) {
 		return -1;
@@ -53,7 +53,7 @@ int check_member(const char *s, size_t len)
 	return 0;
 }
 
-int check_interface(const char *s, size_t len)
+int zb_check_interface(const char *s, size_t len)
 {
 	if (len > 255) {
 		return -1;
@@ -82,7 +82,7 @@ int check_interface(const char *s, size_t len)
 	return p == segment || !have_dot;
 }
 
-int check_unique_address(const char *s, size_t len)
+int zb_check_unique_address(const char *s, size_t len)
 {
 	if (!len || *s != ':' || len > 255) {
 		return -1;
@@ -110,7 +110,8 @@ int check_unique_address(const char *s, size_t len)
 	return p == segment || !have_dot;
 }
 
-int check_address(const char *s, size_t len)
+int zb_check_address(const char *s, size_t len)
 {
-	return check_unique_address(s, len) && check_known_address(s, len);
+	return zb_check_unique_address(s, len) &&
+	       zb_check_known_address(s, len);
 }

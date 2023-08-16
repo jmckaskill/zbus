@@ -3,10 +3,10 @@
 #include "encode.h"
 #include <assert.h>
 
-void init_msg_stream(struct msg_stream *s, size_t msgsz, size_t hdrsz)
+void zb_init_stream(struct zb_stream *s, size_t msgsz, size_t hdrsz)
 {
 	assert((msgsz & (msgsz - 1)) == 0);
-	assert(hdrsz >= DBUS_MIN_MSG_SIZE);
+	assert(hdrsz >= ZB_MIN_MSG_SIZE);
 
 	s->cap = msgsz;
 	s->defrag = hdrsz;
@@ -14,8 +14,8 @@ void init_msg_stream(struct msg_stream *s, size_t msgsz, size_t hdrsz)
 	s->used = 0;
 }
 
-void rx_buffers(struct msg_stream *s, char **p1, size_t *n1, char **p2,
-		size_t *n2)
+void zb_get_stream_recvbuf(struct zb_stream *s, char **p1, size_t *n1,
+			   char **p2, size_t *n2)
 {
 	// shouldn't be possible to overflow the buffer
 	assert(s->have <= s->used + s->cap);
@@ -67,31 +67,31 @@ void rx_buffers(struct msg_stream *s, char **p1, size_t *n1, char **p2,
 	}
 }
 
-int read_auth_stream(struct msg_stream *s)
+int zb_read_auth(struct zb_stream *s)
 {
 	assert(!s->used);
 	if (!s->have) {
-		return STREAM_MORE;
+		return ZB_STREAM_READ_MORE;
 	} else if (s->have == s->cap) {
-		return STREAM_ERROR;
+		return ZB_STREAM_ERROR;
 	}
 
-	int rd = read_client_auth(s->buf, s->have);
+	int rd = zb_decode_auth_reply(s->buf, s->have);
 	if (rd < 0) {
-		return STREAM_ERROR;
+		return ZB_STREAM_ERROR;
 	}
 	s->used += rd;
-	return STREAM_OK;
+	return ZB_STREAM_OK;
 }
 
-int read_msg_stream(struct msg_stream *s, struct message *msg)
+int zb_read_message(struct zb_stream *s, struct zb_message *msg)
 {
 	for (;;) {
 		size_t used = s->used;
 		size_t have = s->have;
 
-		if (used + DBUS_MIN_MSG_SIZE > have) {
-			return STREAM_MORE;
+		if (used + ZB_MIN_MSG_SIZE > have) {
+			return ZB_STREAM_READ_MORE;
 		}
 
 		size_t cap = s->cap;
@@ -102,15 +102,15 @@ int read_msg_stream(struct msg_stream *s, struct message *msg)
 		// defragment the fixed header
 		char *buf = s->buf;
 		char *hdr = buf + begin;
-		if (begin + DBUS_MIN_MSG_SIZE > cap) {
-			size_t n = (begin + DBUS_MIN_MSG_SIZE) & mask;
+		if (begin + ZB_MIN_MSG_SIZE > cap) {
+			size_t n = (begin + ZB_MIN_MSG_SIZE) & mask;
 			memcpy(buf + cap, buf, n);
 		}
 
 		// parse the fixed header
 		size_t hsz, bsz;
-		if (parse_message_size(hdr, &hsz, &bsz)) {
-			return STREAM_ERROR;
+		if (zb_parse_size(hdr, &hsz, &bsz)) {
+			return ZB_STREAM_ERROR;
 		}
 		size_t msz = hsz + bsz;
 		if (msz > cap || hsz > s->defrag) {
@@ -119,7 +119,7 @@ int read_msg_stream(struct msg_stream *s, struct message *msg)
 			continue;
 		}
 		if (used + msz > have) {
-			return STREAM_MORE;
+			return ZB_STREAM_READ_MORE;
 		}
 
 		// defragment the rest of the header
@@ -129,7 +129,7 @@ int read_msg_stream(struct msg_stream *s, struct message *msg)
 		}
 
 		// parse the full header
-		if (parse_header(msg, hdr)) {
+		if (zb_parse_header(msg, hdr)) {
 			// drop the message and continue
 			s->used += msz;
 			continue;
@@ -151,12 +151,12 @@ int read_msg_stream(struct msg_stream *s, struct message *msg)
 			s->bsz[1] = end;
 		}
 
-		return STREAM_OK;
+		return ZB_STREAM_OK;
 	}
 }
 
-int defragment_body(struct msg_stream *s, struct message *msg,
-		    struct iterator *ii)
+int zb_defragment_body(struct zb_stream *s, struct zb_message *msg,
+		       struct zb_iterator *ii)
 {
 	if (s->bsz[0] + s->bsz[1] > s->defrag) {
 		return -1;
@@ -166,6 +166,6 @@ int defragment_body(struct msg_stream *s, struct message *msg,
 		// We're going to copy it to the end in the defrag portion.
 		memcpy(s->buf + s->cap, s->buf, s->bsz[1]);
 	}
-	init_iterator(ii, msg->signature, s->body, s->bsz[0] + s->bsz[1]);
+	zb_init_iterator(ii, msg->signature, s->body, s->bsz[0] + s->bsz[1]);
 	return 0;
 }

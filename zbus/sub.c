@@ -30,7 +30,7 @@ void collect_subscription(struct rcu_object **objs,
 	rcu_register_gc(objs, (rcu_fn)&free, &s->h.rcu);
 }
 
-struct subscription *new_subscription(const char *mstr, struct match m)
+struct subscription *new_subscription(const char *mstr, struct zb_matcher m)
 {
 	struct subscription *s = fmalloc(sizeof(*s) + m.len);
 	memset(s, 0, sizeof(*s));
@@ -42,7 +42,7 @@ struct subscription *new_subscription(const char *mstr, struct match m)
 
 struct submap *add_subscription(struct rcu_object **objs,
 				const struct submap *om, struct tx *tx,
-				const char *str, struct match match,
+				const char *str, struct zb_matcher match,
 				uint32_t serial)
 {
 	int idx = bsearch_subscription(om, tx, str, match);
@@ -72,7 +72,7 @@ struct submap *rm_subscription(struct rcu_object **objs,
 }
 
 int bsearch_subscription(const struct submap *s, struct tx *tx, const char *str,
-			 struct match m)
+			 struct zb_matcher m)
 {
 	struct subkey key;
 	key.txid = tx->id;

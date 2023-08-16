@@ -15,7 +15,7 @@
 struct rx;
 
 struct txmsg {
-	struct message m;
+	struct zb_message m;
 	struct {
 		char *buf;
 		int len;

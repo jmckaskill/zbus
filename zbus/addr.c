@@ -37,11 +37,11 @@ void collect_address(struct rcu_object **objs, const struct address *a)
 	rcu_register_gc(objs, (rcu_fn)&free_address, &a->rcu);
 }
 
-struct address *new_address(const str8_t *name)
+struct address *new_address(const zb_str8 *name)
 {
 	struct address *a = fmalloc(sizeof(*a) + name->len);
 	memset(a, 0, sizeof(*a));
-	str8cpy(&a->name, name);
+	zb_copy_str8(&a->name, name);
 	reset_config(a);
 	return a;
 }
@@ -79,12 +79,12 @@ static struct addrcfg *new_addrcfg(void)
 
 static int cmp_slice_address(const void *key, const void *element)
 {
-	const str8_t *k = key;
+	const zb_str8 *k = key;
 	const struct address *a = element;
-	return str8cmp(k, &a->name);
+	return zb_cmp_str8(k, &a->name);
 }
 
-int bsearch_address(const struct addrmap *m, const str8_t *name)
+int bsearch_address(const struct addrmap *m, const zb_str8 *name)
 {
 	return lower_bound(&m->hdr, name, &cmp_slice_address);
 }
@@ -94,12 +94,12 @@ int bsearch_address(const struct addrmap *m, const str8_t *name)
 
 static int cmp_str8_addresss_node(CRBTree *t, void *k, CRBNode *n)
 {
-	str8_t *key = k;
+	zb_str8 *key = k;
 	struct address *a = node_to_addr(n);
-	return str8cmp(key, &a->name);
+	return zb_cmp_str8(key, &a->name);
 }
 
-struct address *insert_addrtree(struct addrtree *t, const str8_t *name)
+struct address *insert_addrtree(struct addrtree *t, const zb_str8 *name)
 {
 	CRBNode *p;
 	CRBNode **l =
@@ -128,7 +128,7 @@ static int cmp_node_address(CRBNode *n, const struct addrmap *m, int idx)
 	} else {
 		struct address *an = node_to_addr(n);
 		const struct address *am = m->v[idx];
-		return str8cmp(&an->name, &am->name);
+		return zb_cmp_str8(&an->name, &am->name);
 	}
 }
 

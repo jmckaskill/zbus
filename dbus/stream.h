@@ -2,7 +2,7 @@
 #include "decode.h"
 #include <stdlib.h>
 
-struct msg_stream {
+struct zb_stream {
 	size_t cap;
 	size_t defrag;
 	size_t used;
@@ -13,21 +13,19 @@ struct msg_stream {
 };
 
 // msgsz must be a power of 2
-void init_msg_stream(struct msg_stream *s, size_t msgsz, size_t hdrsz);
-void rx_buffers(struct msg_stream *s, char **p1, size_t *n1, char **p2,
-		size_t *n2);
+void zb_init_stream(struct zb_stream *s, size_t msgsz, size_t hdrsz);
+void zb_get_stream_recvbuf(struct zb_stream *s, char **p1, size_t *n1,
+			   char **p2, size_t *n2);
 
-#define STREAM_OK 0
-#define STREAM_MORE 1
-#define STREAM_ERROR -1
+// returns one of the ZB_STREAM_* error codes
+int zb_read_message(struct zb_stream *s, struct zb_message *m);
+int zb_read_auth(struct zb_stream *s);
 
-int read_msg_stream(struct msg_stream *s, struct message *m);
-int read_auth_stream(struct msg_stream *s);
-int defragment_body(struct msg_stream *s, struct message *m,
-		    struct iterator *ii);
+int zb_defragment_body(struct zb_stream *s, struct zb_message *m,
+		       struct zb_iterator *ii);
 
-static inline void stream_body(struct msg_stream *s, char **p1, size_t *n1,
-			       char **p2, size_t *n2)
+ZB_INLINE void zb_get_stream_body(struct zb_stream *s, char **p1, size_t *n1,
+				  char **p2, size_t *n2)
 {
 	*p1 = s->body;
 	*n1 = s->bsz[0];

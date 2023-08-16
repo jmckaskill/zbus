@@ -1,6 +1,6 @@
 #include "logmsg.h"
 
-void log_message(struct logbuf *b, const struct message *m)
+void log_message(struct logbuf *b, const struct zb_message *m)
 {
 	log_uint(b, "type", m->type);
 	log_hex(b, "serial", m->serial);

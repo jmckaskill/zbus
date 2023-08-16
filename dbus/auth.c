@@ -1,6 +1,7 @@
 #include "auth.h"
 #include "decode.h"
 #include "encode.h"
+#include "internal.h"
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -30,10 +31,10 @@ static int split_line(char **pin, char *end, char **pstart, char **pend)
 	char *start = *pin;
 	char *nl = memchr(start, '\n', end - start);
 	if (!nl) {
-		return AUTH_READ_MORE;
+		return ZB_STREAM_READ_MORE;
 	}
 	if (nl == start || nl[-1] != '\r' || memchr(start, 0, nl - start)) {
-		return AUTH_ERROR;
+		return ZB_STREAM_ERROR;
 	}
 	*pin = nl + 1;
 	*pstart = start;
@@ -52,12 +53,12 @@ static char *append(char *out, char *end, const void *str, size_t len)
 	return out + len;
 }
 
-static inline char *append_cstr(char *out, char *end, const char *str)
+ZB_INLINE char *append_cstr(char *out, char *end, const char *str)
 {
 	return append(out, end, str, strlen(str));
 }
 
-static inline char *append_char(char *out, char *end, char ch)
+ZB_INLINE char *append_char(char *out, char *end, char ch)
 {
 	if (out < end) {
 		*(out++) = ch;
@@ -85,8 +86,8 @@ enum {
 	SERVER_WAIT_FOR_HELLO,
 };
 
-int step_server_auth(int *pstate, char **pin, char *ie, char **pout, char *oe,
-		     const char *busid, uint32_t *pserial)
+int zb_step_server_auth(int *pstate, char **pin, char *ie, char **pout,
+			char *oe, const char *busid, uint32_t *pserial)
 {
 	char *in = *pin;
 	char *out = *pout;
@@ -94,10 +95,10 @@ int step_server_auth(int *pstate, char **pin, char *ie, char **pout, char *oe,
 	switch (*pstate) {
 	case SERVER_WAIT_FOR_NUL:
 		if (in == ie) {
-			return AUTH_READ_MORE;
+			return ZB_STREAM_READ_MORE;
 		}
 		if (*in) {
-			return AUTH_ERROR;
+			return ZB_STREAM_ERROR;
 		}
 		in++;
 		goto wait_for_auth;
@@ -117,7 +118,7 @@ int step_server_auth(int *pstate, char **pin, char *ie, char **pout, char *oe,
 			// unexpected command
 			out = append_cstr(out, oe, "ERROR\r\n");
 			if (out > oe) {
-				return AUTH_SEND_MORE;
+				return ZB_STREAM_WRITE_MORE;
 			}
 			goto wait_for_auth;
 		}
@@ -126,7 +127,7 @@ int step_server_auth(int *pstate, char **pin, char *ie, char **pout, char *oe,
 			// unsupported auth type
 			out = append_cstr(out, oe, "REJECTED EXTERNAL\r\n");
 			if (out > oe) {
-				return AUTH_SEND_MORE;
+				return ZB_STREAM_WRITE_MORE;
 			}
 			goto wait_for_auth;
 		}
@@ -136,7 +137,7 @@ int step_server_auth(int *pstate, char **pin, char *ie, char **pout, char *oe,
 		out = append_cstr(out, oe, busid);
 		out = append_cstr(out, oe, "\r\n");
 		if (out > oe) {
-			return AUTH_SEND_MORE;
+			return ZB_STREAM_WRITE_MORE;
 		}
 		goto wait_for_begin;
 	}
@@ -156,13 +157,13 @@ int step_server_auth(int *pstate, char **pin, char *ie, char **pout, char *oe,
 		} else if (equals(line, nl, "NEGOTIATE_UNIX_FD ")) {
 			out = append_cstr(out, oe, "AGREE_UNIX_FD\r\n");
 			if (out > oe) {
-				return AUTH_SEND_MORE;
+				return ZB_STREAM_WRITE_MORE;
 			}
 			goto wait_for_begin;
 		} else {
 			out = append_cstr(out, oe, "ERROR\r\n");
 			if (out > oe) {
-				return AUTH_SEND_MORE;
+				return ZB_STREAM_WRITE_MORE;
 			}
 			goto wait_for_begin;
 		}
@@ -176,31 +177,32 @@ int step_server_auth(int *pstate, char **pin, char *ie, char **pout, char *oe,
 		// process the Hello header
 
 		size_t hsz, bsz;
-		if (in + DBUS_MIN_MSG_SIZE > ie) {
-			return AUTH_READ_MORE;
-		} else if (parse_message_size(in, &hsz, &bsz)) {
-			return AUTH_ERROR;
+		if (in + ZB_MIN_MSG_SIZE > ie) {
+			return ZB_STREAM_READ_MORE;
+		} else if (zb_parse_size(in, &hsz, &bsz)) {
+			return ZB_STREAM_ERROR;
 		} else if (in + hsz + bsz > ie) {
-			return AUTH_READ_MORE;
+			return ZB_STREAM_READ_MORE;
 		}
 
 		// verify the fields
 		// method fields always have serial, path & member
-		struct message m;
-		if (parse_header(&m, in) || m.type != MSG_METHOD ||
-		    !m.destination || !str8eq(m.destination, BUS_DESTINATION) ||
-		    !str8eq(m.path, BUS_PATH) || !m.interface ||
-		    !str8eq(m.interface, BUS_INTERFACE) ||
-		    !str8eq(m.member, HELLO)) {
-			return AUTH_ERROR;
+		struct zb_message m;
+		if (zb_parse_header(&m, in) || m.type != ZB_METHOD ||
+		    !m.destination ||
+		    !zb_eq_str8(m.destination, BUS_DESTINATION) ||
+		    !zb_eq_str8(m.path, BUS_PATH) || !m.interface ||
+		    !zb_eq_str8(m.interface, BUS_INTERFACE) ||
+		    !zb_eq_str8(m.member, HELLO)) {
+			return ZB_STREAM_ERROR;
 		}
 
 		*pserial = m.serial;
 		*pin = in + hsz + bsz;
-		return AUTH_FINISHED;
+		return ZB_STREAM_OK;
 	}
 	default:
-		return AUTH_ERROR;
+		return ZB_STREAM_ERROR;
 	}
 }
 
@@ -223,12 +225,13 @@ static const char hello[] = "\0\x01\0\x01\0\0\0\0" // hdr & body len
 
 static_assert(sizeof(hello) - 1 == 128, "");
 
-static inline void write32(void *p, uint32_t u)
+ZB_INLINE void write32(void *p, uint32_t u)
 {
 	memcpy(p, &u, 4);
 }
 
-int write_client_auth(char *buf, size_t bufsz, const char *uid, uint32_t serial)
+int zb_encode_auth_request(char *buf, size_t bufsz, const char *uid,
+			   uint32_t serial)
 {
 	char *out = buf;
 	char *end = buf + bufsz;
@@ -244,7 +247,7 @@ int write_client_auth(char *buf, size_t bufsz, const char *uid, uint32_t serial)
 	}
 
 	msg[0] = native_endian();
-	set_serial(msg, serial);
+	zb_set_serial(msg, serial);
 	write32(msg + 12, 128 - 16 /*raw header*/ - 3 /*end padding*/);
 	write32(msg + 20, 21); // path len
 	write32(msg + 52, 20); // interface len
@@ -254,7 +257,7 @@ int write_client_auth(char *buf, size_t bufsz, const char *uid, uint32_t serial)
 	return (int)(out - buf);
 }
 
-int read_client_auth(char *buf, size_t sz)
+int zb_decode_auth_reply(char *buf, size_t sz)
 {
 	char *in = buf;
 	char *end = in + sz;
@@ -266,7 +269,7 @@ int read_client_auth(char *buf, size_t sz)
 
 	// ignore bus id for now
 	if (!begins_with(line, nl, "OK ")) {
-		return AUTH_ERROR;
+		return ZB_STREAM_ERROR;
 	}
 
 	return (int)(in - buf);

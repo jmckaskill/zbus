@@ -45,7 +45,7 @@ struct address {
 	time_t last_launch;
 	bool running;
 #endif
-	str8_t name;
+	zb_str8 name;
 };
 
 struct addrmap {
@@ -60,14 +60,14 @@ struct addrtree {
 
 void free_address(struct address *a);
 void collect_address(struct rcu_object **objs, const struct address *a);
-struct address *new_address(const str8_t *name);
+struct address *new_address(const zb_str8 *name);
 struct address *edit_address(struct rcu_object **objs,
 			     const struct address *oa);
 
 static struct addrmap *edit_addrmap(struct rcu_object **objs,
 				    const struct addrmap *om, int idx,
 				    int insert);
-int bsearch_address(const struct addrmap *m, const str8_t *name);
+int bsearch_address(const struct addrmap *m, const zb_str8 *name);
 
 // merge_addresses merges the address in the tree into the addrmap updating
 // it in the process. All address in the tree are consumed. Removed names are
@@ -77,7 +77,7 @@ struct addrmap *merge_addresses(struct rcu_object **objs,
 				const struct addrmap *om, struct addrtree *t,
 				bool allow_unknown);
 
-struct address *insert_addrtree(struct addrtree *t, const str8_t *name);
+struct address *insert_addrtree(struct addrtree *t, const zb_str8 *name);
 
 //////////////////////////////
 // inline implementations

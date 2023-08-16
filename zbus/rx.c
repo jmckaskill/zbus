@@ -53,7 +53,7 @@ static int send_auth(struct txconn *c, char *p, size_t sz)
 	return 0;
 }
 
-static struct msg_stream *authenticate(struct rx *r)
+static struct zb_stream *authenticate(struct rx *r)
 {
 	uint32_t serial;
 	int state = 0;
@@ -76,16 +76,16 @@ static struct msg_stream *authenticate(struct rx *r)
 		inhave += n;
 
 		char *op = out;
-		int err = step_server_auth(&state, &innext, in + inhave, &op,
-					   oe, r->bus->busid.p, &serial);
+		int err = zb_step_server_auth(&state, &innext, in + inhave, &op,
+					      oe, r->bus->busid.p, &serial);
 
 		if (send_auth(&r->tx->conn, out, op - out)) {
 			return NULL;
 		}
 
-		if (err == AUTH_FINISHED) {
+		if (err == ZB_STREAM_OK) {
 			break;
-		} else if (err != AUTH_READ_MORE) {
+		} else if (err != ZB_STREAM_READ_MORE) {
 			return NULL;
 		}
 	}
@@ -95,22 +95,22 @@ static struct msg_stream *authenticate(struct rx *r)
 	}
 
 	// auth successful, setup the full size receive and transmit buffers
-	char *buf = malloc(sizeof(struct msg_stream) + RX_BUFSZ + RX_HDRSZ +
+	char *buf = malloc(sizeof(struct zb_stream) + RX_BUFSZ + RX_HDRSZ +
 			   TX_BUFSZ);
 	if (!buf) {
 		return NULL;
 	}
 	r->txbuf = buf;
 
-	struct msg_stream *s = (void *)(buf + TX_BUFSZ);
-	init_msg_stream(s, RX_BUFSZ, RX_HDRSZ);
+	struct zb_stream *s = (void *)(buf + TX_BUFSZ);
+	zb_init_stream(s, RX_BUFSZ, RX_HDRSZ);
 
 	// copy the remaining data into the msg receive buffer
 	size_t sz = in + inhave - innext;
 	if (sz) {
 		char *p1, *p2;
 		size_t n1, n2;
-		rx_buffers(s, &p1, &n1, &p2, &n2);
+		zb_get_stream_recvbuf(s, &p1, &n1, &p2, &n2);
 		assert(n1 > sizeof(in));
 		memcpy(p1, innext, sz);
 		s->have = sz;
@@ -134,21 +134,21 @@ static void unregister_with_bus(struct rx *r)
 	unregister_tx(r);
 }
 
-static void read_messages(struct rx *r, struct msg_stream *s)
+static void read_messages(struct rx *r, struct zb_stream *s)
 {
 	for (;;) {
 		struct txmsg m;
 
 		for (;;) {
-			int sts = read_msg_stream(s, &m.m);
-			if (sts == STREAM_ERROR) {
+			int sts = zb_read_message(s, &m.m);
+			if (sts == ZB_STREAM_ERROR) {
 				return;
-			} else if (sts == STREAM_OK) {
+			} else if (sts == ZB_STREAM_OK) {
 				break;
 			}
 			char *p1, *p2;
 			size_t n1, n2;
-			rx_buffers(s, &p1, &n1, &p2, &n2);
+			zb_get_stream_recvbuf(s, &p1, &n1, &p2, &n2);
 			int n = block_recv2(&r->conn, p1, (int)n1, p2, (int)n2);
 			if (n <= 0) {
 				return;
@@ -157,7 +157,7 @@ static void read_messages(struct rx *r, struct msg_stream *s)
 		}
 
 		size_t n1, n2;
-		stream_body(s, &m.body[0].buf, &n1, &m.body[1].buf, &n2);
+		zb_get_stream_body(s, &m.body[0].buf, &n1, &m.body[1].buf, &n2);
 		m.hdr.buf = NULL;
 		m.hdr.len = 0;
 		m.body[0].len = (int)n1;
@@ -181,25 +181,26 @@ static void read_messages(struct rx *r, struct msg_stream *s)
 		}
 
 		switch (m.m.type) {
-		case MSG_METHOD: {
+		case ZB_METHOD: {
 			int err;
-			struct iterator ii;
+			struct zb_iterator ii;
 			if (!m.m.destination) {
 				err = peer_method(r, &m.m);
-			} else if (!str8eq(m.m.destination, BUS_DESTINATION)) {
+			} else if (!zb_eq_str8(m.m.destination,
+					       BUS_DESTINATION)) {
 				err = unicast(r, &m);
-			} else if (defragment_body(s, &m.m, &ii)) {
+			} else if (zb_defragment_body(s, &m.m, &ii)) {
 				err = ERR_OOM;
 			} else {
 				err = bus_method(r, &m.m, &ii);
 			}
 
-			if (err && !(m.m.flags & FLAG_NO_REPLY_EXPECTED)) {
+			if (err && !(m.m.flags & ZB_NO_REPLY_EXPECTED)) {
 				reply_error(r, m.m.serial, err);
 			}
 			break;
 		}
-		case MSG_SIGNAL:
+		case ZB_SIGNAL:
 			// ignore errors
 			if (m.m.destination) {
 				unicast(r, &m);
@@ -207,8 +208,8 @@ static void read_messages(struct rx *r, struct msg_stream *s)
 				broadcast(r, &m);
 			}
 			break;
-		case MSG_REPLY:
-		case MSG_ERROR:
+		case ZB_REPLY:
+		case ZB_ERROR:
 			if (!build_reply(r, &m)) {
 				// ignore errors
 				route_reply(r, &m);
@@ -223,7 +224,7 @@ static void read_messages(struct rx *r, struct msg_stream *s)
 
 int run_rx(struct rx *r)
 {
-	struct msg_stream *s = authenticate(r);
+	struct zb_stream *s = authenticate(r);
 	if (s) {
 		read_messages(r, s);
 		unregister_with_bus(r);

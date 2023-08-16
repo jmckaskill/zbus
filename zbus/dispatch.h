@@ -36,8 +36,8 @@
 #define PEER_INTERFACE S8("\031org.freedesktop.DBus.Peer")
 #define METHOD_PING S8("\004Ping")
 
-int bus_method(struct rx *r, struct message *m, struct iterator *ii);
-int peer_method(struct rx *r, struct message *m);
+int bus_method(struct rx *r, struct zb_message *m, struct zb_iterator *ii);
+int peer_method(struct rx *r, struct zb_message *m);
 int unicast(struct rx *r, struct txmsg *m);
 int broadcast(struct rx *r, struct txmsg *m);
 int build_reply(struct rx *r, struct txmsg *m);

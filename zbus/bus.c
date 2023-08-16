@@ -31,7 +31,7 @@ static char *x_memrchr(char *p, char ch, size_t len)
 static struct config *new_config(void);
 static void free_config(struct rcu_object *o);
 
-int generate_busid(str8_t *s)
+int generate_busid(zb_str8 *s)
 {
 	static const char hex_enc[] = "0123456789abcdef";
 	uint8_t rand[BUSID_STRLEN / 2];
@@ -120,11 +120,11 @@ static struct rcu_data *edit_rcu_data(struct rcu_object **objs,
 // NameOwerChanged
 
 static void notify_name_acquired(struct bus *bus, char *buf, bool acquired,
-				 struct tx *tx, const str8_t *name)
+				 struct tx *tx, const zb_str8 *name)
 {
 	// send the NameAcquired/NameLost Signal
 	struct txmsg m;
-	init_message(&m.m, MSG_SIGNAL, NO_REPLY_SERIAL);
+	zb_init_message(&m.m, ZB_SIGNAL, NO_REPLY_SERIAL);
 	m.m.path = BUS_PATH;
 	m.m.interface = BUS_INTERFACE;
 	m.m.member = acquired ? SIGNAL_NAME_ACQUIRED : SIGNAL_NAME_LOST;
@@ -136,16 +136,17 @@ static void notify_name_acquired(struct bus *bus, char *buf, bool acquired,
 	// leave reply_serial as 0
 	// leave flags as 0
 
-	struct builder b = start_message(buf, NAME_OWNER_CHANGED_BUFSZ, &m.m);
-	append_string8(&b, name);
-	int sz = end_message(b);
+	struct zb_builder b;
+	zb_start(&b, buf, NAME_OWNER_CHANGED_BUFSZ, &m.m);
+	zb_add_str8(&b, name);
+	int sz = zb_end(&b);
 	if (send_data(tx, false, &m, buf, sz)) {
 		ERROR("failed to send NameAcquired/Lost message,id:%d", tx->id);
 	}
 }
 
 static void notify_name_changed(struct bus *bus, char *buf, bool acquired,
-				int id, const str8_t *name)
+				int id, const zb_str8 *name)
 {
 	const struct rcu_data *d = rcu_root(bus->rcu);
 	const struct submap *subs = d->name_changed;
@@ -156,7 +157,7 @@ static void notify_name_changed(struct bus *bus, char *buf, bool acquired,
 
 	// send the NameOwnerChanged signal
 	struct txmsg m;
-	init_message(&m.m, MSG_SIGNAL, NO_REPLY_SERIAL);
+	zb_init_message(&m.m, ZB_SIGNAL, NO_REPLY_SERIAL);
 	m.m.path = BUS_PATH;
 	m.m.interface = BUS_INTERFACE;
 	m.m.member = SIGNAL_NAME_OWNER_CHANGED;
@@ -168,16 +169,17 @@ static void notify_name_changed(struct bus *bus, char *buf, bool acquired,
 	// leave reply_serial as 0
 	// leave flags as 0
 
-	struct builder b = start_message(buf, NAME_OWNER_CHANGED_BUFSZ, &m.m);
-	append_string8(&b, name);
+	struct zb_builder b;
+	zb_start(&b, buf, NAME_OWNER_CHANGED_BUFSZ, &m.m);
+	zb_add_str8(&b, name);
 	if (acquired) {
-		append_string8(&b, S8("\0"));
+		zb_add_str8(&b, S8("\0"));
 		append_id_address(&b, id);
 	} else {
 		append_id_address(&b, id);
-		append_string8(&b, S8("\0"));
+		zb_add_str8(&b, S8("\0"));
 	}
-	int sz = end_message(b);
+	int sz = zb_end(&b);
 
 	for (int i = 0; i < nsubs; i++) {
 		struct tx *to = subs->v[i]->tx;
@@ -191,7 +193,7 @@ static void notify_name_changed(struct bus *bus, char *buf, bool acquired,
 /////////////////////////////////
 // Unique address handling
 
-int register_remote(struct bus *b, struct rx *r, const str8_t *name,
+int register_remote(struct bus *b, struct rx *r, const zb_str8 *name,
 		    uint32_t serial, struct rcu_reader **preader)
 {
 	struct tx *tx = r->tx;
@@ -220,7 +222,7 @@ int register_remote(struct bus *b, struct rx *r, const str8_t *name,
 	return 0;
 }
 
-int unregister_remote(struct bus *b, struct rx *r, const str8_t *name,
+int unregister_remote(struct bus *b, struct rx *r, const zb_str8 *name,
 		      struct rcu_reader *reader)
 {
 	free_rcu_reader(b->rcu, reader);
@@ -255,7 +257,7 @@ int unregister_remote(struct bus *b, struct rx *r, const str8_t *name,
 #define DBUS_REQUEST_NAME_REPLY_EXISTS 3
 #define DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER 4
 
-int request_name(struct bus *b, struct rx *r, const str8_t *name,
+int request_name(struct bus *b, struct rx *r, const zb_str8 *name,
 		 uint32_t serial)
 {
 	// lookup the name
@@ -327,7 +329,7 @@ int request_name(struct bus *b, struct rx *r, const str8_t *name,
 	return 0;
 }
 
-int release_name(struct bus *b, struct rx *r, const str8_t *name,
+int release_name(struct bus *b, struct rx *r, const zb_str8 *name,
 		 uint32_t serial, bool send_name_lost)
 {
 	int sts;
@@ -385,7 +387,7 @@ int release_name(struct bus *b, struct rx *r, const str8_t *name,
 // autolaunch functions
 
 #if ENABLE_AUTOSTART
-int autolaunch_service(struct bus *b, const str8_t *name,
+int autolaunch_service(struct bus *b, const zb_str8 *name,
 		       const struct address **paddr)
 {
 	struct timespec now;
@@ -454,7 +456,7 @@ int autolaunch_service(struct bus *b, const str8_t *name,
 	}
 }
 
-void service_exited(struct bus *b, const str8_t *name)
+void service_exited(struct bus *b, const zb_str8 *name)
 {
 	struct rcu_writer *w = b->rcu;
 	const struct rcu_data *od = rcu_root(w);
@@ -482,7 +484,8 @@ void service_exited(struct bus *b, const str8_t *name)
 // subscriptions
 
 static int update_bus_sub(struct bus *b, bool add, struct tx *tx,
-			  const char *str, struct match match, uint32_t serial)
+			  const char *str, struct zb_matcher match,
+			  uint32_t serial)
 {
 	const struct rcu_data *od = rcu_root(b->rcu);
 	const struct submap *om = od->name_changed;
@@ -504,18 +507,18 @@ static int update_bus_sub(struct bus *b, bool add, struct tx *tx,
 }
 
 int update_sub(struct bus *b, bool add, struct rx *r, const char *str,
-	       struct match match, uint32_t serial)
+	       struct zb_matcher match, uint32_t serial)
 {
 	struct tx *t = r->tx;
-	const str8_t *iface = match_interface(str, match);
-	const str8_t *sender = match_sender(str, match);
-	const str8_t *mbr = match_member(str, match);
+	const zb_str8 *iface = zb_match_interface(str, match);
+	const zb_str8 *sender = zb_match_sender(str, match);
+	const zb_str8 *mbr = zb_match_member(str, match);
 	assert(iface);
 
-	if (str8eq(iface, BUS_INTERFACE)) {
-		if (!path_matches(str, match, BUS_PATH) ||
-		    (mbr && !str8eq(mbr, SIGNAL_NAME_OWNER_CHANGED)) ||
-		    (sender && !str8eq(sender, BUS_DESTINATION))) {
+	if (zb_eq_str8(iface, BUS_INTERFACE)) {
+		if (!zb_path_matches(str, match, BUS_PATH) ||
+		    (mbr && !zb_eq_str8(mbr, SIGNAL_NAME_OWNER_CHANGED)) ||
+		    (sender && !zb_eq_str8(sender, BUS_DESTINATION))) {
 			return ERR_NOT_FOUND;
 		}
 		return update_bus_sub(b, add, t, str, match, serial);
@@ -524,7 +527,7 @@ int update_sub(struct bus *b, bool add, struct rx *r, const char *str,
 	// lookup the address in the current RCU data
 	const struct rcu_data *od = rcu_root(b->rcu);
 	const struct addrmap *om = sender ? od->destinations : od->interfaces;
-	const str8_t *aname = sender ? sender : iface;
+	const zb_str8 *aname = sender ? sender : iface;
 	int aidx = bsearch_address(om, aname);
 
 	struct rcu_object *objs = NULL;
@@ -662,7 +665,7 @@ static struct address *get_address(struct addrtree *t, char *key, size_t klen,
 
 	// create a str8 for use with the lookup, but save the len and
 	// nul bytes so we can restore them after.
-	str8_t *s = (str8_t *)(firstdot - 1);
+	zb_str8 *s = (zb_str8 *)(firstdot - 1);
 	size_t slen = lastdot - firstdot;
 	uint8_t prevlen = s->len;
 	char prevnul = s->p[slen];

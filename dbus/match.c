@@ -5,13 +5,13 @@
 #define INCLUDE_CHILDREN 0x8000
 #define PATH_OFF_MASK 0x7FFF
 
-static int add_match_field(struct match *m, char *base, char *key, size_t klen,
-			   str8_t *val)
+static int add_match_field(struct zb_matcher *m, char *base, char *key,
+			   size_t klen, zb_str8 *val)
 {
 	switch (klen) {
 	case 4:
 		if (!memcmp(key, "type", 4)) {
-			return !str8eq(val, S8("\006signal"));
+			return !zb_eq_str8(val, S8("\006signal"));
 
 		} else if (!memcmp(key, "path", 4)) {
 			if (m->path_off) {
@@ -84,7 +84,7 @@ static int add_match_field(struct match *m, char *base, char *key, size_t klen,
 	}
 }
 
-int decode_match(struct match *m, char *s, size_t len)
+int zb_decode_match(struct zb_matcher *m, char *s, size_t len)
 {
 	if (len > PATH_OFF_MASK) {
 		return -1;
@@ -129,8 +129,8 @@ int decode_match(struct match *m, char *s, size_t len)
 			return -1;
 		}
 		// replace the beginning apostrophe with the string size and the
-		// end apostrophe with a nul to create a str8_t
-		str8_t *str = (str8_t *)(val - 1);
+		// end apostrophe with a nul to create a zb_str8
+		zb_str8 *str = (zb_str8 *)(val - 1);
 		str->len = (uint8_t)vlen;
 		str->p[vlen] = 0;
 
@@ -150,17 +150,18 @@ int decode_match(struct match *m, char *s, size_t len)
 	return 0;
 }
 
-bool path_matches(const char *base, struct match m, const str8_t *path)
+bool zb_path_matches(const char *base, const struct zb_matcher m,
+		     const zb_str8 *path)
 {
 	if (!m.path_off) {
 		return true;
 	}
-	const str8_t *mp = match_part(base, m.path_off & PATH_OFF_MASK);
+	const zb_str8 *mp = _zb_match_part(base, m.path_off & PATH_OFF_MASK);
 	if (m.path_off & INCLUDE_CHILDREN) {
 		return path->len >= mp->len &&
 		       !memcmp(mp->p, path->p, mp->len) &&
 		       (path->len == mp->len || path->p[mp->len] == '/');
 	} else {
-		return str8eq(mp, path);
+		return zb_eq_str8(mp, path);
 	}
 }

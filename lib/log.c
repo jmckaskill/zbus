@@ -183,12 +183,12 @@ static void write_nstring(struct logbuf *b, const char *str, size_t len)
 	}
 }
 
-static size_t append_uint64(char *buf, size_t off, uint64_t num)
+static size_t zb_append_u64(char *buf, size_t off, uint64_t num)
 {
 	return off + print_uint64(buf + off, num);
 }
 
-static size_t append_int64(char *buf, size_t off, int64_t num)
+static size_t zb_append_i64(char *buf, size_t off, int64_t num)
 {
 	return off + print_int64(buf + off, num);
 }
@@ -444,7 +444,7 @@ void log_int_2(struct logbuf *b, const char *key, size_t klen, int val)
 	}
 	off = append(buf, off, FIELD_KEY, strlen(FIELD_KEY));
 	off = append_key(buf, off, key, klen, false);
-	b->off = append_int64(buf, off, val);
+	b->off = zb_append_i64(buf, off, val);
 }
 
 void log_uint_2(struct logbuf *b, const char *key, size_t klen, unsigned val)
@@ -457,7 +457,7 @@ void log_uint_2(struct logbuf *b, const char *key, size_t klen, unsigned val)
 	}
 	off = append(buf, off, FIELD_KEY, strlen(FIELD_KEY));
 	off = append_key(buf, off, key, klen, false);
-	b->off = append_uint64(buf, off, val);
+	b->off = zb_append_u64(buf, off, val);
 }
 
 void log_int64_2(struct logbuf *b, const char *key, size_t klen, int64_t val)
@@ -470,7 +470,7 @@ void log_int64_2(struct logbuf *b, const char *key, size_t klen, int64_t val)
 	}
 	off = append(buf, off, FIELD_KEY, strlen(FIELD_KEY));
 	off = append_key(buf, off, key, klen, true);
-	off = append_int64(buf, off, val);
+	off = zb_append_i64(buf, off, val);
 	b->off = append(buf, off, STR_END, strlen(STR_END));
 }
 
@@ -484,7 +484,7 @@ void log_uint64_2(struct logbuf *b, const char *key, size_t klen, uint64_t val)
 	}
 	off = append(buf, off, FIELD_KEY, strlen(FIELD_KEY));
 	off = append_key(buf, off, key, klen, true);
-	off = append_uint64(buf, off, val);
+	off = zb_append_u64(buf, off, val);
 	b->off = append(buf, off, STR_END, strlen(STR_END));
 }
 

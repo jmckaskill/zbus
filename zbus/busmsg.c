@@ -27,15 +27,15 @@ int reply_error(struct rx *r, uint32_t serial, int err)
 		err = ERR_INTERNAL;
 	}
 
-	const str8_t *error = (const str8_t *)errors[err];
+	const zb_str8 *error = (const zb_str8 *)errors[err];
 	assert(error->len == strlen(error->p));
 
 	struct txmsg m;
-	init_message(&m.m, MSG_ERROR, NO_REPLY_SERIAL);
+	zb_init_message(&m.m, ZB_ERROR, NO_REPLY_SERIAL);
 	m.m.reply_serial = serial;
 	m.m.error = error;
 
-	int sz = write_header(r->txbuf, TX_BUFSZ, &m.m, 0);
+	int sz = zb_write_header(r->txbuf, TX_BUFSZ, &m.m, 0);
 	return send_data(r->tx, false, &m, r->txbuf, sz);
 }
 
@@ -43,13 +43,14 @@ static int _reply_uint32(struct rx *r, uint32_t serial, const char *sig,
 			 uint32_t value)
 {
 	struct txmsg m;
-	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
+	zb_init_message(&m.m, ZB_REPLY, NO_REPLY_SERIAL);
 	m.m.reply_serial = serial;
 	m.m.signature = sig;
 
-	struct builder b = start_message(r->txbuf, TX_BUFSZ, &m.m);
-	_append4(&b, value, *sig);
-	int sz = end_message(b);
+	struct zb_builder b;
+	zb_start(&b, r->txbuf, TX_BUFSZ, &m.m);
+	_zb_add4(&b, value, *sig);
+	int sz = zb_end(&b);
 	return send_data(r->tx, false, &m, r->txbuf, sz);
 }
 
@@ -63,38 +64,40 @@ int reply_bool(struct rx *r, uint32_t serial, bool value)
 	return _reply_uint32(r, serial, "b", value);
 }
 
-int reply_string(struct rx *r, uint32_t serial, const str8_t *str)
+int reply_string(struct rx *r, uint32_t serial, const zb_str8 *str)
 {
 	struct txmsg m;
-	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
+	zb_init_message(&m.m, ZB_REPLY, NO_REPLY_SERIAL);
 	m.m.reply_serial = serial;
 	m.m.signature = "s";
 
-	struct builder b = start_message(r->txbuf, TX_BUFSZ, &m.m);
-	append_string8(&b, str);
-	int sz = end_message(b);
+	struct zb_builder b;
+	zb_start(&b, r->txbuf, TX_BUFSZ, &m.m);
+	zb_add_str8(&b, str);
+	int sz = zb_end(&b);
 	return send_data(r->tx, false, &m, r->txbuf, sz);
 }
 
 int reply_id_address(struct rx *r, uint32_t serial, int id)
 {
 	struct txmsg m;
-	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
+	zb_init_message(&m.m, ZB_REPLY, NO_REPLY_SERIAL);
 	m.m.reply_serial = serial;
 	m.m.signature = "s";
 
-	struct builder b = start_message(r->txbuf, TX_BUFSZ, &m.m);
+	struct zb_builder b;
+	zb_start(&b, r->txbuf, TX_BUFSZ, &m.m);
 	append_id_address(&b, id);
-	int sz = end_message(b);
+	int sz = zb_end(&b);
 	return send_data(r->tx, false, &m, r->txbuf, sz);
 }
 
 int reply_empty(struct rx *r, uint32_t serial)
 {
 	struct txmsg m;
-	init_message(&m.m, MSG_REPLY, NO_REPLY_SERIAL);
+	zb_init_message(&m.m, ZB_REPLY, NO_REPLY_SERIAL);
 	m.m.reply_serial = serial;
 
-	int sz = write_header(r->txbuf, TX_BUFSZ, &m.m, 0);
+	int sz = zb_write_header(r->txbuf, TX_BUFSZ, &m.m, 0);
 	return send_data(r->tx, false, &m, r->txbuf, sz);
 }

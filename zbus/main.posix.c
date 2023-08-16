@@ -99,7 +99,7 @@ int setup_signals(void)
 struct child_info {
 	struct bus *bus;
 	pid_t pid;
-	str8_t name;
+	zb_str8 name;
 };
 
 KHASH_MAP_INIT_INT(child_info, struct child_info *)
@@ -186,7 +186,7 @@ int sys_launch(struct bus *b, const struct address *a)
 		      a->cfg->exec);
 	} else {
 		struct child_info *c = fmalloc(sizeof(*c) + a->name.len);
-		str8cpy(&c->name, &a->name);
+		zb_copy_str8(&c->name, &a->name);
 		c->bus = b;
 		c->pid = pid;
 

@@ -48,14 +48,14 @@ void close_client(struct client *c)
 	}
 }
 
-static int on_connected(void *udata, struct client *c, struct message *m,
-			struct iterator *ii)
+static int on_connected(void *udata, struct client *c, struct zb_message *m,
+			struct zb_iterator *ii)
 {
 	unregister_cb(c, m->reply_serial);
-	if (m->type != MSG_REPLY) {
+	if (m->type != ZB_REPLY) {
 		goto error;
 	}
-	const str8_t *addr = parse_string8(ii);
+	const zb_str8 *addr = zb_parse_str8(ii);
 	if (!addr) {
 		goto error;
 	}
@@ -80,14 +80,14 @@ struct client *open_client(const char *sockpn)
 	c->fd = fd;
 	c->cb_available = UINT16_MAX;
 	memset(&c->cbs, 0, sizeof(c->cbs));
-	init_msg_stream(&c->in, msgsz, defrag);
+	zb_init_stream(&c->in, msgsz, defrag);
 
 	char uidbuf[64];
 	const char *uid = sys_userid(uidbuf, sizeof(uidbuf));
 
 	uint32_t serial = register_cb(c, &on_connected, c);
 	char buf[256];
-	int n = write_client_auth(buf, sizeof(buf), uid, serial);
+	int n = zb_encode_auth_request(buf, sizeof(buf), uid, serial);
 	write_all(fd, buf, n, "send_auth,fd:%u", (unsigned)fd);
 
 	return c;
@@ -100,7 +100,7 @@ uint32_t register_cb(struct client *c, message_fn fn, void *udata)
 	if (!idx) {
 		return 0;
 	}
-	struct message_cb *cb = &c->cbs[idx - 1];
+	struct zb_message_cb *cb = &c->cbs[idx - 1];
 	cb->fn = fn;
 	cb->udata = udata;
 	cb->counter++;
@@ -113,7 +113,7 @@ void unregister_cb(struct client *c, uint32_t serial)
 {
 	int idx = serial & UINT16_MAX;
 	uint16_t counter = (uint16_t)(serial >> 16);
-	struct message_cb *cb = &c->cbs[idx - 1];
+	struct zb_message_cb *cb = &c->cbs[idx - 1];
 	assert(0 < idx && idx <= sizeof(c->cbs) / sizeof(c->cbs[0]));
 	assert(counter == cb->counter);
 	assert(!(c->cb_available & (1U << (idx - 1))));
@@ -122,15 +122,15 @@ void unregister_cb(struct client *c, uint32_t serial)
 	cb->udata = NULL;
 }
 
-int distribute_message(struct client *c, struct message *m,
-		       struct iterator *body)
+int distribute_message(struct client *c, struct zb_message *m,
+		       struct zb_iterator *body)
 {
 	unsigned idx = m->reply_serial & UINT16_MAX;
 	uint16_t counter = (uint16_t)(m->reply_serial >> 16);
 	if (!idx || idx > sizeof(c->cbs) / sizeof(c->cbs[0])) {
 		return 0;
 	}
-	struct message_cb *cb = &c->cbs[idx - 1];
+	struct zb_message_cb *cb = &c->cbs[idx - 1];
 	if (cb->fn && counter == cb->counter) {
 		return cb->fn(cb->udata, c, m, body);
 	} else {
@@ -138,22 +138,23 @@ int distribute_message(struct client *c, struct message *m,
 	}
 }
 
-int vsend_signal(struct client *c, const str8_t *path, const str8_t *iface,
-		 const str8_t *mbr, const char *sig, va_list ap)
+int vsend_signal(struct client *c, const zb_str8 *path, const zb_str8 *iface,
+		 const zb_str8 *mbr, const char *sig, va_list ap)
 {
-	struct message m;
-	init_message(&m, MSG_SIGNAL, UINT32_MAX);
+	struct zb_message m;
+	zb_init_message(&m, ZB_SIGNAL, UINT32_MAX);
 	m.member = mbr;
 	m.path = path;
 	m.interface = iface;
 	m.signature = sig;
 
 	char buf[256];
-	struct builder b = start_message(buf, sizeof(buf), &m);
+	struct zb_builder b;
+	zb_start(&b, buf, sizeof(buf), &m);
 
-	append_multiv(&b, sig, ap);
+	zb_add_multiv(&b, sig, ap);
 
-	int sz = end_message(b);
+	int sz = zb_end(&b);
 	if (sz < 0) {
 		ERROR("failed to encode message");
 		return -1;
@@ -166,13 +167,13 @@ int vsend_signal(struct client *c, const str8_t *path, const str8_t *iface,
 	return 0;
 }
 
-int vcall_method(struct client *c, uint32_t serial, const str8_t *dst,
-		 const str8_t *path, const str8_t *iface, const str8_t *mbr,
+int vcall_method(struct client *c, uint32_t serial, const zb_str8 *dst,
+		 const zb_str8 *path, const zb_str8 *iface, const zb_str8 *mbr,
 		 const char *sig, va_list ap)
 {
-	struct message m;
-	init_message(&m, MSG_METHOD, serial ? serial : UINT32_MAX);
-	m.flags = serial ? 0 : FLAG_NO_REPLY_EXPECTED;
+	struct zb_message m;
+	zb_init_message(&m, ZB_METHOD, serial ? serial : UINT32_MAX);
+	m.flags = serial ? 0 : ZB_NO_REPLY_EXPECTED;
 	m.member = mbr;
 	m.destination = dst;
 	m.path = path;
@@ -180,11 +181,12 @@ int vcall_method(struct client *c, uint32_t serial, const str8_t *dst,
 	m.signature = sig;
 
 	char buf[256];
-	struct builder b = start_message(buf, sizeof(buf), &m);
+	struct zb_builder b;
+	zb_start(&b, buf, sizeof(buf), &m);
 
-	append_multiv(&b, sig, ap);
+	zb_add_multiv(&b, sig, ap);
 
-	int sz = end_message(b);
+	int sz = zb_end(&b);
 	if (sz < 0) {
 		ERROR("failed to encode message");
 		return -1;
@@ -196,21 +198,22 @@ int vcall_method(struct client *c, uint32_t serial, const str8_t *dst,
 	return 0;
 }
 
-int vsend_reply(struct client *c, const struct message *req, const char *sig,
+int vsend_reply(struct client *c, const struct zb_message *req, const char *sig,
 		va_list ap)
 {
-	struct message m;
-	init_message(&m, MSG_REPLY, UINT32_MAX);
+	struct zb_message m;
+	zb_init_message(&m, ZB_REPLY, UINT32_MAX);
 	m.signature = sig;
 	m.reply_serial = req->serial;
 	m.destination = req->sender;
 
 	char buf[256];
-	struct builder b = start_message(buf, sizeof(buf), &m);
+	struct zb_builder b;
+	zb_start(&b, buf, sizeof(buf), &m);
 
-	append_multiv(&b, sig, ap);
+	zb_add_multiv(&b, sig, ap);
 
-	int sz = end_message(b);
+	int sz = zb_end(&b);
 	if (sz < 0) {
 		ERROR("failed to encode message");
 		return -1;
@@ -222,17 +225,18 @@ int vsend_reply(struct client *c, const struct message *req, const char *sig,
 	return 0;
 }
 
-int send_error(struct client *c, uint32_t request_serial, const str8_t *error)
+int send_error(struct client *c, uint32_t request_serial, const zb_str8 *error)
 {
-	struct message m;
-	init_message(&m, MSG_ERROR, UINT32_MAX);
+	struct zb_message m;
+	zb_init_message(&m, ZB_ERROR, UINT32_MAX);
 	m.error = error;
 	m.reply_serial = request_serial;
 
 	char buf[256];
-	struct builder b = start_message(buf, sizeof(buf), &m);
+	struct zb_builder b;
+	zb_start(&b, buf, sizeof(buf), &m);
 
-	int sz = end_message(b);
+	int sz = zb_end(&b);
 	if (sz < 0) {
 		ERROR("failed to encode message");
 		return -1;
@@ -244,16 +248,16 @@ int send_error(struct client *c, uint32_t request_serial, const str8_t *error)
 	return 0;
 }
 
-int send_signal(struct client *c, const str8_t *path, const str8_t *iface,
-		const str8_t *mbr, const char *sig, ...)
+int send_signal(struct client *c, const zb_str8 *path, const zb_str8 *iface,
+		const zb_str8 *mbr, const char *sig, ...)
 {
 	va_list ap;
 	va_start(ap, sig);
 	return vsend_signal(c, path, iface, mbr, sig, ap);
 }
 
-int call_method(struct client *c, uint32_t serial, const str8_t *dst,
-		const str8_t *path, const str8_t *iface, const str8_t *mbr,
+int call_method(struct client *c, uint32_t serial, const zb_str8 *dst,
+		const zb_str8 *path, const zb_str8 *iface, const zb_str8 *mbr,
 		const char *sig, ...)
 {
 	va_list ap;
@@ -261,7 +265,7 @@ int call_method(struct client *c, uint32_t serial, const str8_t *dst,
 	return vcall_method(c, serial, dst, path, iface, mbr, sig, ap);
 }
 
-int send_reply(struct client *c, const struct message *req, const char *sig,
+int send_reply(struct client *c, const struct zb_message *req, const char *sig,
 	       ...)
 {
 	va_list ap;
@@ -269,7 +273,7 @@ int send_reply(struct client *c, const struct message *req, const char *sig,
 	return vsend_reply(c, req, sig, ap);
 }
 
-int call_bus_method(struct client *c, uint32_t serial, const str8_t *member,
+int call_bus_method(struct client *c, uint32_t serial, const zb_str8 *member,
 		    const char *sig, ...)
 {
 	va_list ap;
@@ -283,7 +287,7 @@ int read_data(struct client *c)
 {
 	char *p1, *p2;
 	size_t n1, n2;
-	rx_buffers(&c->in, &p1, &n1, &p2, &n2);
+	zb_get_stream_recvbuf(&c->in, &p1, &n1, &p2, &n2);
 	int n = sys_recv(c->fd, p1, (int)n1);
 	if (n < 0) {
 		return -1;
@@ -296,7 +300,7 @@ static int read_more(struct client *c)
 {
 	char *p1, *p2;
 	size_t n1, n2;
-	rx_buffers(&c->in, &p1, &n1, &p2, &n2);
+	zb_get_stream_recvbuf(&c->in, &p1, &n1, &p2, &n2);
 	int n = sys_recv(c->fd, p1, (int)n1);
 	if (n < 0) {
 		return -1;
@@ -308,10 +312,10 @@ static int read_more(struct client *c)
 int read_auth(struct client *c)
 {
 	for (;;) {
-		int err = read_auth_stream(&c->in);
+		int err = zb_read_auth(&c->in);
 		if (!err) {
 			return 0;
-		} else if (err == STREAM_MORE && !read_more(c)) {
+		} else if (err == ZB_STREAM_READ_MORE && !read_more(c)) {
 			continue;
 		} else {
 			return -1;
@@ -319,10 +323,11 @@ int read_auth(struct client *c)
 	}
 }
 
-int read_message(struct client *c, struct message *msg, struct iterator *body)
+int read_message(struct client *c, struct zb_message *msg,
+		 struct zb_iterator *body)
 {
 	for (;;) {
-		int err = read_msg_stream(&c->in, msg);
+		int err = zb_read_message(&c->in, msg);
 		if (!err) {
 			struct logbuf lb;
 			if (start_debug(&lb, "read message")) {
@@ -330,9 +335,9 @@ int read_message(struct client *c, struct message *msg, struct iterator *body)
 				log_message(&lb, msg);
 				finish_log(&lb);
 			}
-			return defragment_body(&c->in, msg, body);
+			return zb_defragment_body(&c->in, msg, body);
 
-		} else if (err == STREAM_MORE && !read_more(c)) {
+		} else if (err == ZB_STREAM_READ_MORE && !read_more(c)) {
 			continue;
 		} else {
 			return -1;

@@ -48,7 +48,7 @@ struct rcu_data {
 };
 
 struct bus {
-	str8_t busid;
+	zb_str8 busid;
 	char idbuf[BUSID_STRLEN];
 
 	mtx_t lk;
@@ -61,20 +61,20 @@ struct bus {
 int init_bus(struct bus *b);
 void destroy_bus(struct bus *b);
 
-int register_remote(struct bus *b, struct rx *r, const str8_t *name,
+int register_remote(struct bus *b, struct rx *r, const zb_str8 *name,
 		    uint32_t serial, struct rcu_reader **preader);
-int unregister_remote(struct bus *b, struct rx *r, const str8_t *name,
+int unregister_remote(struct bus *b, struct rx *r, const zb_str8 *name,
 		      struct rcu_reader *reader);
 
 extern int sys_launch(struct bus *bus, const struct address *addr);
 
-int autolaunch_service(struct bus *b, const str8_t *name,
+int autolaunch_service(struct bus *b, const zb_str8 *name,
 		       const struct address **paddr);
-void service_exited(struct bus *b, const str8_t *name);
+void service_exited(struct bus *b, const zb_str8 *name);
 
-int request_name(struct bus *b, struct rx *r, const str8_t *name,
+int request_name(struct bus *b, struct rx *r, const zb_str8 *name,
 		 uint32_t serial);
-int release_name(struct bus *b, struct rx *r, const str8_t *name,
+int release_name(struct bus *b, struct rx *r, const zb_str8 *name,
 		 uint32_t serial, bool send_name_lost);
 
 #define DBUS_RELEASE_NAME_REPLY_RELEASED 1
@@ -82,7 +82,7 @@ int release_name(struct bus *b, struct rx *r, const str8_t *name,
 #define DBUS_RELEASE_NAME_REPLY_NOT_OWNER 3
 
 int update_sub(struct bus *b, bool add, struct rx *r, const char *str,
-	       struct match m, uint32_t serial);
+	       struct zb_matcher m, uint32_t serial);
 
 #define MAX_ARGUMENTS 32
 

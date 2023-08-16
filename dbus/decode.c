@@ -1,4 +1,5 @@
 #include "decode.h"
+#include "internal.h"
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
@@ -6,9 +7,9 @@
 
 #define MAX_DEPTH 32
 
-static inline int align2(char *base, uint32_t off, uint32_t error)
+ZB_INLINE int align2(char *base, uint32_t off, uint32_t error)
 {
-	uint32_t aligned = ALIGN_UINT_UP(off, 2);
+	uint32_t aligned = ZB_ALIGN_UP(off, 2);
 #ifndef NDEBUG
 	if (off < aligned) {
 		if (base[off++]) {
@@ -21,9 +22,9 @@ static inline int align2(char *base, uint32_t off, uint32_t error)
 	return aligned;
 }
 
-static inline int align4(char *base, uint32_t off, uint32_t error)
+ZB_INLINE int align4(char *base, uint32_t off, uint32_t error)
 {
-	uint32_t aligned = ALIGN_UINT_UP(off, 4);
+	uint32_t aligned = ZB_ALIGN_UP(off, 4);
 #ifndef NDEBUG
 	while (off < aligned) {
 		if (base[off++]) {
@@ -36,9 +37,9 @@ static inline int align4(char *base, uint32_t off, uint32_t error)
 	return aligned;
 }
 
-static inline int align8(char *base, uint32_t off, uint32_t error)
+ZB_INLINE int align8(char *base, uint32_t off, uint32_t error)
 {
-	uint32_t aligned = ALIGN_UINT_UP(off, 8);
+	uint32_t aligned = ZB_ALIGN_UP(off, 8);
 #ifndef NDEBUG
 	while (off < aligned) {
 		if (base[off++]) {
@@ -51,7 +52,7 @@ static inline int align8(char *base, uint32_t off, uint32_t error)
 	return aligned;
 }
 
-void align_iterator_8(struct iterator *p)
+void align_iterator_8(struct zb_iterator *p)
 {
 	uint32_t n = align8(p->base, p->next, p->end);
 	if (n > p->end) {
@@ -64,144 +65,144 @@ void align_iterator_8(struct iterator *p)
 static uint32_t alignx(char type, char *base, uint32_t off, uint32_t error)
 {
 	switch (type) {
-	case TYPE_BYTE:
-	case TYPE_SIGNATURE:
-	case TYPE_VARIANT:
+	case ZB_BYTE:
+	case ZB_SIGNATURE:
+	case ZB_VARIANT:
 		return off;
-	case TYPE_INT16:
-	case TYPE_UINT16:
+	case ZB_INT16:
+	case ZB_UINT16:
 		return align2(base, off, error);
-	case TYPE_BOOL:
-	case TYPE_INT32:
-	case TYPE_UINT32:
-	case TYPE_STRING:
-	case TYPE_PATH:
-	case TYPE_ARRAY:
+	case ZB_BOOL:
+	case ZB_INT32:
+	case ZB_UINT32:
+	case ZB_STRING:
+	case ZB_PATH:
+	case ZB_ARRAY:
 		return align4(base, off, error);
-	case TYPE_INT64:
-	case TYPE_UINT64:
-	case TYPE_DOUBLE:
-	case TYPE_DICT:
-	case TYPE_STRUCT:
+	case ZB_INT64:
+	case ZB_UINT64:
+	case ZB_DOUBLE:
+	case ZB_DICT:
+	case ZB_STRUCT:
 		return align8(base, off, error);
 	default:
 		return error;
 	}
 }
 
-static uint8_t parse1(struct iterator *p, char type)
+static uint8_t parse1(struct zb_iterator *p, char type)
 {
 	uint32_t n = p->next;
-	if (n >= p->end || *p->sig != type) {
+	if (n >= p->end || *p->nextsig != type) {
 		p->next = p->end + 1;
 		return 0;
 	}
 	p->next++;
-	p->sig++;
+	p->nextsig++;
 	return *(uint8_t *)(p->base + n);
 }
 
-static uint16_t parse2(struct iterator *p, char type)
+static uint16_t parse2(struct zb_iterator *p, char type)
 {
 	uint32_t n = align2(p->base, p->next, p->end);
-	if (n + 2 > p->end || *p->sig != type) {
+	if (n + 2 > p->end || *p->nextsig != type) {
 		p->next = p->end + 1;
 		return 0;
 	}
 	uint16_t ret;
 	memcpy(&ret, p->base + n, 2);
 	p->next = n + 2;
-	p->sig++;
+	p->nextsig++;
 	return ret;
 }
 
-static uint32_t parse4(struct iterator *p, char type)
+static uint32_t parse4(struct zb_iterator *p, char type)
 {
 	uint32_t n = align4(p->base, p->next, p->end);
-	if (n + 4 > p->end || *p->sig != type) {
+	if (n + 4 > p->end || *p->nextsig != type) {
 		p->next = p->end + 1;
 		return 0;
 	}
 	uint32_t ret;
 	memcpy(&ret, p->base + n, 4);
 	p->next = n + 4;
-	p->sig++;
+	p->nextsig++;
 	return ret;
 }
 
-static uint64_t parse8(struct iterator *p, char type)
+static uint64_t parse8(struct zb_iterator *p, char type)
 {
 	uint32_t n = align8(p->base, p->next, p->end);
-	if (n + 8 > p->end || *p->sig != type) {
+	if (n + 8 > p->end || *p->nextsig != type) {
 		p->next = p->end + 1;
 		return 0;
 	}
 	uint64_t ret;
 	memcpy(&ret, p->base + n, 4);
 	p->next = n + 8;
-	p->sig++;
+	p->nextsig++;
 	return ret;
 }
 
-uint8_t parse_byte(struct iterator *p)
+uint8_t zb_parse_byte(struct zb_iterator *p)
 {
-	return parse1(p, TYPE_BYTE);
+	return parse1(p, ZB_BYTE);
 }
 
-int16_t parse_int16(struct iterator *p)
+int16_t zb_parse_i16(struct zb_iterator *p)
 {
-	return (int16_t)parse2(p, TYPE_INT16);
+	return (int16_t)parse2(p, ZB_INT16);
 }
 
-uint16_t parse_uint16(struct iterator *p)
+uint16_t zb_parse_u16(struct zb_iterator *p)
 {
-	return parse2(p, TYPE_UINT16);
+	return parse2(p, ZB_UINT16);
 }
 
-int32_t parse_int32(struct iterator *p)
+int32_t zb_parse_i32(struct zb_iterator *p)
 {
-	return (int32_t)parse4(p, TYPE_INT32);
+	return (int32_t)parse4(p, ZB_INT32);
 }
 
-uint32_t parse_uint32(struct iterator *p)
+uint32_t zb_parse_u32(struct zb_iterator *p)
 {
-	return parse4(p, TYPE_UINT32);
+	return parse4(p, ZB_UINT32);
 }
 
-bool parse_bool(struct iterator *p)
+bool zb_parse_bool(struct zb_iterator *p)
 {
-	uint32_t u = parse4(p, TYPE_UINT32);
+	uint32_t u = parse4(p, ZB_UINT32);
 	if (u > 1) {
 		p->next = p->end + 1;
 	}
 	return u != 0;
 }
 
-int64_t parse_int64(struct iterator *p)
+int64_t zb_parse_i64(struct zb_iterator *p)
 {
-	return (int64_t)parse8(p, TYPE_INT64);
+	return (int64_t)parse8(p, ZB_INT64);
 }
 
-uint64_t parse_uint64(struct iterator *p)
+uint64_t zb_parse_u64(struct zb_iterator *p)
 {
-	return parse8(p, TYPE_UINT64);
+	return parse8(p, ZB_UINT64);
 }
 
-double parse_double(struct iterator *p)
+double zb_parse_double(struct zb_iterator *p)
 {
 	union {
 		double d;
 		uint64_t u;
 	} u;
-	u.u = parse8(p, TYPE_DOUBLE);
+	u.u = parse8(p, ZB_DOUBLE);
 	return u.d;
 }
 
-static char *parse_string_bytes(struct iterator *p, uint32_t len)
+static char *parse_string_bytes(struct zb_iterator *p, uint32_t len)
 {
 	char *ret = p->base + p->next;
 	uint32_t n = p->next + len + 1;
-	if (len > DBUS_MAX_VALUE_SIZE || n > p->end || ret[len]) {
+	if (len > ZB_MAX_VALUE_SIZE || n > p->end || ret[len]) {
 		p->next = p->end + 1;
 		return NULL;
 	}
@@ -209,7 +210,7 @@ static char *parse_string_bytes(struct iterator *p, uint32_t len)
 	return ret;
 }
 
-static const char *parse_signature_no_sig_check(struct iterator *ii)
+static const char *parse_signature_no_sig_check(struct zb_iterator *ii)
 {
 	if (ii->next >= ii->end) {
 		return "";
@@ -225,31 +226,31 @@ static const char *parse_signature_no_sig_check(struct iterator *ii)
 	return ret;
 }
 
-const char *parse_signature(struct iterator *p)
+const char *zb_parse_signature(struct zb_iterator *p)
 {
-	if (*p->sig != TYPE_SIGNATURE) {
+	if (*p->nextsig != ZB_SIGNATURE) {
 		p->next = p->end + 1;
 		return "";
 	}
-	p->sig++;
+	p->nextsig++;
 	return parse_signature_no_sig_check(p);
 }
 
-char *parse_string(struct iterator *p, size_t *psz)
+char *zb_parse_string(struct zb_iterator *p, size_t *psz)
 {
-	uint32_t len = parse4(p, TYPE_STRING);
+	uint32_t len = parse4(p, ZB_STRING);
 	*psz = len;
 	return parse_string_bytes(p, len);
 }
 
-char *parse_path(struct iterator *p, size_t *psz)
+char *zb_parse_path(struct zb_iterator *p, size_t *psz)
 {
-	uint32_t len = parse4(p, TYPE_PATH);
+	uint32_t len = parse4(p, ZB_PATH);
 	*psz = len;
 	return parse_string_bytes(p, len);
 }
 
-static str8_t *parse_string8_no_sig_check(struct iterator *p, uint32_t aligned)
+static zb_str8 *parse_str8_no_sig_check(struct zb_iterator *p, uint32_t aligned)
 {
 	assert(!(aligned & 3U));
 	char *plen = p->base + aligned;
@@ -258,7 +259,7 @@ static str8_t *parse_string8_no_sig_check(struct iterator *p, uint32_t aligned)
 	}
 	uint32_t len;
 	memcpy(&len, plen, 4);
-	str8_t *s = (str8_t *)(plen + 3);
+	zb_str8 *s = (zb_str8 *)(plen + 3);
 	uint32_t next = aligned + 4 + len + 1;
 	if (len > UINT8_MAX || next > p->end || p->base[next - 1]) {
 		goto error;
@@ -273,66 +274,63 @@ error:
 	return NULL;
 }
 
-const str8_t *parse_string8(struct iterator *p)
+const zb_str8 *zb_parse_str8(struct zb_iterator *p)
 {
-	if (*p->sig != TYPE_STRING) {
+	if (*p->nextsig != ZB_STRING) {
 		p->next = p->end + 1;
 		return NULL;
 	}
-	p->sig++;
+	p->nextsig++;
 	uint32_t n = align4(p->base, p->next, p->end);
-	return parse_string8_no_sig_check(p, n);
+	return parse_str8_no_sig_check(p, n);
 }
 
-struct variant parse_variant(struct iterator *p)
+void zb_parse_variant(struct zb_iterator *p, struct zb_variant *pv)
 {
-	uint8_t len = parse1(p, TYPE_VARIANT);
+	uint8_t len = parse1(p, ZB_VARIANT);
 	char *sig = parse_string_bytes(p, len);
 
-	struct variant ret;
-	ret.sig = sig;
+	pv->sig = sig;
 
-	const char *nextsig = p->sig;
-	p->sig = sig;
+	const char *nextsig = p->nextsig;
+	p->nextsig = sig;
 
-	char type = *p->sig;
+	char type = *p->nextsig;
 	switch (type) {
-	case TYPE_BYTE:
-		ret.u.u8 = parse_byte(p);
+	case ZB_BYTE:
+		pv->u.u8 = zb_parse_byte(p);
 		break;
-	case TYPE_INT16:
-	case TYPE_UINT16:
-		ret.u.u16 = parse2(p, type);
+	case ZB_INT16:
+	case ZB_UINT16:
+		pv->u.u16 = parse2(p, type);
 		break;
-	case TYPE_BOOL:
-		ret.u.b = parse_bool(p);
+	case ZB_BOOL:
+		pv->u.b = zb_parse_bool(p);
 		break;
-	case TYPE_INT32:
-	case TYPE_UINT32:
-		ret.u.u32 = parse4(p, type);
+	case ZB_INT32:
+	case ZB_UINT32:
+		pv->u.u32 = parse4(p, type);
 		break;
-	case TYPE_INT64:
-	case TYPE_UINT64:
-	case TYPE_DOUBLE:
-		ret.u.u64 = parse8(p, type);
+	case ZB_INT64:
+	case ZB_UINT64:
+	case ZB_DOUBLE:
+		pv->u.u64 = parse8(p, type);
 		break;
-	case TYPE_STRING:
-		ret.u.str.p = parse_string(p, &ret.u.str.len);
+	case ZB_STRING:
+		pv->u.str.p = zb_parse_string(p, &pv->u.str.len);
 		break;
-	case TYPE_PATH:
-		ret.u.path.p = parse_path(p, &ret.u.path.len);
+	case ZB_PATH:
+		pv->u.path.p = zb_parse_path(p, &pv->u.path.len);
 		break;
-	case TYPE_SIGNATURE:
-		ret.u.sig = parse_signature(p);
+	case ZB_SIGNATURE:
+		pv->u.sig = zb_parse_signature(p);
 		break;
-	case TYPE_VARIANT:
-	case TYPE_STRUCT_BEGIN:
-		ret.u.record = skip_value(p);
+	case ZB_VARIANT:
+	case ZB_STRUCT_BEGIN:
+	case ZB_ARRAY:
+		zb_skip(p, &pv->u.record);
 		break;
-	case TYPE_ARRAY:
-		ret.u.array = skip_array(p);
-		break;
-	case TYPE_DICT_BEGIN:
+	case ZB_DICT_BEGIN:
 		// Can only occur as an array element. So there is never a need
 		// to skip just a dict entry.
 	default:
@@ -340,196 +338,184 @@ struct variant parse_variant(struct iterator *p)
 		break;
 	}
 
-	if (iter_error(p)) {
-		ret.sig = "";
+	if (zb_get_iter_error(p)) {
+		pv->sig = "";
 	}
 
-	p->sig = nextsig;
-	return ret;
+	p->nextsig = nextsig;
 }
 
-struct iterator skip_array(struct iterator *p)
+struct iter_array {
+	const char *sig_start;
+	uint32_t prev_end;
+	uint8_t siglen;
+	uint8_t first_entry;
+};
+
+static_assert(sizeof(struct iter_array) <= sizeof(struct zb_scope), "");
+
+void zb_enter_array(struct zb_iterator *p, struct zb_scope *s)
 {
-	uint32_t len = parse4(p, TYPE_ARRAY);
-	uint32_t start = alignx(*p->sig, p->base, p->next, p->end);
+	struct iter_array *a = (void *)s;
+	uint32_t len = parse4(p, ZB_ARRAY);
+	uint32_t start = alignx(*p->nextsig, p->base, p->next, p->end);
 
-	struct iterator ret;
-	ret.base = p->base;
-	ret.next = start;
-	ret.end = start + len;
-	ret.sig = p->sig;
+	// step back so that zb_skip_signature can pick up that we're in an
+	// array
+	const char *nextsig = p->nextsig - 1;
 
-	// step back one so that skip_signature can pick up the array
-	p->sig--;
-
-	if (len > DBUS_MAX_VALUE_SIZE || start + len > p->end ||
-	    skip_signature(&p->sig)) {
-		ret.next = ret.end + 1;
+	if (len > ZB_MAX_VALUE_SIZE || start + len > p->end ||
+	    zb_skip_signature(&nextsig)) {
+		zb_set_iter_error(p);
 	} else {
-		p->next = ret.end;
-	}
-
-	return ret;
-}
-
-struct array_data parse_array(struct iterator *p)
-{
-	uint32_t len = parse4(p, TYPE_ARRAY);
-	uint32_t start = alignx(*p->sig, p->base, p->next, p->end);
-
-	struct array_data a;
-
-	// step back so that skip_signature can pick up that we're in an array
-	const char *nextsig = p->sig - 1;
-
-	if (len > DBUS_MAX_MSG_SIZE || start + len > p->end ||
-	    skip_signature(&nextsig)) {
-		p->next = p->end + 1;
-		a.sig = "";
-		a.siglen = 0;
-		a.off = 0;
-		a.hdr = 0;
-	} else {
-		a.sig = p->sig;
-		a.off = p->end;
-		a.siglen = (uint8_t)(nextsig - a.sig);
-		// hdr is used as a marker to indicate we're on the first item
-		a.hdr = 0;
+		a->sig_start = p->nextsig;
+		a->siglen = (uint8_t)(nextsig - a->sig_start);
+		a->prev_end = p->end;
+		a->first_entry = 1;
 		p->next = start;
 		p->end = start + len;
 	}
-	return a;
 }
 
-bool array_has_more(struct iterator *p, struct array_data *a)
+void zb_exit_array(struct zb_iterator *p, struct zb_scope *s)
 {
-	if (p->next > p->end) {
-		// parse error
-		goto error;
+	struct iter_array *a = (void *)s;
+	if (!zb_get_iter_error(p)) {
+		p->nextsig = a->sig_start + a->siglen;
+		p->next = p->end;
+		p->end = a->prev_end;
+	}
+}
+
+bool zb_array_has_more(struct zb_iterator *p, struct zb_scope *s)
+{
+	struct iter_array *a = (void *)s;
+	if (zb_get_iter_error(p)) {
+		return false;
 	}
 
-	const char *sigstart = a->sig;
-	const char *sigend = a->sig + a->siglen;
+	const char *sigstart = a->sig_start;
+	const char *sigend = a->sig_start + a->siglen;
 
 	// check that the signature is where we expect it to be
-	if (p->sig != (a->hdr ? sigend : sigstart)) {
-		goto error;
+	if (p->nextsig != (a->first_entry ? sigstart : sigend)) {
+		zb_set_iter_error(p);
+		return false;
 	}
 
 	if (p->next == p->end) {
 		// We've reached the end of the array. Update the iterator to
 		// the next item after the array
-		p->sig = sigend;
-		p->next = a->off;
+		p->nextsig = sigend;
+		p->next = p->end;
+		p->end = a->prev_end;
 		return false;
 	} else {
 		// There are further items
-		p->sig = sigstart;
-		a->hdr = 1;
+		p->nextsig = sigstart;
+		a->first_entry = 0;
 		return true;
 	}
-error:
-	p->next = p->end + 1;
-	return false;
 }
 
-static void _parse_struct(struct iterator *p, char type)
+static void _parse_struct(struct zb_iterator *p, char type)
 {
 	uint32_t n = align8(p->base, p->next, p->end);
-	if (n > p->end || *p->sig != type) {
+	if (n > p->end || *p->nextsig != type) {
 		p->next = p->end + 1;
 	} else {
-		p->sig++;
+		p->nextsig++;
 		p->next = n;
 	}
 }
 
-void parse_struct_begin(struct iterator *p)
+void zb_enter_struct(struct zb_iterator *p)
 {
-	_parse_struct(p, TYPE_STRUCT_BEGIN);
+	_parse_struct(p, ZB_STRUCT_BEGIN);
 }
 
-void parse_dict_begin(struct iterator *p)
+void zb_enter_dict_entry(struct zb_iterator *p)
 {
-	_parse_struct(p, TYPE_DICT_BEGIN);
+	_parse_struct(p, ZB_DICT_BEGIN);
 }
 
-void parse_dict_end(struct iterator *p)
+void zb_exit_dict_entry(struct zb_iterator *p)
 {
-	if (*p->sig == TYPE_DICT_END) {
-		p->sig++;
+	if (*p->nextsig == ZB_DICT_END) {
+		p->nextsig++;
 	} else {
 		p->next = p->end + 1;
 	}
 }
 
-void parse_struct_end(struct iterator *p)
+void zb_exit_struct(struct zb_iterator *p)
 {
 	for (;;) {
-		skip_value(p);
-		if (iter_error(p)) {
+		if (zb_get_iter_error(p)) {
+			return;
+		} else if (*p->nextsig == ZB_STRUCT_END) {
+			p->nextsig++;
 			return;
 		}
-		if (*p->sig == TYPE_STRUCT_END) {
-			p->sig++;
-			return;
-		}
+		zb_skip(p, NULL);
 	}
 }
 
-struct iterator skip_value(struct iterator *p)
+void zb_skip(struct zb_iterator *p, struct zb_iterator *pval)
 {
 	const char *stack[MAX_DEPTH];
 	int stackn = 0;
 
-	if (*p->sig) {
+	if (!*p->nextsig) {
 		goto error;
 	}
 
-	struct iterator ret;
-	ret.base = p->base;
-	ret.sig = p->sig;
+	if (pval) {
+		pval->base = p->base;
+		pval->next = p->next;
+		pval->nextsig = p->nextsig;
+	}
 
 	for (;;) {
-		switch (*(p->sig++)) {
+		switch (*(p->nextsig++)) {
 		case '\0':
 			if (stackn) {
 				// we've reached the end of the variant
-				p->sig = stack[--stackn];
+				p->nextsig = stack[--stackn];
 				continue;
 			}
 			goto success;
 
-		case TYPE_BYTE:
+		case ZB_BYTE:
 			p->next++;
 			break;
 
-		case TYPE_INT16:
-		case TYPE_UINT16:
-			p->next = ALIGN_UINT_UP(p->next, 2) + 2;
+		case ZB_INT16:
+		case ZB_UINT16:
+			p->next = ZB_ALIGN_UP(p->next, 2) + 2;
 			break;
 
-		case TYPE_BOOL:
-		case TYPE_INT32:
-		case TYPE_UINT32:
-			p->next = ALIGN_UINT_UP(p->next, 4) + 4;
+		case ZB_BOOL:
+		case ZB_INT32:
+		case ZB_UINT32:
+			p->next = ZB_ALIGN_UP(p->next, 4) + 4;
 			break;
 
-		case TYPE_INT64:
-		case TYPE_UINT64:
-		case TYPE_DOUBLE:
-			p->next = ALIGN_UINT_UP(p->next, 8) + 8;
+		case ZB_INT64:
+		case ZB_UINT64:
+		case ZB_DOUBLE:
+			p->next = ZB_ALIGN_UP(p->next, 8) + 8;
 			break;
 
-		case TYPE_STRING:
-		case TYPE_PATH: {
-			p->next = ALIGN_UINT_UP(p->next, 4) + 4;
+		case ZB_STRING:
+		case ZB_PATH: {
+			p->next = ZB_ALIGN_UP(p->next, 4) + 4;
 			if (p->next > p->end) {
 				goto error;
 			}
 			uint32_t len;
 			memcpy(&len, p->base + p->next - 4, 4);
-			if (len > DBUS_MAX_VALUE_SIZE) {
+			if (len > ZB_MAX_VALUE_SIZE) {
 				// protect against overflow
 				goto error;
 			}
@@ -537,7 +523,7 @@ struct iterator skip_value(struct iterator *p)
 			break;
 		}
 
-		case TYPE_SIGNATURE: {
+		case ZB_SIGNATURE: {
 			if (p->next == p->end) {
 				goto error;
 			}
@@ -546,44 +532,46 @@ struct iterator skip_value(struct iterator *p)
 			break;
 		}
 
-		case TYPE_ARRAY: {
-			p->next = ALIGN_UINT_UP(p->next, 4) + 4;
+		case ZB_ARRAY: {
+			p->next = ZB_ALIGN_UP(p->next, 4) + 4;
 			if (p->next > p->end) {
 				goto error;
 			}
 			uint32_t len;
 			memcpy(&len, p->base + p->next - 4, 4);
-			if (len > DBUS_MAX_VALUE_SIZE) {
+			if (len > ZB_MAX_VALUE_SIZE) {
 				// protect against overflow
 				goto error;
 			}
 			p->next =
-				alignx(*p->sig, p->base, p->next, p->end) + len;
-			// step back so that skip_signature knows we're in an
-			// array
-			p->sig--;
-			if (skip_signature(&p->sig)) {
+				alignx(*p->nextsig, p->base, p->next, p->end) +
+				len;
+			// step back so that zb_skip_signature knows
+			// we're in an array
+			p->nextsig--;
+			if (zb_skip_signature(&p->nextsig)) {
 				goto error;
 			}
 			break;
 		}
 
-		case TYPE_STRUCT_BEGIN:
-			p->next = ALIGN_UINT_UP(p->next, 8);
+		case ZB_STRUCT_BEGIN:
+			p->next = ZB_ALIGN_UP(p->next, 8);
 			break;
 
-		case TYPE_VARIANT: {
-			// Need to save the current signature to a stack.
+		case ZB_VARIANT: {
+			// Need to save the current signature to a
+			// stack.
 			const char **psig = &stack[stackn++];
 			if (psig == stack + sizeof(stack) / sizeof(stack[0])) {
 				goto error;
 			}
-			*psig = p->sig;
-			p->sig = parse_signature_no_sig_check(p);
+			*psig = p->nextsig;
+			p->nextsig = parse_signature_no_sig_check(p);
 			break;
 		}
 
-		case TYPE_DICT_BEGIN:
+		case ZB_DICT_BEGIN:
 			// dict can not exist outside an array
 		default:
 			goto error;
@@ -594,71 +582,74 @@ struct iterator skip_value(struct iterator *p)
 		}
 	}
 success:
-	ret.end = p->next;
-	return ret;
+	if (pval) {
+		pval->end = p->next;
+	}
+	return;
 error:
-	ret.end = 0;
-	ret.next = 1;
+	if (pval) {
+		pval->end = 0;
+		pval->next = 1;
+	}
 	p->next = p->end + 1;
-	return ret;
 }
 
-int skip_signature(const char **psig)
+int zb_skip_signature(const char **psig)
 {
 	int d = 0; // current stack entry index
 	char s[32]; // type code stack
 
-	s[d] = TYPE_INVALID;
+	s[d] = 0;
 
 	for (;;) {
 		switch (*((*psig)++)) {
-		case TYPE_BYTE:
-		case TYPE_BOOL:
-		case TYPE_INT16:
-		case TYPE_UINT16:
-		case TYPE_INT32:
-		case TYPE_UINT32:
-		case TYPE_INT64:
-		case TYPE_UINT64:
-		case TYPE_DOUBLE:
-		case TYPE_STRING:
-		case TYPE_PATH:
-		case TYPE_SIGNATURE:
-		case TYPE_VARIANT:
+		case ZB_BYTE:
+		case ZB_BOOL:
+		case ZB_INT16:
+		case ZB_UINT16:
+		case ZB_INT32:
+		case ZB_UINT32:
+		case ZB_INT64:
+		case ZB_UINT64:
+		case ZB_DOUBLE:
+		case ZB_STRING:
+		case ZB_PATH:
+		case ZB_SIGNATURE:
+		case ZB_VARIANT:
 			break;
 
-		case TYPE_ARRAY:
+		case ZB_ARRAY:
 			if (++d == sizeof(s)) {
 				return -1;
 			}
-			s[d] = TYPE_ARRAY;
+			s[d] = ZB_ARRAY;
 			// loop around to consume another item
 			continue;
 
-		case TYPE_DICT_BEGIN:
-			if (s[d] != TYPE_ARRAY) {
+		case ZB_DICT_BEGIN:
+			if (s[d] != ZB_ARRAY) {
 				return -1;
 			}
 			// transform the array into a dict
-			s[d] = TYPE_DICT;
+			s[d] = ZB_DICT;
 			break;
 
-		case TYPE_STRUCT_BEGIN:
+		case ZB_STRUCT_BEGIN:
 			if (++d == sizeof(s)) {
 				return -1;
 			}
-			s[d] = TYPE_STRUCT;
+			s[d] = ZB_STRUCT;
 			break;
 
-		case TYPE_STRUCT_END:
-			if (s[d] != TYPE_STRUCT) {
+		case ZB_STRUCT_END:
+			if (s[d] != ZB_STRUCT) {
 				return -1;
 			}
 			d--;
 			break;
 
-		case TYPE_DICT_END:
-			if (s[d] != TYPE_DICT_END) {
+		case ZB_DICT_END:
+			if (s[d] != ZB_DICT_END) {
 				return -1;
 			}
 			d--;
@@ -671,59 +662,43 @@ int skip_signature(const char **psig)
 
 		if (d) {
 			switch (s[d]) {
-			case TYPE_ARRAY:
-				// We've consumed the array data and it was not
-				// a dict. Otherwise the type code would have
-				// been changed.
+			case ZB_ARRAY:
+				// We've consumed the array data and it
+				// was not a dict. Otherwise the type
+				// code would have been changed.
 				d--;
 				break;
 
-			case TYPE_DICT:
+			case ZB_DICT:
 				// we've consumed one item in the dict
-				s[d] = TYPE_DICT_BEGIN;
+				s[d] = ZB_DICT_BEGIN;
 				break;
 
-			case TYPE_DICT_BEGIN:
+			case ZB_DICT_BEGIN:
 				// we've consumed both items in the dict
-				s[d] = TYPE_DICT_END;
+				s[d] = ZB_DICT_END;
 				break;
 
-			case TYPE_DICT_END:
-				// we expected a closing brace but didn't get
-				// one
+			case ZB_DICT_END:
+				// we expected a closing brace but
+				// didn't get one
 				return -1;
 			}
 		}
 
 		if (d == 0) {
-			// we've consumed an item and have nothing on the stack
+			// we've consumed an item and have nothing on
+			// the stack
 			return 0;
 		}
 	}
 }
 
-#ifndef NDEBUG
-void TEST_parse()
-{
-	fprintf(stderr, "TEST_parse\n");
-	char test1[] = {
-		1, // byte
-		0, 2, 0, // u16
-		3, 0, 0, 0, // u32
-	};
-	struct iterator ii;
-	init_iterator(&ii, "yqu", test1, sizeof(test1));
-	assert(parse_byte(&ii) == 1 && !iter_error(&ii));
-	assert(parse_uint16(&ii) == 2 && !iter_error(&ii));
-	assert(parse_uint32(&ii) == 3 && !iter_error(&ii));
-	assert(parse_byte(&ii) == 0 && iter_error(&ii));
-}
-#endif
-
 //////////////////////////////
 // Message parsing
 
-void init_message(struct message *m, enum msg_type type, uint32_t serial)
+void zb_init_message(struct zb_message *m, enum zb_msg_type type,
+		     uint32_t serial)
 {
 	m->path = NULL;
 	m->interface = NULL;
@@ -741,7 +716,7 @@ void init_message(struct message *m, enum msg_type type, uint32_t serial)
 
 static_assert(sizeof(struct raw_header) == 16, "");
 
-static inline void swap32(void *p)
+ZB_INLINE void swap32(void *p)
 {
 	uint8_t *u = p;
 	uint8_t u0 = u[0];
@@ -752,7 +727,7 @@ static inline void swap32(void *p)
 	u[3] = u0;
 }
 
-int parse_message_size(char *p, size_t *phdr, size_t *pbody)
+int zb_parse_size(char *p, size_t *phdr, size_t *pbody)
 {
 	struct raw_header *h = (struct raw_header *)p;
 	if ((h->endian != 'l' && h->endian != 'B') ||
@@ -766,9 +741,9 @@ int parse_message_size(char *p, size_t *phdr, size_t *pbody)
 		swap32(&flen);
 		swap32(&blen);
 	}
-	uint32_t fpadded = ALIGN_UINT_UP(flen, 8);
-	if (fpadded > DBUS_MAX_VALUE_SIZE || blen > DBUS_MAX_MSG_SIZE ||
-	    fpadded + blen > DBUS_MAX_MSG_SIZE) {
+	uint32_t fpadded = ZB_ALIGN_UP(flen, 8);
+	if (fpadded > ZB_MAX_VALUE_SIZE || blen > ZB_MAX_MSG_SIZE ||
+	    fpadded + blen > ZB_MAX_MSG_SIZE) {
 		// need to protect against overflows
 		return -1;
 	}
@@ -777,7 +752,7 @@ int parse_message_size(char *p, size_t *phdr, size_t *pbody)
 	return 0;
 }
 
-static inline uint32_t read_little_4(const char *n)
+ZB_INLINE uint32_t read_little_4(const char *n)
 {
 #if defined __BYTE_ORDER__ && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 	uint32_t u;
@@ -790,7 +765,7 @@ static inline uint32_t read_little_4(const char *n)
 #endif
 }
 
-static uint32_t parse_uint32_field(struct iterator *ii)
+static uint32_t parse_uint32_field(struct zb_iterator *ii)
 {
 	// we should still be aligned from the beginning of this field
 	assert((ii->next & 7U) == 4U);
@@ -804,7 +779,7 @@ static uint32_t parse_uint32_field(struct iterator *ii)
 	return val;
 }
 
-static void parse_field(struct message *msg, struct iterator *ii)
+static void parse_field(struct zb_message *msg, struct zb_iterator *ii)
 {
 	align_iterator_8(ii);
 
@@ -815,10 +790,10 @@ static void parse_field(struct message *msg, struct iterator *ii)
 
 	uint8_t ftype = *(uint8_t *)(ii->base + ii->next);
 
-	if (ftype > FIELD_LAST) {
+	if (ftype > ZB_FIELD_LAST) {
 		ii->next++;
-		ii->sig = "v";
-		skip_value(ii);
+		ii->nextsig = "v";
+		zb_skip(ii, NULL);
 	} else {
 		uint32_t ftag = read_little_4(ii->base + ii->next);
 		ii->next += 4;
@@ -833,29 +808,28 @@ static void parse_field(struct message *msg, struct iterator *ii)
 			break;
 
 		case FTAG_PATH:
-			msg->path = parse_string8_no_sig_check(ii, ii->next);
+			msg->path = parse_str8_no_sig_check(ii, ii->next);
 			break;
 
 		case FTAG_INTERFACE:
-			msg->interface =
-				parse_string8_no_sig_check(ii, ii->next);
+			msg->interface = parse_str8_no_sig_check(ii, ii->next);
 			break;
 
 		case FTAG_MEMBER:
-			msg->member = parse_string8_no_sig_check(ii, ii->next);
+			msg->member = parse_str8_no_sig_check(ii, ii->next);
 			break;
 
 		case FTAG_ERROR_NAME:
-			msg->error = parse_string8_no_sig_check(ii, ii->next);
+			msg->error = parse_str8_no_sig_check(ii, ii->next);
 			break;
 
 		case FTAG_DESTINATION:
 			msg->destination =
-				parse_string8_no_sig_check(ii, ii->next);
+				parse_str8_no_sig_check(ii, ii->next);
 			break;
 
 		case FTAG_SENDER:
-			msg->sender = parse_string8_no_sig_check(ii, ii->next);
+			msg->sender = parse_str8_no_sig_check(ii, ii->next);
 			break;
 
 		case FTAG_SIGNATURE:
@@ -872,7 +846,7 @@ error:
 	ii->next = ii->end + 1;
 }
 
-int parse_header(struct message *msg, char *p)
+int zb_parse_header(struct zb_message *msg, char *p)
 {
 	// h may not be 4 byte aligned so copy the values
 	// over
@@ -885,12 +859,12 @@ int parse_header(struct message *msg, char *p)
 	memcpy(&bsz, &h->body_len, 4);
 	memcpy(&fsz, &h->field_len, 4);
 	memcpy(&serial, &h->serial, 4);
-	init_message(msg, h->type, serial);
+	zb_init_message(msg, h->type, serial);
 	msg->flags = h->flags;
 	msg->serial = serial;
 
-	struct iterator ii;
-	init_iterator(&ii, "", (char *)(h + 1), fsz);
+	struct zb_iterator ii;
+	zb_init_iterator(&ii, "", (char *)(h + 1), fsz);
 
 	while (ii.next < ii.end) {
 		parse_field(msg, &ii);
@@ -901,13 +875,13 @@ int parse_header(struct message *msg, char *p)
 	}
 
 	switch (msg->type) {
-	case MSG_METHOD:
+	case ZB_METHOD:
 		return !msg->path || !msg->interface || !msg->member;
-	case MSG_SIGNAL:
+	case ZB_SIGNAL:
 		return !msg->path || !msg->interface || !msg->member;
-	case MSG_REPLY:
+	case ZB_REPLY:
 		return !msg->reply_serial;
-	case MSG_ERROR:
+	case ZB_ERROR:
 		return !msg->reply_serial || !msg->error;
 	default:
 		return -1;

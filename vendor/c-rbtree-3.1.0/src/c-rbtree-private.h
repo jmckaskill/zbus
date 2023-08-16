@@ -15,12 +15,12 @@
 
 static inline void *c_rbnode_raw(CRBNode *n)
 {
-	return (void *)(n->__parent_and_flags & ~(uintptr_t)C_RBNODE_FLAG_MASK);
+	return (void *)(n->__parent_and_flags & ~(uintptr_t)C_RBNODE_ZB_FLAG_MASK);
 }
 
 static inline unsigned long c_rbnode_flags(CRBNode *n)
 {
-	return n->__parent_and_flags & C_RBNODE_FLAG_MASK;
+	return n->__parent_and_flags & C_RBNODE_ZB_FLAG_MASK;
 }
 
 static inline _Bool c_rbnode_is_red(CRBNode *n)

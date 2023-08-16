@@ -1,103 +1,97 @@
 #pragma once
 #define _GNU_SOURCE
-#include "str8.h"
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
 
-struct iterator;
-struct builder;
-struct stream;
-struct message;
-struct unix_oob;
-struct variant_data;
-struct array_data;
-struct dict_data;
+#ifdef __cplusplus
+#define ZB_EXTERN_C extern "C"
+#else
+#define ZB_EXTERN_C extern
+#endif
 
-#define ALIGN_UINT_DOWN(VAL, BOUNDARY) ((VAL) & (~(BOUNDARY##U - 1)))
+#ifdef ZB_EXPORT_DLL
+#define ZB_EXTERN ZB_EXTERN_C __declspec(dllexport)
+#else
+#define ZB_EXTERN ZB_EXTERN_C
+#endif
 
-#define ALIGN_UINT_UP(VAL, BOUNDARY) \
+#define ZB_INLINE static inline
+
+struct zb_iterator;
+struct zb_builder;
+struct zb_stream;
+struct zb_message;
+typedef struct zb_str8 zb_str8;
+
+#define ZB_ALIGN_UP(VAL, BOUNDARY) \
 	(((VAL) + (BOUNDARY##U - 1)) & (~(BOUNDARY##U - 1)))
 
-#define ALIGN_PTR_UP(PTR, BOUNDARY)                                    \
-	((char *)((((uintptr_t)(PTR)) + ((uintptr_t)(BOUNDARY)) - 1) & \
-		  (~((((uintptr_t)(BOUNDARY)) - 1)))))
+#define ZB_BYTE 'y'
+#define ZB_BOOL 'b'
+#define ZB_INT16 'n'
+#define ZB_UINT16 'q'
+#define ZB_INT32 'i'
+#define ZB_UINT32 'u'
+#define ZB_INT64 'x'
+#define ZB_UINT64 't'
+#define ZB_DOUBLE 'd'
+#define ZB_STRING 's'
+#define ZB_PATH 'o'
+#define ZB_SIGNATURE 'g'
+#define ZB_VARIANT 'v'
+#define ZB_ARRAY 'a'
+#define ZB_STRUCT 'r'
+#define ZB_STRUCT_BEGIN '('
+#define ZB_STRUCT_END ')'
+#define ZB_DICT 'e'
+#define ZB_DICT_BEGIN '{'
+#define ZB_DICT_END '}'
 
-#define MAX_TYPE_DEPTH 64
+#define ZB_MIN_MSG_SIZE 16
+#define ZB_MAX_MSG_SIZE 0x8000000U
+#define ZB_MAX_VALUE_SIZE 0x4000000U
 
-#define TYPE_INVALID '\0'
-#define TYPE_BYTE 'y'
-#define TYPE_BOOL 'b'
-#define TYPE_INT16 'n'
-#define TYPE_UINT16 'q'
-#define TYPE_INT32 'i'
-#define TYPE_UINT32 'u'
-#define TYPE_INT64 'x'
-#define TYPE_UINT64 't'
-#define TYPE_DOUBLE 'd'
-#define TYPE_STRING 's'
-#define TYPE_PATH 'o'
-#define TYPE_SIGNATURE 'g'
-#define TYPE_VARIANT 'v'
-#define TYPE_ARRAY 'a'
-#define TYPE_STRUCT 'r'
-#define TYPE_STRUCT_BEGIN '('
-#define TYPE_STRUCT_END ')'
-#define TYPE_DICT 'e'
-#define TYPE_DICT_BEGIN '{'
-#define TYPE_DICT_END '}'
+#define ZB_BUF_FIELD 8 // string: 3B padding, 4B tag, u32: 4B tag, 4B value
+#define ZB_BUF_STRING 8 // 3B padding, 4B length, 1B nul
+#define ZB_BUF_ARRAY 12 // 3B padding, 4B length, 4B padding
 
-#define DBUS_MIN_MSG_SIZE 16
-#define DBUS_MAX_MSG_SIZE 0x8000000U
-#define DBUS_MAX_VALUE_SIZE 0x4000000U
+#define ZB_NO_REPLY_EXPECTED 1
+#define ZB_NO_AUTO_START 2
+#define ZB_ALLOW_INTERACTIVE_AUTHORIZATION 4
+#define ZB_FLAG_MASK 7
 
-#define BUFSZ_FIELD 8 // string: 3B padding, 4B tag, u32: 4B tag, 4B value
-#define BUFSZ_STRING 8 // 3B padding, 4B length, 1B nul
-#define BUFSZ_ARRAY 12 // 3B padding, 4B length, 4B padding
+#define ZB_FIELD_PATH 1
+#define ZB_FIELD_INTERFACE 2
+#define ZB_FIELD_MEMBER 3
+#define ZB_FIELD_ERROR_NAME 4
+#define ZB_FIELD_REPLY_SERIAL 5
+#define ZB_FIELD_DESTINATION 6
+#define ZB_FIELD_SENDER 7
+#define ZB_FIELD_SIGNATURE 8
+#define ZB_FIELD_UNIX_FDS 9
+#define ZB_FIELD_LAST 9
 
-#define FIELD_PATH 1
-#define FIELD_INTERFACE 2
-#define FIELD_MEMBER 3
-#define FIELD_ERROR_NAME 4
-#define FIELD_REPLY_SERIAL 5
-#define FIELD_DESTINATION 6
-#define FIELD_SENDER 7
-#define FIELD_SIGNATURE 8
-#define FIELD_UNIX_FDS 9
-#define FIELD_LAST 9
+#define ZB_STREAM_OK 0
+#define ZB_STREAM_ERROR -1
+#define ZB_STREAM_READ_MORE -2
+#define ZB_STREAM_WRITE_MORE -3
 
-#define FTAG_PATH UINT32_C(0x006F0101) // BYTE: 01 SIG: "o"
-#define FTAG_INTERFACE UINT32_C(0x00730102) // BYTE: 02 SIG: "s"
-#define FTAG_MEMBER UINT32_C(0x00730103) // BYTE: 03 SIG: "s"
-#define FTAG_ERROR_NAME UINT32_C(0x00730104) // BYTE: 04 SIG: "s"
-#define FTAG_REPLY_SERIAL UINT32_C(0x00750105) // BYTE: 05 SIG: "u"
-#define FTAG_DESTINATION UINT32_C(0x00730106) // BYTE: 06 SIG: "s"
-#define FTAG_SENDER UINT32_C(0x00730107) // BYTE: 07 SIG: "s"
-#define FTAG_SIGNATURE UINT32_C(0x00670108) // BYTE: 08 SIG: "g"
-#define FTAG_UNIX_FDS UINT32_C(0x00750109) // BYTE: 09 SIG: "u"
-
-#define DBUS_VERSION 1
-
-#define FLAG_NO_REPLY_EXPECTED 1
-#define FLAG_NO_AUTO_START 2
-#define FLAG_ALLOW_INTERACTIVE_AUTHORIZATION 4
-#define FLAG_MASK 7
-
-enum msg_type {
-	MSG_METHOD = 1,
-	MSG_REPLY = 2,
-	MSG_ERROR = 3,
-	MSG_SIGNAL = 4,
+enum zb_msg_type {
+	ZB_METHOD = 1,
+	ZB_REPLY = 2,
+	ZB_ERROR = 3,
+	ZB_SIGNAL = 4,
 };
 
-struct message {
+struct zb_message {
 	// NULL pointer indicates lack of the field
-	const str8_t *path;
-	const str8_t *interface;
-	const str8_t *member;
-	const str8_t *error;
-	const str8_t *destination;
-	const str8_t *sender;
+	const zb_str8 *path;
+	const zb_str8 *interface;
+	const zb_str8 *member;
+	const zb_str8 *error;
+	const zb_str8 *destination;
+	const zb_str8 *sender;
 	// signature must be non NULL
 	const char *signature;
 	uint32_t fdnum;
@@ -108,38 +102,25 @@ struct message {
 	uint8_t flags;
 };
 
-struct raw_header {
-	uint8_t endian;
-	uint8_t type;
-	uint8_t flags;
-	uint8_t version;
-	uint8_t body_len[4];
-	uint8_t serial[4];
-	uint8_t field_len[4];
+struct zb_scope {
+	void *data[3];
 };
 
-struct array_data {
-	const char *sig;
-	uint32_t off;
-	uint8_t siglen;
-	uint8_t hdr;
-};
-
-struct iterator {
+struct zb_iterator {
 	char *base;
-	const char *sig;
+	const char *nextsig;
 	uint32_t next;
 	uint32_t end;
 };
 
-struct builder {
+struct zb_builder {
 	char *base;
-	const char *sig;
+	const char *nextsig;
 	uint32_t next;
 	uint32_t end;
 };
 
-struct variant {
+struct zb_variant {
 	const char *sig;
 	union {
 		bool b;
@@ -156,8 +137,8 @@ struct variant {
 			size_t len;
 		} str, path;
 		const char *sig;
-		struct iterator record;
-		struct iterator array;
-		struct iterator variant;
+		struct zb_iterator record;
+		struct zb_iterator array;
+		struct zb_iterator variant;
 	} u;
 };

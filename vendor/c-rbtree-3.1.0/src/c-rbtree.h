@@ -37,7 +37,7 @@ typedef struct CRBTree CRBTree;
 /* implementation detail */
 #define C_RBNODE_RED (0x1UL)
 #define C_RBNODE_ROOT (0x2UL)
-#define C_RBNODE_FLAG_MASK (0x3UL)
+#define C_RBNODE_ZB_FLAG_MASK (0x3UL)
 
 /**
  * struct CRBNode - Node of a Red-Black Tree
@@ -176,7 +176,7 @@ static inline CRBNode *c_rbnode_parent(CRBNode *n)
 {
 	return (n->__parent_and_flags & C_RBNODE_ROOT) ?
 		       NULL :
-		       (void *)(n->__parent_and_flags & ~C_RBNODE_FLAG_MASK);
+		       (void *)(n->__parent_and_flags & ~C_RBNODE_ZB_FLAG_MASK);
 }
 
 /**
