@@ -12,14 +12,18 @@
 
 struct rxconn {
 	int fd;
+#if CAN_SEND_UNIX_FDS
 	int clen;
 	char ctrl[CMSG_SPACE(sizeof(int) * MAX_UNIX_FDS)];
+#endif
 };
 
 struct txconn {
 	int fd;
+#if CAN_SEND_UNIX_FDS
 	int fdnum;
 	struct rxconn *fdsrc;
+#endif
 	bool is_async;
 	pthread_t thread;
 };

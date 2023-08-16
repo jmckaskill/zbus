@@ -289,7 +289,7 @@ int request_name(struct bus *b, struct rx *r, const zb_str8 *name,
 		}
 	}
 
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 	bool autolaunch = false;
 #endif
 	struct rcu_object *objs = NULL;
@@ -305,7 +305,7 @@ int request_name(struct bus *b, struct rx *r, const zb_str8 *name,
 		nm->v[idx] = na;
 		nd->destinations = nm;
 
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 		autolaunch = oa && oa->cfg && oa->cfg->exec;
 #endif
 	}
@@ -320,7 +320,7 @@ int request_name(struct bus *b, struct rx *r, const zb_str8 *name,
 		rcu_commit(b->rcu, nd, objs);
 		notify_name_acquired(b, r->txbuf, true, tx, name);
 		notify_name_changed(b, r->txbuf, true, tx->id, name);
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 		if (autolaunch) {
 			cnd_broadcast(&b->launch);
 		}
@@ -386,7 +386,7 @@ int release_name(struct bus *b, struct rx *r, const zb_str8 *name,
 ///////////////////////////////
 // autolaunch functions
 
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 int autolaunch_service(struct bus *b, const zb_str8 *name,
 		       const struct address **paddr)
 {
@@ -812,7 +812,7 @@ static int parse_address_config(struct addrcfg *c, const char *key, size_t klen,
 	if (klen == 11 && !memcmp(key, "description", 11)) {
 		return 0;
 
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 	} else if (klen == 4 && !memcmp(key, "exec", 4)) {
 		realloc_str(&c->exec, val);
 		return 0;

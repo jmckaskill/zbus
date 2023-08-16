@@ -15,7 +15,7 @@ static void reset_config(struct address *a)
 	// freeing adresses is serialized by the bus lock so don't need
 	// atomics here
 	if (a->cfg && --a->cfg->ref == 0) {
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 		free(a->cfg->exec);
 #endif
 		free(a->cfg);
@@ -61,7 +61,7 @@ static struct addrcfg *new_addrcfg(void)
 {
 	struct addrcfg *c = fmalloc(sizeof(*c));
 	c->ref = 1;
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 	c->exec = NULL;
 #endif
 #if HAVE_UNIX_GROUPS

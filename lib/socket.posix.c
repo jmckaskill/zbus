@@ -3,6 +3,8 @@
 #include "socket.posix.h"
 #include "log.h"
 #include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
@@ -11,6 +13,7 @@
 #include <signal.h>
 #include <limits.h>
 
+#if CAN_SEND_UNIX_FDS
 static void close_all_fds(struct rxconn *c)
 {
 	struct msghdr m;
@@ -24,7 +27,9 @@ static void close_all_fds(struct rxconn *c)
 			int *pfd = (int *)CMSG_DATA(c);
 			int n = (c->cmsg_len - CMSG_LEN(0)) / sizeof(int);
 			for (int i = 0; i < n; i++) {
-				close(pfd[i]);
+				int fd;
+				memcpy(&fd, &pfd[i], sizeof(int));
+				close(fd);
 			}
 		}
 	}
@@ -49,6 +54,7 @@ static int control_fdnum(struct rxconn *c)
 
 	return 0;
 }
+#endif
 
 void close_rx(struct rxconn *c)
 {
@@ -62,9 +68,11 @@ void close_tx(struct txconn *c)
 
 int block_recv2(struct rxconn *c, char *p1, size_t n1, char *p2, size_t n2)
 {
+#if CAN_SEND_UNIX_FDS
 	if (c->clen) {
 		close_all_fds(c);
 	}
+#endif
 	assert(n1 && n1 + n2 < INT_MAX);
 
 	for (;;) {
@@ -78,9 +86,14 @@ int block_recv2(struct rxconn *c, char *p1, size_t n1, char *p2, size_t n2)
 		memset(&m, 0, sizeof(m));
 		m.msg_iov = v;
 		m.msg_iovlen = n2 ? 2 : 1;
+#if CAN_SEND_UNIX_FDS
 		m.msg_control = c->ctrl;
 		m.msg_controllen = sizeof(c->ctrl);
 		int n = recvmsg(c->fd, &m, MSG_CMSG_CLOEXEC);
+		c->clen = n > 0 ? m.msg_controllen : 0;
+#else
+		int n = recvmsg(c->fd, &m, 0);
+#endif
 		if (n < 0 && errno == EINTR) {
 			continue;
 		} else if (n < 0 && errno == EAGAIN) {
@@ -104,7 +117,6 @@ int block_recv2(struct rxconn *c, char *p1, size_t n1, char *p2, size_t n2)
 			return 0;
 		}
 
-		c->clen = m.msg_controllen;
 		return n;
 	}
 }
@@ -127,6 +139,7 @@ int start_send3(struct txconn *c, char *p1, size_t n1, char *p2, size_t n2,
 	m.msg_iov = v;
 	m.msg_iovlen = n3 ? 3 : (n2 ? 2 : 1);
 
+#if CAN_SEND_UNIX_FDS
 	if (c->fdsrc) {
 		if (c->fdnum == control_fdnum(c->fdsrc)) {
 			m.msg_control = c->fdsrc->ctrl;
@@ -138,6 +151,7 @@ int start_send3(struct txconn *c, char *p1, size_t n1, char *p2, size_t n2,
 	}
 	c->fdsrc = NULL;
 	c->fdnum = 0;
+#endif
 
 	for (;;) {
 		int w = sendmsg(c->fd, &m, 0);

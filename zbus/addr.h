@@ -23,7 +23,7 @@ struct addrcfg {
 	int gid_access;
 #endif
 
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 	char *exec;
 #endif
 };
@@ -41,7 +41,7 @@ struct address {
 	struct submap *subs;
 	struct addrcfg *cfg;
 
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 	time_t last_launch;
 	bool running;
 #endif

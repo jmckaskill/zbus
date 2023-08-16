@@ -17,10 +17,6 @@
 #include <errno.h>
 #include <spawn.h>
 
-#if HAVE_ACCEPT4
-#define x_accept4 accept4
-#endif
-
 static atomic_flag g_sighup;
 
 static inline bool have_sighup(void)
@@ -33,7 +29,7 @@ static void on_sighup(int sig)
 	atomic_flag_clear(&g_sighup);
 }
 
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 static atomic_flag g_sigchld;
 
 static inline bool have_sigchld(void)
@@ -52,7 +48,7 @@ static void on_sigchld(int sig)
 static void default_sigmask(sigset_t *ss)
 {
 	sigemptyset(ss);
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 	sigaddset(ss, SIGCHLD);
 #endif
 	sigaddset(ss, SIGHUP);
@@ -74,7 +70,7 @@ int setup_signals(void)
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
 
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 	atomic_flag_test_and_set(&g_sigchld);
 	sa.sa_handler = &on_sigchld;
 	if (sigaction(SIGCHLD, &sa, NULL)) {
@@ -95,7 +91,7 @@ int setup_signals(void)
 	return 0;
 }
 
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 struct child_info {
 	struct bus *bus;
 	pid_t pid;
@@ -338,8 +334,14 @@ int main(int argc, char *argv[])
 
 	for (;;) {
 		// accept a single connection
-		int cfd = x_accept4(lfd, NULL, NULL,
-				    SOCK_CLOEXEC | SOCK_NONBLOCK);
+#if CAN_AUTOSTART
+		int cfd =
+			accept4(lfd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
+#else
+		// no need for cloexec when we don't launch child processes
+		int cfd = accept(lfd, NULL, NULL);
+		fcntl(cfd, F_SETFL, O_NONBLOCK);
+#endif
 		if (cfd < 0 && (errno != EAGAIN && errno != EINTR)) {
 			ERROR("accept,errno:%m");
 			return 2;
@@ -372,7 +374,7 @@ int main(int argc, char *argv[])
 		int n = ppoll(&pfd, 1, NULL, &ss);
 		if (n == 1) {
 			continue;
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 		} else if (have_sigchld() && reap_children()) {
 			return 1;
 #endif

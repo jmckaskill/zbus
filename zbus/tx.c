@@ -106,7 +106,7 @@ static int send_locked(struct tx *t, bool block, struct txmsg *m)
 	char *p3 = m->body[1].buf;
 	int n3 = m->body[1].len;
 
-#ifndef _WIN32
+#if CAN_SEND_UNIX_FDS
 	t->conn.fdnum = m->m.fdnum;
 	t->conn.fdsrc = m->fdsrc;
 #endif

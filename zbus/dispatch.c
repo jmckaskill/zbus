@@ -318,7 +318,7 @@ static int ref_named(struct rx *r, const zb_str8 *name, bool should_autostart,
 				err = ERR_NOT_ALLOWED;
 			} else if (a->tx) {
 				tx = ref_tx(a->tx);
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 			} else if (a->cfg && a->cfg->exec && should_autostart) {
 				err = 0;
 #endif
@@ -332,7 +332,7 @@ static int ref_named(struct rx *r, const zb_str8 *name, bool should_autostart,
 		return 0;
 	}
 
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 	if (err) {
 		return err;
 	}
@@ -386,7 +386,7 @@ static int ref_remote(struct rx *r, const zb_str8 *name, struct tx **ptx)
 ///////////////////////////////////////////
 // ListNames
 
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 static void encode_activatable(struct zb_builder *b, struct zb_scope *array,
 			       const struct addrmap *m)
 {
@@ -437,7 +437,7 @@ static int list_names(struct rx *r, uint32_t request_serial, bool activatable)
 	if (!activatable) {
 		encode_names(&b, &array, d->destinations);
 		encode_unique_names(&b, &array, d->remotes);
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 	} else {
 		encode_activatable(&b, &array, d->destinations);
 #endif

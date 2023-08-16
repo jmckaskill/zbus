@@ -7,7 +7,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 
-#if ENABLE_AUTOSTART
+#if CAN_AUTOSTART
 int sys_launch(struct bus *bus, const zb_str8 *name, char *exec)
 {
 	return -1;
