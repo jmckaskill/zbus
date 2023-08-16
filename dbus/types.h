@@ -24,6 +24,7 @@ struct zb_iterator;
 struct zb_builder;
 struct zb_stream;
 struct zb_message;
+struct zb_str8;
 typedef struct zb_str8 zb_str8;
 
 #define ZB_ALIGN_UP(VAL, BOUNDARY) \

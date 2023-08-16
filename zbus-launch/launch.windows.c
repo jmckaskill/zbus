@@ -58,10 +58,10 @@ int wmain(int argc, wchar_t *wargv[])
 		si.dwFlags = STARTF_USESTDHANDLES;
 		si.hStdInput = INVALID_HANDLE_VALUE;
 		si.hStdOutput = INVALID_HANDLE_VALUE;
-		si.hStdError = INVALID_HANDLE_VALUE;
+		si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
 		if (!CreateProcessW(NULL, command, NULL /*proc attributes*/,
 				    NULL /*thread attributes*/,
-				    FALSE /*inherit*/, DETACHED_PROCESS,
+				    TRUE /*inherit*/, DETACHED_PROCESS,
 				    NULL /*environ*/, NULL /*cwd*/, &si, &pi)) {
 			ERROR("create process,errno:%m");
 		}

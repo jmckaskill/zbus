@@ -5,13 +5,13 @@
 #include "bus.h"
 #include "dispatch.h"
 #include "txmap.h"
-#include "lib/socket.h"
+#include "socket.h"
 #include "dbus/stream.h"
 #include "dbus/str8.h"
 
 // this is the largest potential message we have to generate
-#define NAME_OWNER_CHANGED_BUFSZ                                  \
-	(ZB_MIN_MSG_SIZE + ZB_BUF_FIELD /*reply*/ +              \
+#define NAME_OWNER_CHANGED_BUFSZ                                   \
+	(ZB_MIN_MSG_SIZE + ZB_BUF_FIELD /*reply*/ +                \
 	 (ZB_BUF_FIELD + 1 + sizeof("sss")) +                      \
 	 (ZB_BUF_FIELD + 4 + sizeof("NameOwnerChanged")) +         \
 	 2 * (ZB_BUF_FIELD + 4 + sizeof("org.freedesktop.DBus")) + \
@@ -21,8 +21,8 @@
 
 // full length: mbr,iface,path,sig
 // controlled length: reply,sender
-#define SIGNAL_HDR_BUFSZ                                              \
-	(ZB_MIN_MSG_SIZE + 4 * (ZB_BUF_FIELD + ZB_BUF_STRING + 255) + \
+#define SIGNAL_HDR_BUFSZ                                                \
+	(ZB_MIN_MSG_SIZE + 4 * (ZB_BUF_FIELD + ZB_BUF_STRING + 255) +   \
 	 (ZB_BUF_FIELD + ZB_BUF_STRING + UNIQ_ADDR_BUFLEN) /*sender*/ + \
 	 ZB_BUF_FIELD /*reply*/)
 

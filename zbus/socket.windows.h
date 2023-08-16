@@ -2,7 +2,7 @@
 #include "socket.h"
 
 #ifdef _WIN32
-#include "windows.h"
+#include "lib/windows.h"
 
 struct rxconn {
 	HANDLE h;

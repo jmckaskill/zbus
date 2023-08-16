@@ -1,6 +1,6 @@
 #pragma once
 #include "config.h"
-#include "lib/socket.h"
+#include "socket.h"
 #include "dbus/str8.h"
 #include <stdlib.h>
 #include <stdbool.h>

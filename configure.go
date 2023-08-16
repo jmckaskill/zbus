@@ -235,12 +235,12 @@ func (s *settings) msvcCFlags(out string) []string {
 	if s.enableDebug {
 		return append([]string{
 			"/nologo", "/Z7", "/MTd", "/WX",
-			"/W3", "/wd5045", "/Od", "/I.",
+			"/W3", "/wd5045", "/D_CRT_SECURE_NO_WARNINGS", "/Od", "/I.",
 			"/showIncludes", "/Fo:" + out,
 		}, s.compileFlagsParts...)
 	} else {
 		return append([]string{
-			"/nologo", "/MT", "/W3", "/DNDEBUG",
+			"/nologo", "/MT", "/D_CRT_SECURE_NO_WARNINGS", "/W3", "/DNDEBUG",
 			"/I.", "/showIncludes", "/Fo:" + out,
 		}, s.compileFlagsParts...)
 	}
@@ -297,7 +297,7 @@ func main() {
 	}
 	checkPosixFlags := false
 	cflags := ""
-	def := []string{"zbus", "tester"}
+	def := []string{"zbus", "test-client", "test-server"}
 	s.platforms = make(map[string]bool)
 	s.platforms[goos] = true
 	switch goos {
@@ -462,8 +462,10 @@ func main() {
 		zbus = s.writeDllDir(f, "dbus", "libzbus", nil)
 	}
 	common := s.writeLibDir(f, "lib", "libcommon")
+	client := s.writeLibDir(f, "client", "libclient")
 	s.writeExeDir(f, "zbus", "zbus", []string{common, rbtree, zbus})
-	s.writeExeDir(f, "tester", "tester", []string{common, zbus})
+	s.writeExeDir(f, "test-client", "test-client", []string{client, common, zbus})
+	s.writeExeDir(f, "test-server", "test-server", []string{client, common, zbus})
 	s.writeExeDir(f, "gcc-ci-parser", "gcc-ci-parser", []string{common})
 	s.writeExeDir(f, "zbus-launch", "zbus-launch", []string{common})
 	s.writeDefault(f, def)

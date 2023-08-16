@@ -1,6 +1,6 @@
 #pragma once
 #ifdef _WIN32
-#include "windows.h"
+#include "lib/windows.h"
 #include <assert.h>
 #include <time.h>
 
@@ -24,9 +24,6 @@
 #define cnd_broadcast x_cnd_broadcast
 #define cnd_wait x_cnd_wait
 #define cnd_timedwait x_cnd_timedwait
-#define thrd_create x_thrd_create
-#define thrd_join x_thrd_join
-#define thrd_detach x_thrd_detach
 
 static inline int x_mtx_init(mtx_t *m, int type)
 {
@@ -81,7 +78,4 @@ static inline int x_cnd_wait(cnd_t *c, mtx_t *m)
 }
 
 int x_cnd_timedwait(cnd_t *c, mtx_t *m, const struct timespec *ts);
-int x_thrd_create(thrd_t *t, int (*fn)(void *), void *udata);
-int x_thrd_join(thrd_t t, int *res);
-int x_thrd_detach(thrd_t t);
 #endif

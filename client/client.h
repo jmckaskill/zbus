@@ -4,7 +4,6 @@
 #include "dbus/stream.h"
 #include "dbus/encode.h"
 #include "dbus/decode.h"
-#include "lib/log.h"
 
 struct client;
 typedef int (*message_fn)(void *, struct client *, struct zb_message *,

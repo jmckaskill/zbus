@@ -7,9 +7,9 @@
 #include "rx.h"
 #include "vector.h"
 #include "txmap.h"
+#include "threads.h"
 #include "dbus/match.h"
 #include "lib/log.h"
-#include "lib/threads.h"
 
 struct tx;
 struct rx;

@@ -694,6 +694,9 @@ int unicast(struct rx *r, struct txmsg *m)
 		return err;
 	}
 
+	bool is_request = m->m.type == ZB_METHOD &&
+			  !(m->m.flags & ZB_NO_REPLY_EXPECTED);
+
 	// rewrite the header
 	// keep path
 	// keep interface
@@ -703,7 +706,10 @@ int unicast(struct rx *r, struct txmsg *m)
 	// keep sender - previously overwritten
 	// keep signature
 	// keep fdnum
-	m->m.serial = NO_REPLY_SERIAL; // this may get overwritten later
+	// keep serial for requests - it will get overwritten later
+	if (!is_request) {
+		m->m.serial = NO_REPLY_SERIAL;
+	}
 	m->m.flags &= ZB_FLAG_MASK;
 
 	size_t bsz = m->body[0].len + m->body[1].len;
@@ -718,7 +724,7 @@ int unicast(struct rx *r, struct txmsg *m)
 	// keep body[0], body[1]
 	m->fdsrc = &r->conn;
 
-	if (m->m.type == ZB_METHOD && !(m->m.flags & ZB_NO_REPLY_EXPECTED)) {
+	if (is_request) {
 		err = route_request(r, tx, m);
 	} else {
 		err = send_message(tx, true, m);

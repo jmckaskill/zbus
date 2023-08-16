@@ -153,12 +153,6 @@ static int reap_children(void)
 int sys_launch(struct bus *b, const struct address *a)
 {
 	const struct rcu_data *d = rcu_root(b->rcu);
-	if (d->config->type) {
-		setenv("DBUS_STARTER_BUS_TYPE", d->config->type, 1);
-	}
-	if (d->config->address) {
-		setenv("DBUS_STARTER_ADDRESS", d->config->address, 1);
-	}
 
 	posix_spawnattr_t attr;
 	posix_spawnattr_init(&attr);
@@ -255,6 +249,25 @@ error:
 	return -1;
 }
 
+static void do_setenv(const char *key, const char *value)
+{
+	if (value) {
+		setenv(key, value, 1);
+	} else {
+		unsetenv(key);
+	}
+}
+
+static void update_environment(struct bus *b)
+{
+#if CAN_AUTOSTART
+	const struct rcu_data *d = rcu_root(b.rcu);
+	const struct config *c = d->config;
+	do_setenv("DBUS_STARTER_BUS_TYPE", d->config->type);
+	do_setenv("DBUS_STARTER_ADDRESS", d->config->address);
+#endif
+}
+
 static int usage(void)
 {
 	fputs("usage: zbus [args]\n", stderr);
@@ -329,6 +342,7 @@ int main(int argc, char *argv[])
 		close(0);
 	}
 
+	update_environment(&b);
 	g_enable_security = true;
 	int next_id = 1;
 
@@ -383,6 +397,7 @@ int main(int argc, char *argv[])
 			if (load_config(&b, &args)) {
 				ERROR("failed to reload config - continuing with previous config");
 			}
+			update_environment(&b);
 			mtx_unlock(&b.lk);
 			continue;
 		} else if (n < 0 && (errno == EINTR || errno == EAGAIN)) {

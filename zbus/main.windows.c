@@ -8,9 +8,105 @@
 #include <stdio.h>
 
 #if CAN_AUTOSTART
-int sys_launch(struct bus *bus, const zb_str8 *name, char *exec)
+static mtx_t g_child_lk;
+// count is increased by sys_launch within bus lock
+// count is decreased by child_watcher
+static DWORD g_nchild;
+static HANDLE g_child_handles[MAXIMUM_WAIT_OBJECTS];
+static zb_str8 *g_child_names[MAXIMUM_WAIT_OBJECTS];
+
+struct child_info {
+	struct child_info *prev;
+};
+
+static DWORD WINAPI child_watcher(void *udata)
 {
-	return -1;
+	struct bus *b = udata;
+	for (;;) {
+		mtx_lock(&g_child_lk);
+		DWORD num = g_nchild;
+		mtx_unlock(&g_child_lk);
+
+		DWORD n = WaitForMultipleObjects(num, g_child_handles, FALSE,
+						 INFINITE);
+		if (n > num) {
+			FATAL("child watcher wait failed,errno:%m");
+			return 1;
+		}
+		if (n == 0) {
+			// wakeup from sys_launch that the number of children
+			// has changed
+			continue;
+		}
+		CloseHandle(g_child_handles[n]);
+		zb_str8 *name = g_child_names[n];
+
+		mtx_lock(&g_child_lk);
+		memmove(g_child_names + n, g_child_names + n + 1,
+			(g_nchild - n - 1) * sizeof(g_child_names[0]));
+		memmove(g_child_handles + n, g_child_handles + n + 1,
+			(g_nchild - n - 1) * sizeof(g_child_handles[0]));
+		g_nchild--;
+		mtx_unlock(&g_child_lk);
+
+		service_exited(b, name);
+		free(name);
+	}
+}
+
+static int start_childwatcher(struct bus *b)
+{
+	mtx_init(&g_child_lk, mtx_plain);
+	g_child_handles[0] = CreateEvent(NULL, FALSE, FALSE, NULL);
+	g_nchild = 1;
+	HANDLE h = CreateThread(NULL, 0, &child_watcher, b, 0, NULL);
+	CloseHandle(h);
+	return h == INVALID_HANDLE_VALUE;
+}
+
+int sys_launch(struct bus *bus, const struct address *addr)
+{
+	BOOL ok = FALSE;
+	wchar_t *wexec = utf16dup(addr->cfg->exec);
+	zb_str8 *namedup = fmalloc(sizeof(*namedup) + addr->name.len);
+	zb_copy_str8(namedup, &addr->name);
+
+	mtx_lock(&g_child_lk);
+	bool overflow = (g_nchild == MAXIMUM_WAIT_OBJECTS);
+	mtx_unlock(&g_child_lk);
+	if (overflow) {
+		goto out;
+	}
+
+	PROCESS_INFORMATION pi;
+	STARTUPINFOW si;
+	memset(&si, 0, sizeof(si));
+	si.cb = sizeof(si);
+	si.dwFlags = STARTF_USESTDHANDLES;
+	si.hStdInput = INVALID_HANDLE_VALUE;
+	si.hStdOutput = INVALID_HANDLE_VALUE;
+	si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+	ok = CreateProcessW(NULL, wexec, NULL, NULL, TRUE, DETACHED_PROCESS,
+			    NULL, NULL, &si, &pi);
+	if (!ok) {
+		goto out;
+	}
+	CloseHandle(pi.hThread);
+
+	// add child to list for the child watcher
+	mtx_lock(&g_child_lk);
+	g_child_handles[g_nchild] = pi.hProcess;
+	g_child_names[g_nchild++] = namedup;
+	namedup = NULL;
+	mtx_unlock(&g_child_lk);
+
+	// wake up the child_watcher so it can grab the new list
+	SetEvent(g_child_handles[0]);
+
+out:
+	free(wexec);
+	free(namedup);
+	return !ok;
 }
 #endif
 
@@ -218,6 +314,24 @@ int wmain(int argc, wchar_t *wargv[])
 	if (create_pipe(&hpipe, pipename, true)) {
 		FATAL("failed to create first named pipe,pipe:%s,errno:%m",
 		      pipename);
+	}
+
+#if CAN_AUTOSTART
+	if (start_childwatcher(&b)) {
+		FATAL("failed to start child watcher thread,errno:%m");
+	}
+#endif
+
+	if (d->config->type) {
+		wchar_t *type = utf16dup(d->config->type);
+		SetEnvironmentVariableW(L"DBUS_STARTER_BUS_TYPE", type);
+		free(type);
+	}
+
+	if (d->config->address) {
+		wchar_t *addr = utf16dup(d->config->address);
+		SetEnvironmentVariableW(L"DBUS_STARTER_ADDRESS", addr);
+		free(addr);
 	}
 
 	if (write_win_pipename(&m, pipename)) {

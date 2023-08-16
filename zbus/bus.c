@@ -387,17 +387,64 @@ int release_name(struct bus *b, struct rx *r, const zb_str8 *name,
 // autolaunch functions
 
 #if CAN_AUTOSTART
+static void service_started(struct bus *b, int idx, const struct timespec *ts)
+{
+	const struct rcu_data *od = rcu_root(b->rcu);
+	const struct addrmap *om = od->destinations;
+	const struct address *oa = om->v[idx];
+
+	struct rcu_object *objs = NULL;
+	struct rcu_data *nd = edit_rcu_data(&objs, od);
+	struct addrmap *nm = edit_addrmap(&objs, om, idx, 0);
+	struct address *na = edit_address(&objs, oa);
+	na->last_launch = *ts;
+	na->running = true;
+	nm->v[idx] = na;
+	nd->destinations = nm;
+	rcu_commit(b->rcu, nd, objs);
+}
+
+void service_exited(struct bus *b, const zb_str8 *name)
+{
+	const struct rcu_data *od = rcu_root(b->rcu);
+	const struct addrmap *om = od->destinations;
+	int idx = bsearch_address(om, name);
+	if (idx < 0) {
+		return;
+	}
+	const struct address *oa = om->v[idx];
+
+	struct rcu_object *objs = NULL;
+	struct rcu_data *nd = edit_rcu_data(&objs, od);
+	struct addrmap *nm = edit_addrmap(&objs, om, idx, 0);
+	struct address *na = edit_address(&objs, oa);
+	na->running = false;
+	nm->v[idx] = na;
+	nd->destinations = nm;
+	rcu_commit(b->rcu, nd, objs);
+
+	cnd_broadcast(&b->launch);
+}
+
+static int64_t timespec_diffms(const struct timespec *a,
+			       const struct timespec *b)
+{
+	int64_t secs = (int64_t)(a->tv_sec - b->tv_sec);
+	int64_t ns = (int64_t)(a->tv_nsec - b->tv_nsec);
+	return (secs * 1000) + (ns / 1000 / 1000);
+}
+
 int autolaunch_service(struct bus *b, const zb_str8 *name,
 		       const struct address **paddr)
 {
-	struct timespec now;
-	if (timespec_get(&now, TIME_UTC) != TIME_UTC) {
+	struct timespec start;
+	if (timespec_get(&start, TIME_UTC) != TIME_UTC) {
 		ERROR("what is the time?,errno:%m");
 		return ERR_INTERNAL;
 	}
 	struct timespec wait = {
-		.tv_sec = now.tv_sec + 500,
-		.tv_nsec = now.tv_nsec,
+		.tv_sec = start.tv_sec + 5,
+		.tv_nsec = start.tv_nsec,
 	};
 
 	bool launched = false;
@@ -419,24 +466,13 @@ int autolaunch_service(struct bus *b, const zb_str8 *name,
 		}
 
 		if (!oa->running && !launched &&
-		    difftime(now.tv_sec, oa->last_launch) > 5) {
+		    timespec_diffms(&start, &oa->last_launch) > 5000) {
 			// it's been a while since we launched it, let's try and
 			// launch it again
 			if (sys_launch(b, oa)) {
 				return ERR_LAUNCH_FAILED;
 			}
-
-			// now update the config to indicate that we started it
-			struct rcu_object *objs = NULL;
-			struct rcu_data *nd = edit_rcu_data(&objs, od);
-			struct addrmap *nm = edit_addrmap(&objs, om, idx, 0);
-			struct address *na = edit_address(&objs, oa);
-			na->last_launch = now.tv_sec;
-			na->running = true;
-			nm->v[idx] = na;
-			nd->destinations = nm;
-			rcu_commit(b->rcu, nd, objs);
-
+			service_started(b, idx, &start);
 			launched = true;
 
 		} else if (!oa->running) {
@@ -448,35 +484,7 @@ int autolaunch_service(struct bus *b, const zb_str8 *name,
 		if (cnd_timedwait(&b->launch, &b->lk, &wait) != thrd_success) {
 			return ERR_TIMED_OUT;
 		}
-
-		if (timespec_get(&now, TIME_UTC) != TIME_UTC) {
-			ERROR("what is the time?,errno:%m");
-			return ERR_INTERNAL;
-		}
 	}
-}
-
-void service_exited(struct bus *b, const zb_str8 *name)
-{
-	struct rcu_writer *w = b->rcu;
-	const struct rcu_data *od = rcu_root(w);
-	const struct addrmap *om = od->destinations;
-	int idx = bsearch_address(om, name);
-	if (idx < 0) {
-		return;
-	}
-	const struct address *oa = om->v[idx];
-
-	struct rcu_object *objs = NULL;
-	struct rcu_data *nd = edit_rcu_data(&objs, od);
-	struct addrmap *nm = edit_addrmap(&objs, om, idx, 0);
-	struct address *na = edit_address(&objs, oa);
-	na->running = false;
-	nm->v[idx] = na;
-	nd->destinations = nm;
-	rcu_commit(b->rcu, nd, objs);
-
-	cnd_broadcast(&b->launch);
 }
 #endif
 

@@ -42,7 +42,7 @@ struct address {
 	struct addrcfg *cfg;
 
 #if CAN_AUTOSTART
-	time_t last_launch;
+	struct timespec last_launch;
 	bool running;
 #endif
 	zb_str8 name;

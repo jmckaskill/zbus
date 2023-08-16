@@ -69,6 +69,8 @@ static const char *prefix[] = {
 #define SUFFIX_JSON "}\n"
 #define SUFFIX_TEXT ("\n" CLEAR)
 #define ENCODE_CHAR_LEN 6 // \u1234
+#define OVERFLOW_TEXT ("...\n" CLEAR)
+#define OVERFLOW_JSON "...\n"
 
 // enough for a field open, field seperator, number and closing brace/newline
 // if we have this much spare room on top of the key length then we start an
@@ -83,6 +85,7 @@ static const char *prefix[] = {
 #define FIELD_KEY ((g_log_type == LOG_TEXT) ? FIELD_KEY_TEXT : FIELD_KEY_JSON)
 #define FIELD_STR ((g_log_type == LOG_TEXT) ? FIELD_STR_TEXT : FIELD_STR_JSON)
 #define FIELD_NUM ((g_log_type == LOG_TEXT) ? FIELD_NUM_TEXT : FIELD_NUM_JSON)
+#define OVERFLOW ((g_log_type == LOG_TEXT) ? OVERFLOW_TEXT : OVERFLOW_JSON)
 
 static const char escapes[128] = {
 	1,   1,	  1,   1, 1,	1,   1, 1, // 0
@@ -167,7 +170,7 @@ static inline size_t grow(struct logbuf *b, size_t sz)
 		b->end = alloc;
 		return 0;
 	} else {
-		b->off = append(b->buf, b->off, "...\n", 3);
+		b->off = append(b->buf, b->off, OVERFLOW, strlen(OVERFLOW));
 		flush_log(b);
 		return -1;
 	}
