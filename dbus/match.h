@@ -13,10 +13,10 @@ struct zb_matcher {
 // standard requires. No backslashes or escaping is allowed. Type must be
 // 'signal'. Destination, args, etc can not be filtered on. Returns non-zero on
 // error, zero on success.
-int zb_decode_match(struct zb_matcher *m, char *s, size_t len);
+ZB_EXTERN int zb_decode_match(struct zb_matcher *m, char *s, size_t len);
 
-bool zb_path_matches(const char *base, const struct zb_matcher m,
-		     const zb_str8 *path);
+ZB_EXTERN bool zb_path_matches(const char *base, const struct zb_matcher m,
+			       const zb_str8 *path);
 
 ZB_INLINE const zb_str8 *_zb_match_part(const char *p, uint16_t off)
 {

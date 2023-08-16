@@ -1,3 +1,4 @@
+#include "internal.h"
 #include "match.h"
 #include "decode.h"
 #include <assert.h>

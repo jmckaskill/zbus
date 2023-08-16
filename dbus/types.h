@@ -10,10 +10,12 @@
 #define ZB_EXTERN_C extern
 #endif
 
-#ifdef ZB_EXPORT_DLL
+#if !defined ZB_EXPORT_DLL
+#define ZB_EXTERN ZB_EXTERN_C
+#elif defined ZB_BUILDING
 #define ZB_EXTERN ZB_EXTERN_C __declspec(dllexport)
 #else
-#define ZB_EXTERN ZB_EXTERN_C
+#define ZB_EXTERN ZB_EXTERN_C __declspec(dllimport)
 #endif
 
 #define ZB_INLINE static inline

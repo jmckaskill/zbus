@@ -1,7 +1,7 @@
+#include "internal.h"
 #include "auth.h"
 #include "decode.h"
 #include "encode.h"
-#include "internal.h"
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdio.h>

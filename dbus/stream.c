@@ -1,3 +1,4 @@
+#include "internal.h"
 #include "stream.h"
 #include "auth.h"
 #include "encode.h"

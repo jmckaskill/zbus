@@ -4,7 +4,7 @@
 
 // returns one of the ZB_STREAM_* error codes. State should be initially set to
 // 0.
-int zb_step_server_auth(int *pstate, char **pin, char *inend, char **pout,
+ZB_EXTERN int zb_step_server_auth(int *pstate, char **pin, char *inend, char **pout,
 			char *outend, const char *busid, uint32_t *pserial);
 
 // Client auth assume the auth handshake will succeed and sends the entire
@@ -13,8 +13,8 @@ int zb_step_server_auth(int *pstate, char **pin, char *inend, char **pout,
 // handshake.
 
 // returns # of bytes written or -ve on error
-int zb_encode_auth_request(char *buf, size_t bufsz, const char *uid,
+ZB_EXTERN int zb_encode_auth_request(char *buf, size_t bufsz, const char *uid,
 			   uint32_t serial);
 
 // returns ZB_STREAM_* error code above or # of bytes read on success
-int zb_decode_auth_reply(char *in, size_t sz);
+ZB_EXTERN int zb_decode_auth_reply(char *in, size_t sz);

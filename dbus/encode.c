@@ -1,7 +1,7 @@
+#include "internal.h"
 #include "encode.h"
 #include "decode.h"
 #include "str8.h"
-#include "internal.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <limits.h>

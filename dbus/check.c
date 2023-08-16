@@ -1,3 +1,4 @@
+#include "internal.h"
 #include "check.h"
 
 int zb_check_path(const char *s, size_t len)

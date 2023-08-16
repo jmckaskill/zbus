@@ -59,9 +59,6 @@ ZB_INLINE void zb_add_dict_entry(struct zb_builder *b, struct zb_scope *s);
 /////////////////////////////////////
 // message handling
 
-ZB_EXTERN void zb_init_message(struct zb_message *m, enum zb_msg_type type,
-			       uint32_t serial);
-
 // Writes a message header to the supplied buffer.
 // Supplied buffer must be 8 byte aligned
 // returns -ve on error

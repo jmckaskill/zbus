@@ -1,4 +1,5 @@
 #pragma once
+#define ZB_BUILDING
 #include "types.h"
 
 #define FTAG_PATH UINT32_C(0x006F0101) // BYTE: 01 SIG: "o"

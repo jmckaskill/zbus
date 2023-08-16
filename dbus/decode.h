@@ -47,6 +47,9 @@ ZB_INLINE int zb_cmp_signature(const char *sig, const char *test);
 //////////////////////////////////////
 // message decoding
 
+ZB_EXTERN void zb_init_message(struct zb_message *m, enum zb_msg_type type,
+			       uint32_t serial);
+
 // buffer must be at least ZB_MIN_MSG_SIZE long
 // returns non-zero on invalid message header
 // returns zero on success and sets phdr and pbody to the header and body sizes

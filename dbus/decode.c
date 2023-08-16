@@ -1,5 +1,5 @@
-#include "decode.h"
 #include "internal.h"
+#include "decode.h"
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
