@@ -2,9 +2,9 @@
 
 #define MAX_DEPTH 32
 
-ZB_INLINE int align2(char *base, uint32_t off, uint32_t error)
+ZB_INLINE int_fast32_t align2(char *base, int_fast32_t off, int_fast32_t error)
 {
-	uint32_t aligned = ZB_ALIGN_UP(off, 2);
+	int_fast32_t aligned = ZB_ALIGN_UP(off, 2);
 #ifndef NDEBUG
 	if (off < aligned) {
 		if (base[off++]) {
@@ -17,9 +17,9 @@ ZB_INLINE int align2(char *base, uint32_t off, uint32_t error)
 	return aligned;
 }
 
-ZB_INLINE int align4(char *base, uint32_t off, uint32_t error)
+ZB_INLINE int_fast32_t align4(char *base, int_fast32_t off, int_fast32_t error)
 {
-	uint32_t aligned = ZB_ALIGN_UP(off, 4);
+	int_fast32_t aligned = ZB_ALIGN_UP(off, 4);
 #ifndef NDEBUG
 	while (off < aligned) {
 		if (base[off++]) {
@@ -32,9 +32,9 @@ ZB_INLINE int align4(char *base, uint32_t off, uint32_t error)
 	return aligned;
 }
 
-ZB_INLINE int align8(char *base, uint32_t off, uint32_t error)
+ZB_INLINE int_fast32_t align8(char *base, int_fast32_t off, int_fast32_t error)
 {
-	uint32_t aligned = ZB_ALIGN_UP(off, 8);
+	int_fast32_t aligned = ZB_ALIGN_UP(off, 8);
 #ifndef NDEBUG
 	while (off < aligned) {
 		if (base[off++]) {
@@ -49,7 +49,7 @@ ZB_INLINE int align8(char *base, uint32_t off, uint32_t error)
 
 void align_iterator_8(struct zb_iterator *p)
 {
-	uint32_t n = align8(p->base, p->next, p->end);
+	int_fast32_t n = align8(p->base, p->next, p->end);
 	if (n > p->end) {
 		p->next = p->end + 1;
 	} else {
@@ -57,7 +57,8 @@ void align_iterator_8(struct zb_iterator *p)
 	}
 }
 
-static uint32_t alignx(char type, char *base, uint32_t off, uint32_t error)
+static int_fast32_t alignx(char type, char *base, int_fast32_t off,
+			   int_fast32_t error)
 {
 	switch (type) {
 	case ZB_BYTE:
@@ -87,7 +88,7 @@ static uint32_t alignx(char type, char *base, uint32_t off, uint32_t error)
 
 static uint8_t parse1(struct zb_iterator *p, char type)
 {
-	uint32_t n = p->next;
+	int_fast32_t n = p->next;
 	if (n >= p->end || *p->nextsig != type) {
 		p->next = p->end + 1;
 		return 0;
@@ -99,7 +100,7 @@ static uint8_t parse1(struct zb_iterator *p, char type)
 
 static uint16_t parse2(struct zb_iterator *p, char type)
 {
-	uint32_t n = align2(p->base, p->next, p->end);
+	int_fast32_t n = align2(p->base, p->next, p->end);
 	if (n + 2 > p->end || *p->nextsig != type) {
 		p->next = p->end + 1;
 		return 0;
@@ -113,7 +114,7 @@ static uint16_t parse2(struct zb_iterator *p, char type)
 
 static uint32_t parse4(struct zb_iterator *p, char type)
 {
-	uint32_t n = align4(p->base, p->next, p->end);
+	int_fast32_t n = align4(p->base, p->next, p->end);
 	if (n + 4 > p->end || *p->nextsig != type) {
 		p->next = p->end + 1;
 		return 0;
@@ -127,7 +128,7 @@ static uint32_t parse4(struct zb_iterator *p, char type)
 
 static uint64_t parse8(struct zb_iterator *p, char type)
 {
-	uint32_t n = align8(p->base, p->next, p->end);
+	int_fast32_t n = align8(p->base, p->next, p->end);
 	if (n + 8 > p->end || *p->nextsig != type) {
 		p->next = p->end + 1;
 		return 0;
@@ -196,7 +197,7 @@ double zb_parse_double(struct zb_iterator *p)
 static char *parse_string_bytes(struct zb_iterator *p, uint32_t len)
 {
 	char *ret = p->base + p->next;
-	uint32_t n = p->next + len + 1;
+	int_fast32_t n = p->next + len + 1;
 	if (len > ZB_MAX_VALUE_SIZE || n > p->end || ret[len]) {
 		p->next = p->end + 1;
 		return NULL;
@@ -245,7 +246,8 @@ char *zb_parse_path(struct zb_iterator *p, size_t *psz)
 	return parse_string_bytes(p, len);
 }
 
-static zb_str8 *parse_str8_no_sig_check(struct zb_iterator *p, uint32_t aligned)
+static zb_str8 *parse_str8_no_sig_check(struct zb_iterator *p,
+					int_fast32_t aligned)
 {
 	assert(!(aligned & 3U));
 	char *plen = p->base + aligned;
@@ -255,7 +257,7 @@ static zb_str8 *parse_str8_no_sig_check(struct zb_iterator *p, uint32_t aligned)
 	uint32_t len;
 	memcpy(&len, plen, 4);
 	zb_str8 *s = (zb_str8 *)(plen + 3);
-	uint32_t next = aligned + 4 + len + 1;
+	int_fast32_t next = aligned + 4 + len + 1;
 	if (len > UINT8_MAX || next > p->end || p->base[next - 1]) {
 		goto error;
 	}
@@ -276,7 +278,7 @@ const zb_str8 *zb_parse_str8(struct zb_iterator *p)
 		return NULL;
 	}
 	p->nextsig++;
-	uint32_t n = align4(p->base, p->next, p->end);
+	int_fast32_t n = align4(p->base, p->next, p->end);
 	return parse_str8_no_sig_check(p, n);
 }
 
@@ -342,7 +344,7 @@ void zb_parse_variant(struct zb_iterator *p, struct zb_variant *pv)
 
 struct iter_array {
 	const char *sig_start;
-	uint32_t prev_end;
+	int_fast32_t prev_end;
 	uint8_t siglen;
 	uint8_t first_entry;
 };
@@ -353,13 +355,14 @@ void zb_enter_array(struct zb_iterator *p, struct zb_scope *s)
 {
 	struct iter_array *a = (void *)s;
 	uint32_t len = parse4(p, ZB_ARRAY);
-	uint32_t start = alignx(*p->nextsig, p->base, p->next, p->end);
+	int_fast32_t start = alignx(*p->nextsig, p->base, p->next, p->end);
+	int_fast32_t end = start + len;
 
 	// step back so that zb_skip_signature can pick up that we're in an
 	// array
 	const char *nextsig = p->nextsig - 1;
 
-	if (len > ZB_MAX_VALUE_SIZE || start + len > p->end ||
+	if (len > ZB_MAX_VALUE_SIZE || end > p->end ||
 	    zb_skip_signature(&nextsig)) {
 		zb_set_iter_error(p);
 	} else {
@@ -368,7 +371,7 @@ void zb_enter_array(struct zb_iterator *p, struct zb_scope *s)
 		a->prev_end = p->end;
 		a->first_entry = 1;
 		p->next = start;
-		p->end = start + len;
+		p->end = end;
 	}
 }
 
@@ -415,7 +418,7 @@ bool zb_array_has_more(struct zb_iterator *p, struct zb_scope *s)
 
 static void _parse_struct(struct zb_iterator *p, char type)
 {
-	uint32_t n = align8(p->base, p->next, p->end);
+	int_fast32_t n = align8(p->base, p->next, p->end);
 	if (n > p->end || *p->nextsig != type) {
 		p->next = p->end + 1;
 	} else {

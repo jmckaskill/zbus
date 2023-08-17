@@ -116,15 +116,15 @@ struct zb_scope {
 struct zb_iterator {
 	char *base;
 	const char *nextsig;
-	uint32_t next;
-	uint32_t end;
+	int_fast32_t next;
+	int_fast32_t end;
 };
 
 struct zb_builder {
 	char *base;
 	const char *nextsig;
-	uint32_t next;
-	uint32_t end;
+	int_fast32_t next;
+	int_fast32_t end;
 };
 
 struct zb_variant {
