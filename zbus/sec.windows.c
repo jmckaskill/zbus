@@ -15,15 +15,9 @@ void free_security(struct security *p)
 	}
 }
 
-bool g_enable_security = false;
-
 int load_security(struct txconn *c, struct security **pp)
 {
-	if (!g_enable_security) {
-		*pp = NULL;
-		return 0;
-	}
-
+	TOKEN_USER *u = NULL;
 	HANDLE tok = INVALID_HANDLE_VALUE;
 	ULONG pid;
 	if (!GetNamedPipeClientProcessId(c->h, &pid)) {
@@ -35,22 +29,25 @@ int load_security(struct txconn *c, struct security **pp)
 		goto error;
 	}
 
-	if (!OpenThreadToken(GetCurrentThread(), TOKEN_QUERY_SOURCE, TRUE,
-			     &tok)) {
+	if (!OpenThreadToken(GetCurrentThread(), TOKEN_READ, TRUE, &tok)) {
 		ERROR("failed to open impersonated token,errno:%m");
 		goto error;
 	}
 
-	TOKEN_OWNER owner;
-	DWORD sz;
-	if (!GetTokenInformation(tok, TokenOwner, &owner, sizeof(owner), &sz) ||
-	    sz != sizeof(owner)) {
+	DWORD usz;
+	if (GetTokenInformation(tok, TokenUser, NULL, 0, &usz) ||
+	    GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+		FATAL("failed to get sid,errno:%m");
+	}
+
+	u = fmalloc(usz);
+	if (!GetTokenInformation(tok, TokenUser, u, usz, &usz)) {
 		ERROR("failed to get sid,errno:%m");
 		goto error;
 	}
 
 	char *sid;
-	if (!ConvertSidToStringSidA(owner.Owner, &sid)) {
+	if (!ConvertSidToStringSidA(u->User.Sid, &sid)) {
 		ERROR("failed to convert sid to string,errno:%m");
 		goto error;
 	}
@@ -60,10 +57,12 @@ int load_security(struct txconn *c, struct security **pp)
 	p->sid = sid;
 	*pp = p;
 
+	free(u);
 	CloseHandle(tok);
 	return 0;
 
 error:
+	free(u);
 	CloseHandle(tok);
 	return -1;
 }

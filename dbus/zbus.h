@@ -6,17 +6,9 @@
 #include <assert.h>
 
 #ifdef __cplusplus
-#define ZB_EXTERN_C extern "C"
+#define ZB_EXTERN extern "C"
 #else
-#define ZB_EXTERN_C extern
-#endif
-
-#if !defined ZB_EXPORT_DLL
-#define ZB_EXTERN ZB_EXTERN_C
-#elif defined ZB_BUILDING
-#define ZB_EXTERN ZB_EXTERN_C __declspec(dllexport)
-#else
-#define ZB_EXTERN ZB_EXTERN_C __declspec(dllimport)
+#define ZB_EXTERN extern
 #endif
 
 #define ZB_INLINE static inline

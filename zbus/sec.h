@@ -24,8 +24,6 @@ struct security {
 #endif
 };
 
-extern bool g_enable_security;
-
 int load_security(struct txconn *c, struct security **pp);
 void free_security(struct security *p);
 

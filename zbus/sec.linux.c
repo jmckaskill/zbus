@@ -55,11 +55,6 @@ static void parse_proc_groups(struct security *c, int max_groups, int pid,
 
 int load_security(struct txconn *c, struct security **pp)
 {
-	if (!g_enable_security) {
-		*pp = NULL;
-		return 0;
-	}
-
 	struct ucred uc;
 	socklen_t sz = sizeof(uc);
 	if (getsockopt(c->fd, SOL_SOCKET, SO_PEERCRED, &uc, &sz)) {

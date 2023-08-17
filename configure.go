@@ -350,13 +350,9 @@ func main() {
 	flag.StringVar(&s.depsType, "deps", s.depsType, "Ninja dependency type")
 	flag.BoolVar(&s.enableDebug, "debug", s.enableDebug, "Enable debug compile")
 	flag.BoolVar(&s.enableAutostart, "enable-autostart", s.enableAutostart, "Enable autostart")
-	flag.BoolVar(&s.staticBuild, "static", s.staticBuild, "Build library as static archive")
 	flag.Parse()
 
 	s.compileFlagsParts = strings.Split(cflags, " ")
-	if !s.staticBuild {
-		s.compileFlagsParts = append(s.compileFlagsParts, "-DZB_EXPORT_DLL=1")
-	}
 
 	var err error
 	s.tmpdir, err = os.MkdirTemp("", "configure-go-*")
@@ -455,12 +451,7 @@ func main() {
 	s.writeRules(f)
 	objs := s.writeCompile(f, "c-rbtree", "vendor/c-rbtree-3.1.0/src/c-rbtree.c", nil)
 	rbtree := s.writeLib(f, "c-rbtree", objs)
-	zbus := ""
-	if s.staticBuild {
-		zbus = s.writeLibDir(f, "dbus", "libzbus")
-	} else {
-		zbus = s.writeDllDir(f, "dbus", "libzbus", nil)
-	}
+	zbus := s.writeLibDir(f, "dbus", "libzbus")
 	common := s.writeLibDir(f, "lib", "libcommon")
 	client := s.writeLibDir(f, "client", "libclient")
 	s.writeExeDir(f, "zbus", "zbus", []string{common, rbtree, zbus})

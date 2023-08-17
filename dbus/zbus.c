@@ -1,4 +1,3 @@
-#define ZB_BUILDING
 #include "zbus.h"
 
 #define ZB_ALIGN_UP(VAL, BOUNDARY) \

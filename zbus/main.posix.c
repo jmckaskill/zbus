@@ -343,7 +343,6 @@ int main(int argc, char *argv[])
 	}
 
 	update_environment(&b);
-	g_enable_security = true;
 	int next_id = 1;
 
 	for (;;) {

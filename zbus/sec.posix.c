@@ -5,8 +5,6 @@
 #include <grp.h>
 #include <sys/types.h>
 
-bool g_enable_security;
-
 static int compare_gid(const void *key, const void *element)
 {
 	int k = (int)(uintptr_t)key;
@@ -16,7 +14,7 @@ static int compare_gid(const void *key, const void *element)
 
 bool has_group(const struct security *p, int group)
 {
-	if (!g_enable_security || group == GROUP_ANY) {
+	if (group == GROUP_ANY) {
 		// anyone can access this resource
 		return true;
 	}
