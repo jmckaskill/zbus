@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <threads.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <poll.h>
@@ -99,8 +100,8 @@ struct child_info {
 
 KHASH_MAP_INIT_INT(child_info, struct child_info *)
 
-static mtx_t child_lk;
-static khash_t(child_info) children;
+static pthread_mutex_t g_children_lk = PTHREAD_MUTEX_INITIALIZER;
+static khash_t(child_info) * g_children;
 
 static int reap_children(void)
 {
@@ -115,15 +116,15 @@ static int reap_children(void)
 			return -1;
 		}
 
-		mtx_lock(&child_lk);
-		khint_t ii = kh_get(child_info, &children, pid);
-		if (ii == kh_end(&children)) {
+		pthread_mutex_lock(&g_children_lk);
+		khint_t ii = kh_get(child_info, g_children, pid);
+		if (ii == kh_end(g_children)) {
 			ERROR("unknown child exited,pid:%d", pid);
-			mtx_unlock(&child_lk);
+			pthread_mutex_unlock(&g_children_lk);
 			continue;
 		}
 
-		struct child_info *c = kh_val(&children, ii);
+		struct child_info *c = kh_val(g_children, ii);
 
 		if (WIFSIGNALED(sts)) {
 			ERROR("child exited with signal,pid:%d,signal:%d,name:%.*s",
@@ -136,8 +137,8 @@ static int reap_children(void)
 			    c->name.p);
 		}
 
-		kh_del(child_info, &children, ii);
-		mtx_unlock(&child_lk);
+		kh_del(child_info, g_children, ii);
+		pthread_mutex_unlock(&g_children_lk);
 
 		mtx_lock(&c->bus->lk);
 		service_exited(c->bus, &c->name);
@@ -162,9 +163,14 @@ int sys_launch(struct bus *b, const struct address *a)
 
 	pid_t pid;
 	char *args[] = {
-		"/bin/sh", "sh", "-c", a->cfg->exec, NULL,
+		"sh",
+		"-c",
+		a->cfg->exec,
+		NULL,
 	};
 	posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK);
+
+	pthread_mutex_lock(&g_children_lk);
 	int err = posix_spawn(&pid, "/bin/sh", NULL, &attr, args, environ);
 	posix_spawnattr_destroy(&attr);
 
@@ -177,37 +183,39 @@ int sys_launch(struct bus *b, const struct address *a)
 		c->bus = b;
 		c->pid = pid;
 
-		mtx_lock(&child_lk);
 		int sts;
-		khint_t ii = kh_put(child_info, &children, pid, &sts);
+		khint_t ii = kh_put(child_info, g_children, pid, &sts);
 		if (!sts) {
-			free(kh_val(&children, ii));
+			free(kh_val(g_children, ii));
 		}
-		kh_val(&children, ii) = c;
-		mtx_unlock(&child_lk);
+		kh_val(g_children, ii) = c;
 	}
+	pthread_mutex_unlock(&g_children_lk);
 
 	return err;
 }
 #endif
 
-static int ready_indicator(void *udata)
+static void *ready_indicator(void *udata)
 {
 	char *fifopn = udata;
+	pthread_cleanup_push(&free, fifopn);
 
 	for (;;) {
 		// Wait for a client to open the fifo for read. We then
 		// immediately close it to indicate that we are ready to go
 		int fd = open(fifopn, O_WRONLY | O_CLOEXEC);
 		if (fd < 0) {
-			ERROR("open ready fifo,error:%m,path:%s", fifopn);
-			free(fifopn);
-			return -1;
+			FATAL("open ready fifo,error:%m,path:%s", fifopn);
+			break;
 		}
 		DEBUG("open ready fifo");
 		close(fd);
 		usleep(1000);
 	}
+
+	pthread_cleanup_pop(1);
+	return NULL;
 }
 
 int bind_bus(const char *sockpn)
@@ -246,6 +254,43 @@ error:
 	return -1;
 }
 
+static atomic_int g_rx_threads;
+
+static int rx_thread(void *udata)
+{
+	struct rx *rx = udata;
+	run_rx(rx);
+	atomic_fetch_sub_explicit(&g_rx_threads, 1, memory_order_release);
+	return 0;
+}
+
+static void start_rx_thread(struct bus *b, int fd, int id)
+{
+	struct rx *rx = new_rx(b, id);
+	rx->tx->conn.fd = fd;
+	rx->conn.fd = fd;
+
+	atomic_fetch_add_explicit(&g_rx_threads, 1, memory_order_relaxed);
+
+	thrd_t thrd;
+	if (thrd_create(&thrd, &rx_thread, rx) == thrd_success) {
+		thrd_detach(thrd);
+	} else {
+		atomic_fetch_sub_explicit(&g_rx_threads, 1,
+					  memory_order_relaxed);
+		ERROR("failed to create rx thread");
+		free_rx(rx);
+	}
+}
+
+static int check_autoexit(void)
+{
+	if (atomic_load_explicit(&g_rx_threads, memory_order_acquire) == 0) {
+		return 1;
+	}
+	return 0;
+}
+
 static void do_setenv(const char *key, const char *value)
 {
 	if (value) {
@@ -255,13 +300,14 @@ static void do_setenv(const char *key, const char *value)
 	}
 }
 
-static void update_environment(struct bus *b)
+static void update_environment(struct bus *b, bool *autoexit)
 {
-#ifdef CAN_AUTOSTART
 	const struct rcu_data *d = rcu_root(b->rcu);
+#ifdef CAN_AUTOSTART
 	do_setenv("DBUS_STARTER_BUS_TYPE", d->config->type);
 	do_setenv("DBUS_STARTER_ADDRESS", d->config->address);
 #endif
+	*autoexit = d->config->autoexit;
 }
 
 static int usage(void)
@@ -308,20 +354,28 @@ int main(int argc, char *argv[])
 
 	VERBOSE("ready");
 
+	pthread_t ready_thrd;
+	bool have_ready_thrd = false;
 	if (c->readypn) {
 		VERBOSE("starting ready fifo thread,file:%s", c->readypn);
-		thrd_t thrd;
-		if (!thrd_create(&thrd, &ready_indicator, strdup(c->readypn))) {
-			thrd_detach(thrd);
+		if (pthread_create(&ready_thrd, NULL, &ready_indicator,
+				   strdup(c->readypn))) {
+			FATAL("failed to spawn ready indicator thread,errno:%m");
 		}
+		have_ready_thrd = true;
 	}
 
 	if (lfd != 0) {
 		close(0);
 	}
 
-	update_environment(&b);
+	bool autoexit;
+	update_environment(&b, &autoexit);
 	int next_id = 1;
+
+#ifdef CAN_AUTOSTART
+	g_children = kh_init(child_info);
+#endif
 
 	for (;;) {
 		// accept a single connection
@@ -338,19 +392,7 @@ int main(int argc, char *argv[])
 			return 2;
 		} else if (cfd >= 0) {
 			VERBOSE("new connection,fd:%d", cfd);
-
-			struct rx *rx = new_rx(&b, next_id++);
-			rx->tx->conn.fd = cfd;
-			rx->conn.fd = cfd;
-
-			thrd_t thrd;
-			if (thrd_create(&thrd, (thrd_start_t)&run_rx, rx) ==
-			    thrd_success) {
-				thrd_detach(thrd);
-			} else {
-				ERROR("failed to create rx thread");
-				free_rx(rx);
-			}
+			start_rx_thread(&b, cfd, next_id++);
 		}
 
 		// check our signals
@@ -362,21 +404,32 @@ int main(int argc, char *argv[])
 		default_sigmask(&ss);
 		sigdelset(&ss, SIGCHLD);
 		sigdelset(&ss, SIGHUP);
-		int n = ppoll(&pfd, 1, NULL, &ss);
+		struct timespec exit_timeout;
+		exit_timeout.tv_sec = 5;
+		exit_timeout.tv_nsec = 0;
+		int n = ppoll(&pfd, 1, autoexit ? &exit_timeout : NULL, &ss);
 		if (n == 1) {
 			continue;
 #ifdef CAN_AUTOSTART
-		} else if (have_sigchld() && reap_children()) {
-			return 1;
+		} else if (have_sigchld()) {
+			if (reap_children()) {
+				return 1;
+			}
 #endif
 		} else if (have_sighup()) {
 			mtx_lock(&b.lk);
 			if (load_config(&b, &args)) {
 				ERROR("failed to reload config - continuing with previous config");
 			}
-			update_environment(&b);
+			update_environment(&b, &autoexit);
 			mtx_unlock(&b.lk);
 			continue;
+		} else if (!n) {
+			assert(autoexit);
+			if (check_autoexit()) {
+				break;
+			}
+
 		} else if (n < 0 && (errno == EINTR || errno == EAGAIN)) {
 			continue;
 		} else {
@@ -384,4 +437,14 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 	}
+
+	destroy_bus(&b);
+	if (have_ready_thrd) {
+		pthread_cancel(ready_thrd);
+		pthread_join(ready_thrd, NULL);
+	}
+#ifdef CAN_AUTOSTART
+	kh_destroy(child_info, g_children);
+#endif
+	return 0;
 }

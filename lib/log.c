@@ -146,6 +146,9 @@ static inline void flush_log(struct logbuf *b)
 #else
 	write(g_log_fd >= 0 ? g_log_fd : 2, b->buf, b->off);
 #endif
+	if (b->lvl >= LOG_VERBOSE) {
+		free(b->buf);
+	}
 	b->buf = NULL;
 	b->off = 0;
 	b->end = 0;
@@ -332,9 +335,6 @@ int finish_log(struct logbuf *b)
 	}
 	if (b->lvl == LOG_FATAL) {
 		exit(3);
-	}
-	if (b->lvl >= LOG_VERBOSE) {
-		free(b->buf);
 	}
 	return 0;
 }
