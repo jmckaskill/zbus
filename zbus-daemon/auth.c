@@ -123,7 +123,7 @@ static int step_server_auth(enum auth_state *pstate, char **pin, char *ie,
 		if (equals(line, nl, "BEGIN ")) {
 			goto wait_for_hello;
 
-#if CAN_SEND_UNIX_FDS
+#ifdef CAN_SEND_UNIX_FDS
 		} else if (equals(line, nl, "NEGOTIATE_UNIX_FD ")) {
 			out = append(out, oe, ZB_S8("\017AGREE_UNIX_FD\r\n"));
 			if (out > oe) {

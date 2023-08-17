@@ -1,6 +1,15 @@
 #include "threads.h"
 
 #ifdef _WIN32
+#include <stdint.h>
+
+int x_timespec_get(struct timespec *ts, int basis)
+{
+	uint64_t ms = GetTickCount64();
+	ts->tv_sec = ms / 1000;
+	ts->tv_nsec = (ms % 1000) * 1000 * 1000;
+	return basis;
+}
 
 int x_cnd_timedwait(cnd_t *c, mtx_t *m, const struct timespec *ts)
 {

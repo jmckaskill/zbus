@@ -57,7 +57,7 @@ void log_cstring_2(struct logbuf *b, const char *key, size_t klen,
 void log_nstring_2(struct logbuf *b, const char *key, size_t klen,
 		   const char *str, size_t len);
 void log_wstring_2(struct logbuf *b, const char *key, size_t klen,
-		   const uint16_t *str, size_t len);
+		   const wchar_t *str, size_t len);
 void log_bytes_2(struct logbuf *b, const char *key, size_t klen,
 		 const void *data, size_t sz);
 void log_uint_2(struct logbuf *b, const char *key, size_t klen, unsigned val);

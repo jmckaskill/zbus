@@ -318,7 +318,7 @@ static int ref_named(struct rx *r, const zb_str8 *name, bool should_autostart,
 				err = ERR_NOT_ALLOWED;
 			} else if (a->tx) {
 				tx = ref_tx(a->tx);
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 			} else if (a->cfg && a->cfg->exec && should_autostart) {
 				err = 0;
 #endif
@@ -332,7 +332,7 @@ static int ref_named(struct rx *r, const zb_str8 *name, bool should_autostart,
 		return 0;
 	}
 
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 	if (err) {
 		return err;
 	}
@@ -386,7 +386,7 @@ static int ref_remote(struct rx *r, const zb_str8 *name, struct tx **ptx)
 ///////////////////////////////////////////
 // ListNames
 
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 static void encode_activatable(struct zb_builder *b, struct zb_scope *array,
 			       const struct addrmap *m)
 {
@@ -437,7 +437,7 @@ static int list_names(struct rx *r, uint32_t request_serial, bool activatable)
 	if (!activatable) {
 		encode_names(&b, &array, d->destinations);
 		encode_unique_names(&b, &array, d->remotes);
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 	} else {
 		encode_activatable(&b, &array, d->destinations);
 #endif
@@ -481,7 +481,7 @@ static int get_credentials(struct rx *r, uint32_t serial, const zb_str8 *name)
 	zb_add_u32(&b, s->pid);
 	zb_end_variant(&b, &variant);
 
-#if HAVE_WINDOWS_SID
+#ifdef HAVE_WINDOWS_SID
 	zb_add_dict_entry(&b, &dict);
 	zb_add_str8(&b, ZB_S8("\012WindowsSID"));
 	zb_start_variant(&b, "s", &variant);
@@ -489,7 +489,7 @@ static int get_credentials(struct rx *r, uint32_t serial, const zb_str8 *name)
 	zb_end_variant(&b, &variant);
 #endif
 
-#if HAVE_UNIX_GROUPS
+#ifdef HAVE_UNIX_GROUPS
 	zb_add_dict_entry(&b, &dict);
 	zb_add_str8(&b, ZB_S8("\012UnixUserID"));
 	zb_start_variant(&b, "u", &variant);
@@ -620,7 +620,7 @@ int bus_method(struct rx *r, struct zb_message *m, struct zb_iterator *ii)
 		case 21:
 
 			if (zb_eq_str8(m->member, METHOD_GET_UNIX_USER)) {
-#if HAVE_UNIX_GROUPS
+#ifdef HAVE_UNIX_GROUPS
 				return get_sec_u32(
 					r, m->serial, zb_parse_str8(ii),
 					offsetof(struct security, uid));

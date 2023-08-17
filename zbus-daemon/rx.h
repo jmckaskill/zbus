@@ -6,7 +6,7 @@
 #include "dispatch.h"
 #include "txmap.h"
 #include "socket.h"
-#include "dbus/zbus.h"
+#include "zbus/zbus.h"
 
 // this is the largest potential message we have to generate
 #define NAME_OWNER_CHANGED_BUFSZ                                   \

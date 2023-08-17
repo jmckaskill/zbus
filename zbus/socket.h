@@ -1,43 +1,21 @@
 #pragma once
-#include "threads.h"
-#include <stdlib.h>
+#include "zbus.h"
+#include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
-struct rxconn;
-struct txconn;
+#ifdef _WIN32
+typedef void *zb_handle_t;
+#else
+typedef int zb_handle_t;
+#endif
 
-// starts a synchronous receive
-// returns
-// +ve - number of bytes read
-// 0 - EOF
-// -ve - error
-int block_recv1(struct rxconn *c, char *p, size_t n);
-int block_recv2(struct rxconn *c, char *p1, size_t n1, char *p2, size_t n2);
+ZB_EXTERN int zb_connect(zb_handle_t *pfd, const char *address);
+ZB_EXTERN void zb_close(zb_handle_t fd);
+ZB_EXTERN int zb_send(zb_handle_t fd, const void *buf, size_t sz);
+ZB_EXTERN int zb_recv(zb_handle_t fd, void *buf, size_t sz);
+ZB_EXTERN char *zb_userid(char *buf, size_t sz);
 
-// start an async send that may finish synchronously if async == true
-// returns
-// +ve - number of bytes sent
-// 0 - send scheduled
-// -ve - error
-int start_send1(struct txconn *c, char *p, size_t n);
-int start_send3(struct txconn *c, char *p1, size_t n1, char *p2, size_t n2,
-		char *p3, size_t n3);
-
-// waits for the send to finish, unlocks lk while blocked
-// returns
-// +ve - number of bytes sent
-// 0 - no data sent, but file is ready to send more
-// -ve - error
-int finish_send(struct txconn *c, mtx_t *lk);
-
-// called from the rx thread when we want to shut down the socket and cancels
-// any blocking sends on other threads. Must be serialized externally with calls
-// to start_send and finish_send
-void cancel_send(struct txconn *c);
-
-// close_rx is always called before close_tx
-void close_rx(struct rxconn *c);
-void close_tx(struct txconn *c);
-
-#include "socket.windows.h"
-#include "socket.posix.h"
+// returns # of bytes consumed or -ve on error
+ZB_EXTERN int zb_parse_address(char *address, const char **ptype,
+			       const char **phost, const char **pport);

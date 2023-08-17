@@ -28,7 +28,7 @@ static void on_sighup(int sig)
 	atomic_flag_clear(&g_sighup);
 }
 
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 static atomic_flag g_sigchld;
 
 static inline bool have_sigchld(void)
@@ -47,7 +47,7 @@ static void on_sigchld(int sig)
 static void default_sigmask(sigset_t *ss)
 {
 	sigemptyset(ss);
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 	sigaddset(ss, SIGCHLD);
 #endif
 	sigaddset(ss, SIGHUP);
@@ -69,7 +69,7 @@ int setup_signals(void)
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
 
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 	atomic_flag_test_and_set(&g_sigchld);
 	sa.sa_handler = &on_sigchld;
 	if (sigaction(SIGCHLD, &sa, NULL)) {
@@ -90,7 +90,7 @@ int setup_signals(void)
 	return 0;
 }
 
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 struct child_info {
 	struct bus *bus;
 	pid_t pid;
@@ -257,7 +257,7 @@ static void do_setenv(const char *key, const char *value)
 
 static void update_environment(struct bus *b)
 {
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 	const struct rcu_data *d = rcu_root(b->rcu);
 	do_setenv("DBUS_STARTER_BUS_TYPE", d->config->type);
 	do_setenv("DBUS_STARTER_ADDRESS", d->config->address);
@@ -325,7 +325,7 @@ int main(int argc, char *argv[])
 
 	for (;;) {
 		// accept a single connection
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 		int cfd =
 			accept4(lfd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
 #else
@@ -365,7 +365,7 @@ int main(int argc, char *argv[])
 		int n = ppoll(&pfd, 1, NULL, &ss);
 		if (n == 1) {
 			continue;
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 		} else if (have_sigchld() && reap_children()) {
 			return 1;
 #endif

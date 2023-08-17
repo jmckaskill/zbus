@@ -4,7 +4,7 @@
 #include "tx.h"
 #include "vector.h"
 #include "match.h"
-#include "dbus/zbus.h"
+#include "zbus/zbus.h"
 
 struct subscription {
 	union {

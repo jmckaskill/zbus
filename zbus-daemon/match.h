@@ -1,5 +1,5 @@
 #pragma once
-#include "dbus/zbus.h"
+#include "zbus/zbus.h"
 
 struct match {
 	uint16_t len;

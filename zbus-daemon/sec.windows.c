@@ -1,11 +1,9 @@
 #include "sec.h"
 
-#if HAVE_WINDOWS_SID
+#ifdef HAVE_WINDOWS_SID
 #include "lib/windows.h"
 #include "lib/log.h"
 #include <sddl.h>
-
-#pragma comment(lib, "advapi32.lib")
 
 void free_security(struct security *p)
 {

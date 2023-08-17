@@ -18,23 +18,22 @@ type settings struct {
 
 	platforms map[string]bool
 
-	exeExtension     string
-	dllExtension     string
-	dllLinkExtension string
-	libExtension     string
-	objExtension     string
+	exeExtension string
+	libExtension string
+	objExtension string
 
-	compiler          string
-	compileFlagsParts []string
-	linker            string
-	linkFlags         string
-	archiver          string
-	archiveFlags      string
-	depsType          string
+	compiler string
+	cflags   []string
+	linker   string
+	ldflags  []string
+	syslibs  []string
+	archiver string
+	libflags []string
 
-	enableAutostart bool
-	enableDebug     bool
-	staticBuild     bool
+	msvc bool
+
+	disableAutostart bool
+	debug            bool
 
 	haveProcGroups    bool
 	haveReadyFifo     bool
@@ -45,6 +44,7 @@ type settings struct {
 	haveAlignedAlloc  bool
 	haveGetEntropy    bool
 	haveWcsdup        bool
+	haveStrchrnul     bool
 	haveScmRights     bool
 }
 
@@ -62,11 +62,15 @@ func (s *settings) compile(str string) error {
 	f.Close()
 
 	var args []string
-	switch s.depsType {
-	case "gcc":
-		args = s.gccCCFlags(fn + ".o")
-	case "msvc":
-		args = append(s.msvcCFlags(fn+".obj"), "/Fe:"+fn+".exe")
+	if s.msvc {
+		args = append(s.cflags,
+			"/Fo:"+fn+".obj",
+			"/Fe:"+fn+".exe",
+		)
+	} else {
+		args = append(s.cflags,
+			"-o", fn+".o",
+		)
 	}
 	args = append(args, fn)
 	log.Printf("CC %q %v %v", str, s.compiler, args)
@@ -94,11 +98,11 @@ func getFiles(dir, ext string) []string {
 }
 
 func writeBoolDefine(w io.Writer, name string, val bool) {
-	v := 0
 	if val {
-		v = 1
+		fmt.Fprintf(w, "#define %s\n", name)
+	} else {
+		fmt.Fprintf(w, "#undef %s\n", name)
 	}
-	fmt.Fprintf(w, "#define %s %d\n", name, v)
 }
 
 func (s *settings) writeConfigHeader() {
@@ -116,8 +120,14 @@ func (s *settings) writeConfigHeader() {
 	writeBoolDefine(&buf, "HAVE_ALIGNED_ALLOC", s.haveAlignedAlloc)
 	writeBoolDefine(&buf, "HAVE_GET_ENTROPY", s.haveGetEntropy)
 	writeBoolDefine(&buf, "HAVE_WCSDUP", s.haveWcsdup)
-	writeBoolDefine(&buf, "CAN_AUTOSTART", s.enableAutostart && s.haveAtomicCloexec)
+	writeBoolDefine(&buf, "HAVE_STRCHRNUL", s.haveStrchrnul)
+	writeBoolDefine(&buf, "CAN_AUTOSTART", !s.disableAutostart && s.haveAtomicCloexec)
 	writeBoolDefine(&buf, "CAN_SEND_UNIX_FDS", s.haveScmRights && s.haveAtomicCloexec)
+	writeBoolDefine(&buf, "NDEBUG", !s.debug)
+	if s.msvc {
+		writeBoolDefine(&buf, "_CRT_SECURE_NO_WARNINGS", true)
+		writeBoolDefine(&buf, "_CRT_SECURE_NO_DEPRECATE", true)
+	}
 	if !bytes.Equal(prev, buf.Bytes()) {
 		f, err := os.Create("config.h")
 		must(err)
@@ -163,29 +173,6 @@ func (s *settings) writeLibDir(w io.Writer, dir string, lib string) string {
 	return s.writeLib(w, lib, objs)
 }
 
-func (s *settings) writeDll(w io.Writer, dll string, objs, deps []string) string {
-	out := filepath.Join("bin", dll+s.dllExtension)
-	fmt.Fprintf(w, "build %s", out)
-	if s.dllExtension != s.dllLinkExtension {
-		out = filepath.Join("bin", dll+s.dllLinkExtension)
-		fmt.Fprintf(w, " | %s", out)
-	}
-	fmt.Fprintf(w, ": dll $\n")
-	for _, obj := range objs {
-		fmt.Fprintf(w, " %s $\n", obj)
-	}
-	for _, dep := range deps {
-		fmt.Fprintf(w, " %s $\n", dep)
-	}
-	fmt.Fprintf(w, "\n")
-	return out
-}
-
-func (s *settings) writeDllDir(w io.Writer, dir string, dll string, libs []string) string {
-	objs := s.writeCompileDir(w, dir, dll)
-	return s.writeDll(w, dll, objs, libs)
-}
-
 func (s *settings) writeExe(w io.Writer, exe string, objs, deps []string) string {
 	out := filepath.Join("bin", exe+s.exeExtension)
 	fmt.Fprintf(w, "build %s: exe $\n", out)
@@ -213,146 +200,163 @@ func (s *settings) writeDefault(w io.Writer, exes []string) {
 	fmt.Fprintf(w, "\n")
 }
 
-func (s *settings) gccCCFlags(out string) []string {
-	if s.enableDebug {
-		return append([]string{
-			"-g", "-Wall", "-Werror", "-I.",
-			"-o", out, "-MD", "-MF", out + ".d", "-fPIC",
-		}, s.compileFlagsParts...)
-	} else {
-		return append([]string{
-			"-O2", "-DNDEBUG", "-I.", "-o",
-			out, "-MD", "-MF", out + ".d", "-fPIC",
-		}, s.compileFlagsParts...)
-	}
-}
-
-func (s *settings) gccARFlags() string {
-	return s.archiveFlags + " $out"
-}
-
-func (s *settings) msvcCFlags(out string) []string {
-	if s.enableDebug {
-		return append([]string{
-			"/nologo", "/Z7", "/MTd", "/WX",
-			"/W3", "/wd5045", "/D_CRT_SECURE_NO_WARNINGS", "/Od", "/I.",
-			"/showIncludes", "/Fo:" + out,
-		}, s.compileFlagsParts...)
-	} else {
-		return append([]string{
-			"/nologo", "/MT", "/D_CRT_SECURE_NO_WARNINGS", "/W3", "/DNDEBUG",
-			"/I.", "/showIncludes", "/Fo:" + out,
-		}, s.compileFlagsParts...)
-	}
-}
-
-func (s *settings) msvcLibFlags() string {
-	return "/nologo /OUT:$out " + s.archiveFlags
-}
-
-func (s *settings) msvcLinkFlags() string {
-	if s.enableDebug {
-		return "/nologo /DEBUG /WX /OUT:$out " + s.linkFlags
-	} else {
-		return "/nologo /OUT:$out " + s.linkFlags
-	}
-
-}
-
 func (s *settings) writeRules(w io.Writer) {
-	var exeflags, libflags, dllflags, deps string
-	var cflags []string
-	switch s.depsType {
-	case "gcc":
-		deps = " depfile = $out.d\n deps = gcc\n"
-		cflags = append(s.gccCCFlags("$out"), "-c")
-		exeflags = strings.Join(s.gccCCFlags("$out"), " ")
-		dllflags = "-shared " + exeflags
-		libflags = s.gccARFlags()
-	case "msvc":
+	cflags := s.cflags
+	ldflags := s.ldflags
+	libflags := s.libflags
+	syslibs := s.syslibs
+	deps := ""
+	if s.msvc {
 		deps = " deps = msvc\n"
-		cflags = append(s.msvcCFlags("$out"), "/c")
-		exeflags = s.msvcLinkFlags()
-		libflags = s.msvcLibFlags()
-		dllflags = "/DLL " + exeflags
+		cflags = append(cflags, "/c", "/Fo:$out")
+		ldflags = append(ldflags, "/OUT:$out")
+		libflags = append(libflags, "/OUT:$out")
+	} else {
+		deps = " depfile = $out.d\n deps = gcc\n"
+		cflags = append(cflags, "-c", "-o", "$out", "-MD", "-MF", "$out.d")
+		ldflags = append(ldflags, "-o", "$out")
+		libflags = append(libflags, "$out")
 	}
 
 	fmt.Fprintf(w, "# auto generated by configure.go\n")
 	fmt.Fprintf(w, "rule cc\n description = CC $out\n%s command = %s %s $in\n\n",
 		deps, s.compiler, strings.Join(cflags, " "))
-	fmt.Fprintf(w, "rule exe\n description = EXE $out\n command = %s %s $in\n\n",
-		s.linker, exeflags)
-	fmt.Fprintf(w, "rule dll\n description = DLL $out\n command = %s %s $in\n\n",
-		s.linker, dllflags)
+	fmt.Fprintf(w, "rule exe\n description = EXE $out\n command = %s %s $in %s\n\n",
+		s.linker, strings.Join(ldflags, " "), strings.Join(syslibs, " "))
 	fmt.Fprintf(w, "rule lib\n description = LIB $out\n command = %s %s $in\n\n",
-		s.archiver, libflags)
+		s.archiver, strings.Join(libflags, " "))
 
 }
 
-func main() {
-	s := new(settings)
-	goos := runtime.GOOS
-	if override := os.Getenv("GOOS"); override != "" {
-		goos = override
+func (s *settings) addSystemLib(lib string) {
+	if s.msvc {
+		s.syslibs = append(s.syslibs, lib+".lib")
+	} else {
+		s.syslibs = append(s.syslibs, "-l"+lib)
 	}
-	checkPosixFlags := false
+}
+
+func split(flags string) []string {
+	v := strings.Split(flags, " ")
+	if len(v) == 1 && len(v[0]) == 0 {
+		return nil
+	}
+	return v
+}
+
+func main() {
+	msvc := false
+	target := ""
+	platform := runtime.GOOS
 	cflags := ""
-	def := []string{"zbus", "test-client", "test-server"}
-	s.platforms = make(map[string]bool)
-	s.platforms[goos] = true
-	switch goos {
-	case "windows":
-		checkPosixFlags = false
+	s := new(settings)
+	flag.BoolVar(&msvc, "msvc", msvc, "Enable msvc compiler mode")
+	flag.StringVar(&target, "target", target, "GCC style binary prefix to use")
+	flag.StringVar(&platform, "os", platform, "OS to target")
+	flag.BoolVar(&s.disableAutostart, "no-autostart", s.disableAutostart, "Disable auto starting services")
+	flag.BoolVar(&s.debug, "debug", s.debug, "Enable debug build")
+	flag.StringVar(&cflags, "cflags", cflags, "Extra compile flags")
+	flag.Parse()
+
+	if msvc {
+		s.msvc = true
 		s.compiler = "cl.exe"
-		cflags = "/std:c11 /experimental:c11atomics"
-		s.linker = "link.exe"
-		s.linkFlags = ""
+		s.cflags = append(
+			split(cflags),
+			"/FI", "config.h",
+			"/nologo",
+			"/showIncludes",
+			"/wd5045",
+			"/I.",
+			"/std:c11",
+			"/experimental:c11atomics",
+		)
+		s.linker = "ld.exe"
+		s.ldflags = []string{
+			"/nologo",
+		}
 		s.archiver = "lib.exe"
-		s.archiveFlags = ""
+		s.libflags = []string{}
+		if s.debug {
+			s.cflags = append(s.cflags,
+				"/MTd",
+				"/WX",
+				"/W3",
+				"/Od",
+				"/Z7",
+			)
+			s.ldflags = append(s.ldflags,
+				"/DEBUG",
+				"/WX",
+			)
+		} else {
+			s.cflags = append(s.cflags,
+				"/MT",
+			)
+		}
+	} else {
+		if target != "" && !strings.HasSuffix(target, "-") {
+			target += "-"
+		}
+		s.msvc = false
+		s.compiler = target + "cc"
+		s.cflags = append(
+			split(cflags),
+			"-include", "config.h",
+			"-I.",
+		)
+		s.linker = target + "cc"
+		s.ldflags = split(cflags)
+		s.archiver = target + "ar"
+		s.libflags = []string{
+			"rcs",
+		}
+		if s.debug {
+			s.cflags = append(s.cflags,
+				"-g",
+				"-Wall",
+				"-Werror",
+			)
+			s.ldflags = append(s.ldflags,
+				"-g",
+				"-Wall",
+				"-Werror",
+			)
+		} else {
+			s.cflags = append(s.cflags,
+				"-O2",
+			)
+			s.ldflags = append(s.ldflags,
+				"-s",
+			)
+		}
+	}
+
+	def := []string{"zbus-daemon", "test-client", "test-server"}
+	s.platforms = make(map[string]bool)
+	s.platforms[platform] = true
+	switch platform {
+	case "windows":
 		s.haveWindowsSID = true
 		s.haveAtomicCloexec = true
-		s.depsType = "msvc"
 		s.exeExtension = ".exe"
 		s.libExtension = ".lib"
 		s.objExtension = ".obj"
-		s.dllExtension = ".dll"
-		s.dllLinkExtension = ".lib"
 		def = append(def, "zbus-launch")
+		s.addSystemLib("advapi32")
+		s.addSystemLib("ws2_32")
 
 	case "linux":
 		s.haveProcGroups = true
 		fallthrough
 	default:
-		checkPosixFlags = true
-		s.depsType = "gcc"
-		s.compiler = "gcc"
-		cflags = "-std=c11"
-		s.linker = "gcc"
-		s.linkFlags = ""
-		s.archiver = "rm -f $out && ar rcs"
-		s.archiveFlags = ""
 		s.haveReadyFifo = true
 		s.exeExtension = ""
 		s.libExtension = ".a"
 		s.objExtension = ".o"
-		s.dllExtension = ".so"
-		s.dllLinkExtension = ".so"
 		s.platforms["posix"] = true
 		def = append(def, "gcc-ci-parser")
 	}
-
-	flag.StringVar(&s.compiler, "cc", s.compiler, "Compiler to use")
-	flag.StringVar(&cflags, "cflags", cflags, "Compile flags to use")
-	flag.StringVar(&s.archiver, "lib", s.archiver, "Archiver to use")
-	flag.StringVar(&s.archiveFlags, "libflags", s.archiveFlags, "Archive flags to use")
-	flag.StringVar(&s.linker, "link", s.linker, "Linker to use")
-	flag.StringVar(&s.linkFlags, "linkflags", s.linkFlags, "Link flags to use")
-	flag.StringVar(&s.depsType, "deps", s.depsType, "Ninja dependency type")
-	flag.BoolVar(&s.enableDebug, "debug", s.enableDebug, "Enable debug compile")
-	flag.BoolVar(&s.enableAutostart, "enable-autostart", s.enableAutostart, "Enable autostart")
-	flag.Parse()
-
-	s.compileFlagsParts = strings.Split(cflags, " ")
 
 	var err error
 	s.tmpdir, err = os.MkdirTemp("", "configure-go-*")
@@ -361,11 +365,11 @@ func main() {
 
 	log.Printf("checking compiler")
 	if err := s.compile("int main(void) {return 0;}"); err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR - compiler %v %v doesn't work - %v\n", s.compiler, s.compileFlagsParts, err)
+		fmt.Fprintf(os.Stderr, "ERROR - compiler %v %v doesn't work - %v\n", s.compiler, s.cflags, err)
 		os.Exit(2)
 	}
 
-	if checkPosixFlags {
+	if s.platforms["posix"] {
 		s.haveAtomicCloexec = s.testCompile(`
 			#define _GNU_SOURCE
 			#include <sys/socket.h>
@@ -445,6 +449,15 @@ func main() {
 		}
 	`)
 
+	s.haveStrchrnul = s.testCompile(`
+		#define _GNU_SOURCE
+		#include <string.h>
+		int main(int argc, char **argv) {
+			char *end = strchrnul(argv[0], ',');
+			return *end != 0;
+		}
+	`)
+
 	s.writeConfigHeader()
 
 	f, err := os.Create("build.ninja")
@@ -453,10 +466,10 @@ func main() {
 	s.writeRules(f)
 	objs := s.writeCompile(f, "c-rbtree", "vendor/c-rbtree-3.1.0/src/c-rbtree.c", nil)
 	rbtree := s.writeLib(f, "c-rbtree", objs)
-	zbus := s.writeLibDir(f, "dbus", "libzbus")
+	zbus := s.writeLibDir(f, "zbus", "libzbus")
 	common := s.writeLibDir(f, "lib", "libcommon")
 	client := s.writeLibDir(f, "client", "libclient")
-	s.writeExeDir(f, "zbus", "zbus", []string{common, rbtree, zbus})
+	s.writeExeDir(f, "zbus-daemon", "zbus-daemon", []string{common, rbtree, zbus})
 	s.writeExeDir(f, "test-client", "test-client", []string{client, common, zbus})
 	s.writeExeDir(f, "test-server", "test-server", []string{client, common, zbus})
 	s.writeExeDir(f, "gcc-ci-parser", "gcc-ci-parser", []string{common})

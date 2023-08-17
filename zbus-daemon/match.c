@@ -1,5 +1,5 @@
 #include "match.h"
-#include "dbus/zbus.h"
+#include "zbus/zbus.h"
 #include <assert.h>
 
 #define INCLUDE_CHILDREN 0x8000

@@ -7,7 +7,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 static mtx_t g_child_lk;
 // count is increased by sys_launch within bus lock
 // count is decreased by child_watcher
@@ -123,18 +123,6 @@ static int create_pipe(HANDLE *phandle, const char *pipename, bool first)
 	return *phandle == INVALID_HANDLE_VALUE || *phandle == NULL;
 }
 
-static wchar_t *load_pipe_name(const char *sockpn)
-{
-	static const wchar_t pfx[] = L"\\\\.\\pipe\\";
-	static const size_t pfxlen = sizeof(pfx) - 1;
-	size_t pnlen = strlen(sockpn);
-	wchar_t *ret = fmalloc(sizeof(pfx) + UTF16_SPACE(pnlen) + 2);
-	memcpy(ret, pfx, sizeof(pfx));
-	wchar_t *nul = utf8_to_utf16(ret + wcslen(pfx), sockpn, pnlen);
-	*nul = L'\0';
-	return ret;
-}
-
 static atomic_int g_num_threads;
 
 static DWORD WINAPI rx_thread(void *udata)
@@ -232,9 +220,10 @@ static int usage(void)
 	return 2;
 }
 
-int wmain(int argc, wchar_t *wargv[])
+int main(void)
 {
-	char **argv = utf8argv(argc, wargv);
+	char **argv;
+	int argc = utf8argv(GetCommandLineW(), &argv);
 	struct config_arguments args;
 	args.num = 0;
 
@@ -262,13 +251,11 @@ int wmain(int argc, wchar_t *wargv[])
 	}
 
 	VERBOSE("bind,shm:%s", c->listenpn);
-	wchar_t *mapname = utf16dup(c->listenpn);
 	struct winmmap m;
-	if (create_win_pipename(&m, mapname) < 0) {
-		FATAL("failed to create pipename mapping,errno:%m,name:%S",
-		      mapname);
+	if (create_win_pipename(&m, c->listenpn) < 0) {
+		FATAL("failed to create pipename mapping,errno:%m,name:%s",
+		      c->listenpn);
 	}
-	free(mapname);
 
 	char pipename[256];
 	static const char pfx[] = "\\\\.\\pipe\\";
@@ -282,7 +269,7 @@ int wmain(int argc, wchar_t *wargv[])
 		      pipename);
 	}
 
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 	if (start_childwatcher(&b)) {
 		FATAL("failed to start child watcher thread,errno:%m");
 	}

@@ -33,7 +33,7 @@ struct config {
 	char *address; // address in dbus format
 	char *type;
 
-#if HAVE_READY_FIFO
+#ifdef HAVE_READY_FIFO
 	char *readypn;
 #endif
 };

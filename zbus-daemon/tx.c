@@ -2,7 +2,7 @@
 #include "tx.h"
 #include "rx.h"
 #include "busmsg.h"
-#include "dbus/zbus.h"
+#include "zbus/zbus.h"
 #include "lib/logmsg.h"
 #include "lib/log.h"
 
@@ -106,7 +106,7 @@ static int send_locked(struct tx *t, bool block, struct txmsg *m)
 	char *p3 = m->body[1].buf;
 	int n3 = m->body[1].len;
 
-#if CAN_SEND_UNIX_FDS
+#ifdef CAN_SEND_UNIX_FDS
 	t->conn.fdnum = m->m.fdnum;
 	t->conn.fdsrc = m->fdsrc;
 #endif
@@ -212,7 +212,7 @@ static int acquire_request(struct tx *t, struct requests *s, mtx_t *lk)
 	if (t->closed) {
 		return -1;
 	}
-	int idx = ffs(s->avail) - 1;
+	int idx = x_ffs(s->avail) - 1;
 	assert(0 <= idx && idx < 32);
 	s->avail &= ~(1U << idx);
 	return idx;

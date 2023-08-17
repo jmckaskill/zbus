@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #include "sec.h"
 
-#if HAVE_PROC_GROUPS
+#ifdef HAVE_PROC_GROUPS
 #include "lib/log.h"
 #include "lib/print.h"
 #include <unistd.h>

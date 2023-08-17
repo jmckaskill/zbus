@@ -1,7 +1,7 @@
 #pragma once
 #include "config.h"
 #include "rx.h"
-#include "dbus/zbus.h"
+#include "zbus/zbus.h"
 
 #define BUS_DESTINATION ZB_S8("\024org.freedesktop.DBus")
 #define BUS_PATH ZB_S8("\025/org/freedesktop/DBus")
@@ -24,7 +24,8 @@
 #define METHOD_GET_CREDENTIALS ZB_S8("\028GetConnectionCredentials") // 24
 #define METHOD_GET_UNIX_PROCESS_ID ZB_S8("\032GetConnectionUnixProcessID") // 26
 #define METHOD_UPDATE_ENVIRONMENT ZB_S8("\033UpdateActivationEnvironment") // 27
-#define METHOD_GET_SELINUX ZB_S8("\043GetConnectionSELinuxSEcurityContext") // 35
+#define METHOD_GET_SELINUX \
+	ZB_S8("\043GetConnectionSELinuxSEcurityContext") // 35
 
 #define SIGNAL_NAME_OWNER_CHANGED ZB_S8("\020NameOwnerChanged")
 #define SIGNAL_NAME_ACQUIRED ZB_S8("\014NameAcquired")

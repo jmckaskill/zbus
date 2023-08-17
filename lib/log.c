@@ -17,9 +17,6 @@
 #include <unistd.h>
 #endif
 
-#if defined __GNUC__
-#define x_strchrnul strchrnul
-#else
 static inline char *x_strchrnul(const char *s, char ch)
 {
 	while (*s && *s != ch) {
@@ -27,7 +24,6 @@ static inline char *x_strchrnul(const char *s, char ch)
 	}
 	return (char *)s;
 }
-#endif
 
 enum log_level g_log_level = LOG_NOTICE;
 enum log_type g_log_type = LOG_TEXT;
@@ -429,7 +425,7 @@ void log_nstring_2(struct logbuf *b, const char *key, size_t klen,
 }
 
 void log_wstring_2(struct logbuf *b, const char *key, size_t klen,
-		   const uint16_t *wstr, size_t len)
+		   const wchar_t *wstr, size_t len)
 {
 	char *str = fmalloc(UTF8_SPACE(len));
 	char *end = utf16_to_utf8(str, wstr, len);
@@ -695,8 +691,8 @@ int log_vargs(struct logbuf *b, const char *fmt, va_list ap)
 			break;
 		case 'S': {
 			// wide cstring
-			const uint16_t *wstr = va_arg(ap, const uint16_t *);
-			size_t len = u16len(wstr);
+			const wchar_t *wstr = va_arg(ap, const wchar_t *);
+			size_t len = wcslen(wstr);
 			log_wstring_2(b, key, klen, wstr, len);
 			break;
 		}

@@ -7,13 +7,19 @@
 // Use defines to override these functions
 // That way we don't get compile errors if they are provided, but we still use
 // our versions for consistency.
-#define mtx_t CRITICAL_SECTION
-#define cnd_t CONDITION_VARIABLE
-#define thrd_t HANDLE
+#undef mtx_plain
+#undef thrd_success
+#undef thrd_error
+#undef thrd_timeout
+#undef TIME_UTC
 #define mtx_plain 0
 #define thrd_success 0
 #define thrd_error -1
 #define thrd_timedout -2
+#define TIME_UTC 0
+#define mtx_t CRITICAL_SECTION
+#define cnd_t CONDITION_VARIABLE
+#define thrd_t HANDLE
 #define mtx_init x_mtx_init
 #define mtx_destroy x_mtx_destroy
 #define mtx_lock x_mtx_lock
@@ -24,6 +30,7 @@
 #define cnd_broadcast x_cnd_broadcast
 #define cnd_wait x_cnd_wait
 #define cnd_timedwait x_cnd_timedwait
+#define timespec_get x_timespec_get
 
 static inline int x_mtx_init(mtx_t *m, int type)
 {
@@ -78,4 +85,7 @@ static inline int x_cnd_wait(cnd_t *c, mtx_t *m)
 }
 
 int x_cnd_timedwait(cnd_t *c, mtx_t *m, const struct timespec *ts);
+
+int x_timespec_get(struct timespec *ts, int basis);
+
 #endif

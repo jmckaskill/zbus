@@ -1,222 +1,146 @@
-#define _POSIX_C_SOURCE 199309UL
-#define _GNU_SOURCE
-#include "config.h"
-#include "socket.posix.h"
-#include "lib/log.h"
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <sys/types.h>
+#define _POSIX_C_SOURCE 200809L
+#include "socket.h"
+
+#ifndef _WIN32
 #include <unistd.h>
-#include <string.h>
 #include <errno.h>
-#include <poll.h>
-#include <assert.h>
-#include <signal.h>
-#include <limits.h>
+#include <sys/un.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <stdlib.h>
+#include <string.h>
 
-#if CAN_SEND_UNIX_FDS
-static void close_all_fds(struct rxconn *c)
+static int gai_connect(int family, const char *host, const char *port)
 {
-	struct msghdr m;
-	m.msg_control = c->ctrl;
-	m.msg_controllen = c->clen;
+	struct addrinfo hints, *res;
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = family;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_protocol = IPPROTO_TCP;
 
-	for (struct cmsghdr *c = CMSG_FIRSTHDR(&m); c != NULL;
-	     c = CMSG_NXTHDR(&m, c)) {
-		if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS &&
-		    c->cmsg_len > CMSG_LEN(0)) {
-			int *pfd = (int *)CMSG_DATA(c);
-			int n = (c->cmsg_len - CMSG_LEN(0)) / sizeof(int);
-			for (int i = 0; i < n; i++) {
-				int fd;
-				memcpy(&fd, &pfd[i], sizeof(int));
-				close(fd);
-			}
-		}
-	}
-
-	c->clen = 0;
-}
-
-static int control_fdnum(struct rxconn *c)
-{
-	struct msghdr m;
-	m.msg_control = c->ctrl;
-	m.msg_controllen = c->clen;
-
-	for (struct cmsghdr *c = CMSG_FIRSTHDR(&m); c != NULL;
-	     c = CMSG_NXTHDR(&m, c)) {
-		if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS &&
-		    c->cmsg_len > CMSG_LEN(0)) {
-			int n = (c->cmsg_len - CMSG_LEN(0)) / sizeof(int);
-			return n;
-		}
-	}
-
-	return 0;
-}
-#endif
-
-void close_rx(struct rxconn *c)
-{
-	close_all_fds(c);
-}
-
-void close_tx(struct txconn *c)
-{
-	close(c->fd);
-}
-
-int block_recv2(struct rxconn *c, char *p1, size_t n1, char *p2, size_t n2)
-{
-#if CAN_SEND_UNIX_FDS
-	if (c->clen) {
-		close_all_fds(c);
-	}
-#endif
-	assert(n1 && n1 + n2 < INT_MAX);
-
-	for (;;) {
-		struct iovec v[2];
-		v[0].iov_base = p1;
-		v[0].iov_len = n1;
-		v[1].iov_base = p2;
-		v[1].iov_len = n2;
-
-		struct msghdr m;
-		memset(&m, 0, sizeof(m));
-		m.msg_iov = v;
-		m.msg_iovlen = n2 ? 2 : 1;
-#if CAN_SEND_UNIX_FDS
-		m.msg_control = c->ctrl;
-		m.msg_controllen = sizeof(c->ctrl);
-		int n = recvmsg(c->fd, &m, MSG_CMSG_CLOEXEC);
-		c->clen = n > 0 ? m.msg_controllen : 0;
-#else
-		int n = recvmsg(c->fd, &m, 0);
-#endif
-		if (n < 0 && errno == EINTR) {
-			continue;
-		} else if (n < 0 && errno == EAGAIN) {
-			for (;;) {
-				struct pollfd pfd;
-				pfd.fd = c->fd;
-				pfd.events = POLLIN;
-				int n = poll(&pfd, 1, -1);
-				if (n > 0) {
-					break;
-				} else if (errno == EINTR) {
-					continue;
-				} else {
-					return -1;
-				}
-			}
-			continue;
-		} else if (n < 0) {
-			return -1;
-		} else if (n == 0) {
-			return 0;
-		}
-
-		return n;
-	}
-}
-
-int start_send3(struct txconn *c, char *p1, size_t n1, char *p2, size_t n2,
-		char *p3, size_t n3)
-{
-	assert(n1 && n1 + n2 + n3 < INT_MAX);
-
-	struct iovec v[3];
-	v[0].iov_base = p1;
-	v[0].iov_len = n1;
-	v[1].iov_base = p2;
-	v[1].iov_len = n2;
-	v[2].iov_base = p3;
-	v[2].iov_len = n3;
-
-	struct msghdr m;
-	memset(&m, 0, sizeof(m));
-	m.msg_iov = v;
-	m.msg_iovlen = n3 ? 3 : (n2 ? 2 : 1);
-
-#if CAN_SEND_UNIX_FDS
-	if (c->fdsrc) {
-		if (c->fdnum == control_fdnum(c->fdsrc)) {
-			m.msg_control = c->fdsrc->ctrl;
-			m.msg_controllen = c->fdsrc->clen;
-		} else {
-			WARN("fdnum mismatch");
-			close_all_fds(c->fdsrc);
-		}
-	}
-	c->fdsrc = NULL;
-	c->fdnum = 0;
-#endif
-
-	for (;;) {
-		int w = sendmsg(c->fd, &m, 0);
-		if (w >= 0) {
-			return w;
-		}
-
-		switch (errno) {
-		case EINTR:
-			continue;
-		case EAGAIN:
-			return 0;
-		default:
-			return -1;
-		}
-	}
-}
-
-static int cancel_signal;
-
-static void on_cancel(int sig)
-{
-}
-
-int setup_cancel(int sig)
-{
-	cancel_signal = sig;
-
-	struct sigaction sa;
-	memset(&sa, 0, sizeof(sa));
-	sa.sa_handler = &on_cancel;
-	if (sigaction(sig, &sa, NULL)) {
-		ERROR("setup cancel signal,errno:%m");
+	if (getaddrinfo(host, port, &hints, &res)) {
 		return -1;
 	}
 
-	return 0;
-}
-
-void cancel_send(struct txconn *c)
-{
-	if (c->is_async) {
-		pthread_kill(c->thread, cancel_signal);
+	for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) {
+		int fd = socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC,
+				ai->ai_protocol);
+		if (fd < 0) {
+			continue;
+		}
+		if (connect(fd, ai->ai_addr, ai->ai_addrlen)) {
+			close(fd);
+			continue;
+		}
+		freeaddrinfo(res);
+		return fd;
 	}
-	shutdown(c->fd, SHUT_WR);
+
+	freeaddrinfo(res);
+	return -1;
 }
 
-int finish_send(struct txconn *c, mtx_t *lk)
+static int unix_connect(bool is_abstract, const char *path)
 {
-	c->thread = pthread_self();
-	c->is_async = true;
-	mtx_unlock(lk);
+	int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, PF_UNIX);
+	if (fd < 0) {
+		return -1;
+	}
 
-	struct pollfd pfd;
-	pfd.fd = c->fd;
-	pfd.events = POLLOUT;
+	struct sockaddr_un addr;
+	memset(&addr, 0, sizeof(addr));
+	addr.sun_family = AF_UNIX;
 
-	sigset_t ss;
-	sigfillset(&ss);
-	sigdelset(&ss, cancel_signal);
+	// copy the path over. Don't need to copy leading or trailing nul as
+	// addr has been zeroed.
+	char *p = &addr.sun_path[is_abstract ? 1 : 0];
+	size_t len = strlen(path);
+	if (p + len + 1 > addr.sun_path + sizeof(addr.sun_path)) {
+		return -1;
+	}
+	memcpy(p, path, len);
+	socklen_t salen = p + len + 1 - (char *)&addr;
 
-	int n = ppoll(&pfd, 1, NULL, &ss);
+	if (connect(fd, (struct sockaddr *)&addr, salen)) {
+		close(fd);
+		return -1;
+	}
 
-	mtx_lock(lk);
-	c->is_async = false;
-	return n < 0 ? -1 : 0;
+	return fd;
 }
+
+int zb_connect(zb_handle_t *pfd, const char *address)
+{
+	char *addr = strdup(address);
+	int err = -1;
+
+	for (;;) {
+		const char *type, *host, *port;
+		int n = zb_parse_address(addr, &type, &host, &port);
+		if (n < 0) {
+			goto out;
+		}
+
+		// Want to find the first address that we understand and can
+		// connect with.
+		int fd = -1;
+		if (!strcmp(type, "unix")) {
+			fd = unix_connect(false, host);
+		} else if (!strcmp(type, "abstract")) {
+			fd = unix_connect(true, host);
+		} else if (!strcmp(type, "tcp")) {
+			fd = gai_connect(AF_UNSPEC, host, port);
+		} else if (!strcmp(type, "tcp4")) {
+			fd = gai_connect(AF_INET, host, port);
+		} else if (!strcmp(type, "tcp6")) {
+			fd = gai_connect(AF_INET6, host, port);
+		}
+
+		if (fd >= 0) {
+			*pfd = fd;
+			err = 0;
+			goto out;
+		}
+	}
+
+out:
+	free(addr);
+	return err;
+}
+
+int zb_send(zb_handle_t fd, const void *buf, size_t sz)
+{
+	return write(fd, buf, sz);
+}
+
+int zb_recv(zb_handle_t fd, void *buf, size_t sz)
+{
+	for (;;) {
+		int r = read(fd, buf, sz);
+		if (r < 0 && errno == EINTR) {
+			continue;
+		}
+		return r;
+	}
+}
+
+void zb_close(zb_handle_t fd)
+{
+	close(fd);
+}
+
+char *zb_userid(char *buf, size_t sz)
+{
+	char *puid = buf + sz;
+	int id = getuid();
+	*(--puid) = 0;
+	do {
+		*(--puid) = (id % 10) + '0';
+		id /= 10;
+	} while (id);
+	return puid;
+}
+
+#endif

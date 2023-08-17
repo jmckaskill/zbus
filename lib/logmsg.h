@@ -1,6 +1,6 @@
 #pragma once
 #include "log.h"
-#include "dbus/zbus.h"
+#include "zbus/zbus.h"
 
 void log_message(struct logbuf *b, const struct zb_message *m);
 

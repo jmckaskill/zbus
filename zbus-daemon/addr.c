@@ -15,7 +15,7 @@ static void reset_config(struct address *a)
 	// freeing adresses is serialized by the bus lock so don't need
 	// atomics here
 	if (a->cfg && --a->cfg->ref == 0) {
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 		free(a->cfg->exec);
 #endif
 		free(a->cfg);
@@ -61,10 +61,10 @@ static struct addrcfg *new_addrcfg(void)
 {
 	struct addrcfg *c = fmalloc(sizeof(*c));
 	c->ref = 1;
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 	c->exec = NULL;
 #endif
-#if HAVE_UNIX_GROUPS
+#ifdef HAVE_UNIX_GROUPS
 	// if the config file doesn't specify a group, these will be
 	// overwritten by the default access when we merge the config
 	// into the RCU data
@@ -165,7 +165,7 @@ static int new_merged_size(const struct addrmap *om, struct addrtree *t)
 
 static void set_default_group(struct addrcfg *c, int defgroup)
 {
-#if HAVE_UNIX_GROUPS
+#ifdef HAVE_UNIX_GROUPS
 	if (c->gid_access == GROUP_UNKNOWN) {
 		c->gid_access = defgroup;
 	}

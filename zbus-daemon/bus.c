@@ -5,14 +5,15 @@
 #include "busmsg.h"
 #include "dispatch.h"
 #include "sec.h"
-#include "dbus/zbus.h"
+#include "zbus/zbus.h"
 #include "lib/log.h"
 #include "lib/algo.h"
 #include "lib/file.h"
 #include "lib/print.h"
 #include "vendor/c-rbtree-3.1.0/src/c-rbtree.h"
+#include <time.h>
 
-#if HAVE_MEMRCHR
+#ifdef HAVE_MEMRCHR
 #define x_memrchr memrchr
 #else
 static char *x_memrchr(char *p, char ch, size_t len)
@@ -289,7 +290,7 @@ int request_name(struct bus *b, struct rx *r, const zb_str8 *name,
 		}
 	}
 
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 	bool autolaunch = false;
 #endif
 	struct rcu_object *objs = NULL;
@@ -305,7 +306,7 @@ int request_name(struct bus *b, struct rx *r, const zb_str8 *name,
 		nm->v[idx] = na;
 		nd->destinations = nm;
 
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 		autolaunch = oa && oa->cfg && oa->cfg->exec;
 #endif
 	}
@@ -320,7 +321,7 @@ int request_name(struct bus *b, struct rx *r, const zb_str8 *name,
 		rcu_commit(b->rcu, nd, objs);
 		notify_name_acquired(b, r->txbuf, true, tx, name);
 		notify_name_changed(b, r->txbuf, true, tx->id, name);
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 		if (autolaunch) {
 			cnd_broadcast(&b->launch);
 		}
@@ -386,7 +387,7 @@ int release_name(struct bus *b, struct rx *r, const zb_str8 *name,
 ///////////////////////////////
 // autolaunch functions
 
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 static void service_started(struct bus *b, int idx, const struct timespec *ts)
 {
 	const struct rcu_data *od = rcu_root(b->rcu);
@@ -630,7 +631,7 @@ static void free_config(struct rcu_object *o)
 		free(c->address);
 		free(c->type);
 		free(c->listenpn);
-#if HAVE_READY_FIFO
+#ifdef HAVE_READY_FIFO
 		free(c->readypn);
 #endif
 		free(c);
@@ -648,7 +649,7 @@ static struct config *new_config(void)
 	c->address = NULL;
 	c->type = NULL;
 	c->autoexit = false;
-#if HAVE_READY_FIFO
+#ifdef HAVE_READY_FIFO
 	c->readypn = NULL;
 #endif
 	c->listenfd = -1;
@@ -779,7 +780,7 @@ static int parse_global_config(struct config *c, const char *key, size_t klen,
 			return CFG_KEY;
 		}
 
-#if HAVE_READY_FIFO
+#ifdef HAVE_READY_FIFO
 	case 10:
 		if (!memcmp(key, "ready_fifo", 10)) {
 			realloc_str(&c->readypn, val);
@@ -805,7 +806,7 @@ static int parse_global_config(struct config *c, const char *key, size_t klen,
 	}
 }
 
-#if HAVE_UNIX_GROUPS
+#ifdef HAVE_UNIX_GROUPS
 static int decode_group(const char *val, int *pgid)
 {
 	*pgid = lookup_group(val);
@@ -819,13 +820,13 @@ static int parse_address_config(struct addrcfg *c, const char *key, size_t klen,
 	if (klen == 11 && !memcmp(key, "description", 11)) {
 		return 0;
 
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 	} else if (klen == 4 && !memcmp(key, "exec", 4)) {
 		realloc_str(&c->exec, val);
 		return 0;
 #endif
 
-#if HAVE_UNIX_GROUPS
+#ifdef HAVE_UNIX_GROUPS
 	} else if (klen == 9 && !memcmp(key, "owner_gid", 9)) {
 		return decode_positive_int(val, &c->gid_owner);
 
@@ -850,7 +851,7 @@ static int parse_interface_config(struct addrcfg *c, const char *key,
 	if (klen == 11 && !memcmp(key, "description", 11)) {
 		return 0;
 
-#if HAVE_UNIX_GROUPS
+#ifdef HAVE_UNIX_GROUPS
 	} else if (klen == 13 && !memcmp(key, "subscribe_gid", 13)) {
 		return decode_positive_int(val, &c->gid_access);
 

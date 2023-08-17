@@ -5,7 +5,7 @@
 #include "vector.h"
 #include "sec.h"
 #include "lib/khash.h"
-#include "dbus/zbus.h"
+#include "zbus/zbus.h"
 #include "vendor/c-rbtree-3.1.0/src/c-rbtree.h"
 #include <limits.h>
 #include <time.h>
@@ -13,7 +13,7 @@
 struct addrcfg {
 	int ref;
 
-#if HAVE_UNIX_GROUPS
+#ifdef HAVE_UNIX_GROUPS
 	// for destinations, who can own it
 	// for interfaces, who can publish to it
 	int gid_owner;
@@ -22,7 +22,7 @@ struct addrcfg {
 	int gid_access;
 #endif
 
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 	char *exec;
 #endif
 };
@@ -40,7 +40,7 @@ struct address {
 	struct submap *subs;
 	struct addrcfg *cfg;
 
-#if CAN_AUTOSTART
+#ifdef CAN_AUTOSTART
 	struct timespec last_launch;
 	bool running;
 #endif

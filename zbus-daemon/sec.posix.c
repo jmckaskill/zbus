@@ -1,6 +1,6 @@
 #include "sec.h"
 
-#if HAVE_UNIX_GROUPS
+#ifdef HAVE_UNIX_GROUPS
 #include <stdlib.h>
 #include <grp.h>
 #include <sys/types.h>

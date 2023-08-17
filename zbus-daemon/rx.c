@@ -7,7 +7,7 @@
 #include "dispatch.h"
 #include "txmap.h"
 #include "auth.h"
-#include "dbus/zbus.h"
+#include "zbus/zbus.h"
 #include "lib/logmsg.h"
 #include "lib/algo.h"
 #include <stdlib.h>

@@ -1,6 +1,6 @@
 #pragma once
-#include "socket.h"
-#include "dbus/zbus.h"
+#include "zbus/socket.h"
+#include "zbus/zbus.h"
 
 struct client;
 typedef int (*message_fn)(void *, struct client *, struct zb_message *,
@@ -13,7 +13,7 @@ struct zb_message_cb {
 };
 
 struct client {
-	fd_t fd;
+	zb_handle_t fd;
 	uint16_t cb_available;
 	struct zb_message_cb cbs[16];
 	struct zb_stream in;

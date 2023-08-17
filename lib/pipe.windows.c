@@ -11,10 +11,10 @@ union header {
 	uint64_t u64;
 };
 
-int create_win_pipename(struct winmmap *m, const wchar_t *name)
+int create_win_pipename(struct winmmap *m, const char *name)
 {
 	SetLastError(0);
-	HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL,
+	HANDLE h = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL,
 				      PAGE_READWRITE, 0, 256, name);
 	if (h == INVALID_HANDLE_VALUE || h == NULL) {
 		return MAP_WIN_ERROR;
@@ -34,9 +34,9 @@ int create_win_pipename(struct winmmap *m, const wchar_t *name)
 	return ret;
 }
 
-int open_win_pipename(struct winmmap *m, const wchar_t *name)
+int open_win_pipename(struct winmmap *m, const char *name)
 {
-	HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+	HANDLE h = OpenFileMappingA(FILE_MAP_READ, FALSE, name);
 	if (h == INVALID_HANDLE_VALUE || h == NULL) {
 		return -1;
 	}

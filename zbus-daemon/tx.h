@@ -3,7 +3,7 @@
 #include "rcu.h"
 #include "sec.h"
 #include "threads.h"
-#include "dbus/zbus.h"
+#include "zbus/zbus.h"
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>

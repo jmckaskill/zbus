@@ -1,27 +1,26 @@
 #define _DEFAULT_SOURCE
 #include "client.h"
-#include "socket.h"
-#include "dbus/zbus.h"
+#include "zbus/zbus.h"
 #include "lib/logmsg.h"
 #include "lib/algo.h"
 #include <stdint.h>
 
-static int write_all(fd_t fd, char *b, size_t sz, const char *args, ...)
+static int write_all(zb_handle_t fd, char *b, size_t sz, const char *args, ...)
 	GNU_PRINTF_ATTRIBUTE(4, 5);
 
-static int write_all(fd_t fd, char *b, size_t sz, const char *args, ...)
+static int write_all(zb_handle_t fd, char *b, size_t sz, const char *args, ...)
 {
 	struct logbuf lb;
 	if (start_debug(&lb, "write")) {
 		va_list ap;
 		va_start(ap, args);
 		log_vargs(&lb, args, ap);
-		log_uint(&lb, "fd", (unsigned)fd);
+		log_uint64(&lb, "fd", (uintptr_t)fd);
 		log_bytes(&lb, "data", b, sz);
 		finish_log(&lb);
 	}
 	while (sz) {
-		int w = sys_send(fd, b, (int)sz);
+		int w = zb_send(fd, b, (int)sz);
 		if (w <= 0) {
 			char buf[128];
 			struct logbuf lb;
@@ -30,7 +29,7 @@ static int write_all(fd_t fd, char *b, size_t sz, const char *args, ...)
 			va_start(ap, args);
 			log_vargs(&lb, args, ap);
 			log_errno(&lb, "errno");
-			log_uint(&lb, "fd", (unsigned)fd);
+			log_uint64(&lb, "fd", (uintptr_t)fd);
 			finish_log(&lb);
 			return -1;
 		}
@@ -43,7 +42,7 @@ static int write_all(fd_t fd, char *b, size_t sz, const char *args, ...)
 void close_client(struct client *c)
 {
 	if (c) {
-		sys_close(c->fd);
+		zb_close(c->fd);
 		free(c);
 	}
 }
@@ -69,8 +68,8 @@ error:
 
 struct client *open_client(const char *sockpn)
 {
-	fd_t fd;
-	if (sys_open(&fd, sockpn)) {
+	zb_handle_t fd;
+	if (zb_connect(&fd, sockpn)) {
 		FATAL("failed to open dbus socket,errno:%m");
 	}
 
@@ -83,12 +82,12 @@ struct client *open_client(const char *sockpn)
 	zb_init_stream(&c->in, msgsz, defrag);
 
 	char uidbuf[64];
-	const char *uid = sys_userid(uidbuf, sizeof(uidbuf));
+	const char *uid = zb_userid(uidbuf, sizeof(uidbuf));
 
 	uint32_t serial = register_cb(c, &on_connected, c);
 	char buf[256];
 	int n = zb_write_auth_external(buf, sizeof(buf), uid, serial);
-	write_all(fd, buf, n, "send_auth,fd:%u", (unsigned)fd);
+	write_all(fd, buf, n, "send_auth,fd:%zu", (uintptr_t)fd);
 
 	return c;
 }
@@ -96,7 +95,7 @@ struct client *open_client(const char *sockpn)
 uint32_t register_cb(struct client *c, message_fn fn, void *udata)
 {
 	assert(fn != NULL);
-	int idx = ffs(c->cb_available);
+	int idx = x_ffs(c->cb_available);
 	if (!idx) {
 		return 0;
 	}
@@ -281,26 +280,12 @@ int call_bus_method(struct client *c, uint32_t serial, const zb_str8 *member,
 			    ZB_S8("\025/org/freedesktop/DBus"),
 			    ZB_S8("\024org.freedesktop.DBus"), member, sig, ap);
 }
-
-int read_data(struct client *c)
-{
-	char *p1, *p2;
-	size_t n1, n2;
-	zb_get_stream_recvbuf(&c->in, &p1, &n1, &p2, &n2);
-	int n = sys_recv(c->fd, p1, (int)n1);
-	if (n < 0) {
-		return -1;
-	}
-	c->in.have += n;
-	return 0;
-}
-
 static int read_more(struct client *c)
 {
 	char *p1, *p2;
 	size_t n1, n2;
 	zb_get_stream_recvbuf(&c->in, &p1, &n1, &p2, &n2);
-	int n = sys_recv(c->fd, p1, (int)n1);
+	int n = zb_recv(c->fd, p1, n1);
 	if (n < 0) {
 		return -1;
 	}
@@ -330,7 +315,7 @@ int read_message(struct client *c, struct zb_message *msg,
 		if (sts > 0) {
 			struct logbuf lb;
 			if (start_debug(&lb, "read message")) {
-				log_uint(&lb, "fd", (unsigned)c->fd);
+				log_uint64(&lb, "fd", (uintptr_t)c->fd);
 				log_message(&lb, msg);
 				finish_log(&lb);
 			}

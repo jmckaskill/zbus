@@ -4,13 +4,13 @@
 #include "lib/log.h"
 #include "lib/print.h"
 #include "lib/pipe.windows.h"
-#include "vendor/getopt-master/wgetopt.h"
+#include "vendor/getopt-master/getopt.h"
 #include <stdio.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stddef.h>
 
-#if HAVE_WCSDUP
+#ifdef HAVE_WCSDUP
 #define x_wcsdup wcsdup
 #else
 #define x_wcsdup _wcsdup
@@ -22,29 +22,31 @@ static int usage()
 	return 2;
 }
 
-int wmain(int argc, wchar_t *wargv[])
+int main(void)
 {
-	wchar_t *command = x_wcsdup(L"zbus.exe -autoexit=true");
+	char **argv;
+	int argc = utf8argv(GetCommandLineW(), &argv);
+	char *command = strdup("zbus.exe -autoexit=true");
 	int i;
-	while ((i = wgetopt(argc, wargv, L"c:h")) > 0) {
+	while ((i = getopt(argc, argv, "c:h")) > 0) {
 		switch (i) {
-		case L'c':
+		case 'c':
 			command = optarg;
 			break;
-		case L'h':
-		case L'?':
+		case 'h':
+		case '?':
 			return usage();
 		}
 	}
 
 	argc -= optind;
-	wargv += optind;
+	argv += optind;
 	if (argc != 1) {
 		fputs("incorrect arguments\n", stderr);
 		return usage();
 	}
 
-	const wchar_t *shmfn = wargv[0];
+	const char *shmfn = argv[0];
 
 	struct winmmap map;
 	int err = create_win_pipename(&map, shmfn);
@@ -52,14 +54,14 @@ int wmain(int argc, wchar_t *wargv[])
 		// we created the mapping, let's launch the daemon
 
 		PROCESS_INFORMATION pi;
-		STARTUPINFOW si;
+		STARTUPINFOA si;
 		memset(&si, 0, sizeof(si));
 		si.cb = sizeof(si);
 		si.dwFlags = STARTF_USESTDHANDLES;
 		si.hStdInput = INVALID_HANDLE_VALUE;
 		si.hStdOutput = INVALID_HANDLE_VALUE;
 		si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
-		if (!CreateProcessW(NULL, command, NULL /*proc attributes*/,
+		if (!CreateProcessA(NULL, command, NULL /*proc attributes*/,
 				    NULL /*thread attributes*/,
 				    TRUE /*inherit*/, DETACHED_PROCESS,
 				    NULL /*environ*/, NULL /*cwd*/, &si, &pi)) {

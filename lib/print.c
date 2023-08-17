@@ -2,6 +2,7 @@
 #include "log.h"
 #include <string.h>
 #include <limits.h>
+#include <assert.h>
 
 size_t print_int32(char *buf, int32_t num)
 {
@@ -92,7 +93,7 @@ int parse_pos_int(const char *p, int *pval)
 	}
 }
 
-static void ReplaceUtf8(uint8_t **dp, const uint16_t **sp)
+static void ReplaceUtf8(uint8_t **dp, const wchar_t **sp)
 {
 	/* Insert the replacement character */
 	(*dp)[0] = 0xEF;
@@ -102,11 +103,11 @@ static void ReplaceUtf8(uint8_t **dp, const uint16_t **sp)
 	*sp += 1;
 }
 
-char *utf16_to_utf8(char *dst, const uint16_t *src, size_t len)
+char *utf16_to_utf8(char *dst, const wchar_t *src, size_t len)
 {
 	uint8_t *dp = (uint8_t *)dst;
-	const uint16_t *sp = src;
-	const uint16_t *send = src + len;
+	const wchar_t *sp = src;
+	const wchar_t *send = src + len;
 
 	while (sp < send) {
 		if (sp[0] < 0x80) {
@@ -184,7 +185,7 @@ char *utf16_to_utf8(char *dst, const uint16_t *src, size_t len)
 	return (char *)dp;
 }
 
-static void ReplaceUtf16(uint16_t **dp, const uint8_t **sp, int srcskip)
+static void ReplaceUtf16(wchar_t **dp, const uint8_t **sp, int srcskip)
 {
 	/* Insert the replacement character */
 	**dp = 0xFFFD;
@@ -192,9 +193,9 @@ static void ReplaceUtf16(uint16_t **dp, const uint8_t **sp, int srcskip)
 	*sp += srcskip;
 }
 
-uint16_t *utf8_to_utf16(uint16_t *dst, const char *src, size_t len)
+wchar_t *utf8_to_utf16(wchar_t *dst, const char *src, size_t len)
 {
-	uint16_t *dp = dst;
+	wchar_t *dp = dst;
 	const uint8_t *sp = (uint8_t *)src;
 	const uint8_t *send = sp + len;
 
@@ -228,8 +229,8 @@ uint16_t *utf8_to_utf16(uint16_t *dst, const char *src, size_t len)
 							     encoding */
 				ReplaceUtf16(&dp, &sp, 2);
 			} else {
-				dp[0] = ((((uint16_t)sp[0]) & 0x1F) << 6) |
-					(((uint16_t)sp[1]) & 0x3F);
+				dp[0] = ((((wchar_t)sp[0]) & 0x1F) << 6) |
+					(((wchar_t)sp[1]) & 0x3F);
 				dp += 1;
 				sp += 2;
 			}
@@ -255,9 +256,9 @@ uint16_t *utf8_to_utf16(uint16_t *dst, const char *src, size_t len)
 							     encoding */
 				ReplaceUtf16(&dp, &sp, 3);
 			} else {
-				dp[0] = ((((uint16_t)sp[0]) & 0x0F) << 12) |
-					((((uint16_t)sp[1]) & 0x3F) << 6) |
-					(((uint16_t)sp[2]) & 0x3F);
+				dp[0] = ((((wchar_t)sp[0]) & 0x0F) << 12) |
+					((((wchar_t)sp[1]) & 0x3F) << 6) |
+					(((wchar_t)sp[2]) & 0x3F);
 				dp += 1;
 				sp += 3;
 			}
@@ -285,21 +286,21 @@ uint16_t *utf8_to_utf16(uint16_t *dst, const char *src, size_t len)
 				ReplaceUtf16(&dp, &sp, 1);
 			} else {
 				uint32_t u32 =
-					((((uint16_t)sp[0]) & 0x07) << 18) |
-					((((uint16_t)sp[1]) & 0x3F) << 12) |
-					((((uint16_t)sp[2]) & 0x3F) << 6) |
-					(((uint16_t)sp[3]) & 0x3F);
+					((((wchar_t)sp[0]) & 0x07) << 18) |
+					((((wchar_t)sp[1]) & 0x3F) << 12) |
+					((((wchar_t)sp[2]) & 0x3F) << 6) |
+					(((wchar_t)sp[3]) & 0x3F);
 
 				/* Check for overlong or too long encoding */
 				if (u32 < 0x10000 || u32 > 0x10FFFF) {
 					ReplaceUtf16(&dp, &sp, 4);
 				} else {
 					u32 -= 0x10000;
-					dp[0] = (uint16_t)(0xD800 |
-							   ((u32 >> 10) &
-							    0x3FF));
-					dp[1] = (uint16_t)(0xDC00 |
-							   (u32 & 0x3FF));
+					dp[0] = (wchar_t)(0xD800 |
+							  ((u32 >> 10) &
+							   0x3FF));
+					dp[1] = (wchar_t)(0xDC00 |
+							  (u32 & 0x3FF));
 					dp += 2;
 					sp += 4;
 				}
@@ -311,40 +312,156 @@ uint16_t *utf8_to_utf16(uint16_t *dst, const char *src, size_t len)
 	return dp;
 }
 
-char **utf8argv(int argc, const uint16_t **wargv)
+/*
+    Arguments are delimited by whitespace characters, which are either spaces or
+   tabs.
+
+    The first argument (argv[0]) is treated specially. It represents the program
+   name. Because it must be a valid pathname, parts surrounded by double quote
+   marks (") are allowed. The double quote marks aren't included in the argv[0]
+   output. The parts surrounded by double quote marks prevent interpretation of
+   a space or tab character as the end of the argument. The later rules in this
+   list don't apply.
+
+    A string surrounded by double quote marks is interpreted as a single
+   argument, whether it contains whitespace characters or not. A quoted string
+   can be embedded in an argument. The caret (^) isn't recognized as an escape
+   character or delimiter. Within a quoted string, a pair of double quote marks
+   is interpreted as a single escaped double quote mark. If the command line
+   ends before a closing double quote mark is found, then all the characters
+   read so far are output as the last argument.
+
+    A double quote mark preceded by a backslash (\") is interpreted as a literal
+   double quote mark (").
+
+    Backslashes are interpreted literally, unless they immediately precede a
+   double quote mark.
+
+    If an even number of backslashes is followed by a double quote mark, then
+   one backslash (\) is placed in the argv array for every pair of backslashes
+   (\\), and the double quote mark (") is interpreted as a string delimiter.
+
+    If an odd number of backslashes is followed by a double quote mark, then one
+   backslash (\) is placed in the argv array for every pair of backslashes (\\).
+   The double quote mark is interpreted as an escape sequence by the remaining
+   backslash, causing a literal double quote mark (") to be placed in argv.
+*/
+
+static char *process_backslash(char **parg, char *p)
 {
-	uintptr_t *sizes = fmalloc((argc + 1) * sizeof(sizes[0]));
-	size_t total = 0;
-	for (int i = 0; i < argc; i++) {
-		sizes[i] = u16len(wargv[i]);
-		total += sizes[i] + 1;
+	int n = 1;
+	while (p[n] == '\\') {
+		n++;
 	}
-	char **argv = (char **)sizes;
-	char *buf = fmalloc(total);
-	for (int i = 0; i < argc; i++) {
-		size_t sz = sizes[i];
-		argv[i] = buf;
-		buf = utf16_to_utf8(buf, wargv[i], sz);
-		*(buf++) = 0;
+	if (p[n] != '"') {
+		// no following quote, copy literally
+		memset(*parg, '\\', n);
+		*parg += n;
+		return p + n;
+	} else if (n & 1) {
+		// odd number of backslashes followed by quote
+		// append n/2 slashes plus a literal quote
+		memset(*parg, '\\', n / 2);
+		*parg += n / 2;
+		*((*parg)++) = '"';
+		return p + n + 1;
+	} else {
+		// even number of backslashes followed by quote
+		// append n/2 slashes and process quote
+		memset(*parg, '\\', n / 2);
+		*parg += n / 2;
+		return p + n;
 	}
-	argv[argc] = NULL;
-	return argv;
 }
 
-char *utf8dup(const uint16_t *wstr)
+#ifdef _WIN32
+static_assert(sizeof(wchar_t) == sizeof(uint16_t),
+	      "need short wchar on windows");
+#endif
+
+int utf8argv(const wchar_t *cmdline, char ***pargv)
 {
-	size_t len = u16len(wstr);
+	size_t len = wcslen(cmdline);
+	char *buf = fmalloc(UTF8_SPACE(len) + 1);
+	char *nul = utf16_to_utf8(buf, cmdline, len);
+	*nul = 0;
+
+	int argc = 0;
+	int argcap = 4;
+	char **argv = fmalloc(argcap * sizeof(*argv));
+
+	char *p = buf;
+	for (;;) {
+		if (argc == argcap) {
+			argcap *= 2;
+			argv = frealloc(argv, argcap * sizeof(*argv));
+		}
+
+		// skip leading spaces
+		while (*p && *p == ' ' && *p == '\t') {
+			p++;
+		}
+
+		if (!*p) {
+			break;
+		}
+
+		argv[argc++] = p;
+		char *arg = p;
+
+		while (*p) {
+			if (*p == ' ' || *p == '\t') {
+				// terminating space
+				p++;
+				break;
+			} else if (argc && p[0] == '"' && p[1] == '"') {
+				*arg++ = '"';
+				p += 2;
+			} else if (*p == '"') {
+				// in quoted string
+				p++;
+				while (*p) {
+					if (argc && p[0] == '"' &&
+					    p[1] == '"') {
+						*arg++ = '"';
+						p += 2;
+					} else if (*p == '"') {
+						p++;
+						break;
+					} else if (argc && *p == '\\') {
+						p = process_backslash(&arg, p);
+					} else {
+						*arg++ = *p++;
+					}
+				}
+			} else if (argc && p[0] == '\\') {
+				p = process_backslash(&arg, p);
+			} else {
+				*arg++ = *p++;
+			}
+		}
+
+		*arg = 0;
+	}
+
+	*pargv = argv;
+	return argc;
+}
+
+char *utf8dup(const wchar_t *wstr)
+{
+	size_t len = wcslen(wstr);
 	char *str = fmalloc(UTF8_SPACE(len) + 1);
 	char *nul = utf16_to_utf8(str, wstr, len);
 	*nul = 0;
 	return str;
 }
 
-uint16_t *utf16dup(const char *str)
+wchar_t *utf16dup(const char *str)
 {
 	size_t len8 = strlen(str);
-	uint16_t *wstr = fmalloc(UTF16_SPACE(len8) + 2);
-	uint16_t *nul = utf8_to_utf16(wstr, str, len8);
+	wchar_t *wstr = fmalloc(UTF16_SPACE(len8) + sizeof(*wstr));
+	wchar_t *nul = utf8_to_utf16(wstr, str, len8);
 	*nul = 0;
 	return wstr;
 }

@@ -40,7 +40,7 @@ int sys_slurp(const char *filename, char **pbuf, size_t *psz)
 	buf = newbuf;
 	DWORD read;
 	if (!ReadFile(h, buf->c, sz, &read, NULL) || read != sz) {
-		ERROR("failed to read file,file:%s,errno:%m");
+		ERROR("failed to read file,file:%s,errno:%m", filename);
 		goto error;
 	}
 	CloseHandle(h);

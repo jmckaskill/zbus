@@ -21,22 +21,9 @@ int parse_pos_int(const char *p, int *pval);
 #define UTF16_SPACE(U8LEN) ((U8LEN)*2)
 #define UTF8_SPACE(U16LEN) ((U16LEN)*3)
 
-char *utf16_to_utf8(char *dst, const uint16_t *src, size_t len);
-uint16_t *utf8_to_utf16(uint16_t *dst, const char *src, size_t len);
+char *utf16_to_utf8(char *dst, const wchar_t *src, size_t len);
+wchar_t *utf8_to_utf16(wchar_t *dst, const char *src, size_t len);
 
-char **utf8argv(int argc, const uint16_t **wargv);
-char *utf8dup(const uint16_t *wstr);
-uint16_t *utf16dup(const char *str);
-
-static inline size_t u16len(const uint16_t *str)
-{
-	if (sizeof(wchar_t) == sizeof(uint16_t)) {
-		return wcslen((wchar_t *)str);
-	} else {
-		size_t len = 0;
-		while (*str) {
-			len++;
-		}
-		return len;
-	}
-}
+int utf8argv(const wchar_t *cmdline, char ***pargv);
+char *utf8dup(const wchar_t *wstr);
+wchar_t *utf16dup(const char *str);

@@ -1,7 +1,7 @@
 #pragma once
 #include "config.h"
 #include "socket.h"
-#include "dbus/zbus.h"
+#include "zbus/zbus.h"
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -13,7 +13,7 @@
 struct security {
 	uint32_t pid;
 
-#if HAVE_WINDOWS_SID
+#ifdef HAVE_WINDOWS_SID
 	char *sid;
 #elif defined HAVE_UNIX_GROUPS
 	uint32_t uid;
@@ -29,7 +29,7 @@ void free_security(struct security *p);
 
 int getentropy(void *buf, size_t sz);
 
-#if HAVE_UNIX_GROUPS
+#ifdef HAVE_UNIX_GROUPS
 bool has_group(const struct security *p, int group);
 int lookup_group(const char *name);
 #else
