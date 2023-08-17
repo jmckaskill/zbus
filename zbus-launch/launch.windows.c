@@ -24,9 +24,10 @@ static int usage()
 
 int main(void)
 {
+	static char defcommand[] = "zbus.exe -autoexit=true";
 	char **argv;
 	int argc = utf8argv(GetCommandLineW(), &argv);
-	char *command = strdup("zbus.exe -autoexit=true");
+	char *command = defcommand;
 	int i;
 	while ((i = getopt(argc, argv, "c:h")) > 0) {
 		switch (i) {

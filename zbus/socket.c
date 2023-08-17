@@ -12,7 +12,7 @@ int zb_parse_address(char *address, const char **ptype, const char **phost,
 		     const char **pport)
 {
 	char *end = x_strchrnul(address, ';');
-	int ret = *end ? (end + 1 - address) : (end - address);
+	int ret = *end ? (int)(end + 1 - address) : (int)(end - address);
 	*end = 0;
 
 	char *colon = strchr(address, ':');
@@ -32,7 +32,7 @@ int zb_parse_address(char *address, const char **ptype, const char **phost,
 		next = *comma ? (comma + 1) : comma;
 		*comma = 0;
 
-		char *eq = memchr(key, comma - key, '=');
+		char *eq = memchr(key, '=', comma - key);
 		if (!eq) {
 			return -1;
 		}

@@ -271,12 +271,14 @@ func main() {
 			"/std:c11",
 			"/experimental:c11atomics",
 		)
-		s.linker = "ld.exe"
+		s.linker = "link.exe"
 		s.ldflags = []string{
 			"/nologo",
 		}
 		s.archiver = "lib.exe"
-		s.libflags = []string{}
+		s.libflags = []string{
+			"/nologo",
+		}
 		if s.debug {
 			s.cflags = append(s.cflags,
 				"/MTd",

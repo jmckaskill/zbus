@@ -95,13 +95,13 @@ static HANDLE open_tcp(int family, const char *host, const char *port)
 	}
 
 	for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) {
-		SOCKET fd = WSASocket(
+		SOCKET fd = WSASocketW(
 			ai->ai_family, ai->ai_socktype, ai->ai_protocol, NULL,
 			0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
 		if (fd == INVALID_SOCKET) {
 			continue;
 		}
-		if (connect(fd, ai->ai_addr, ai->ai_addrlen)) {
+		if (connect(fd, ai->ai_addr, (int)ai->ai_addrlen)) {
 			closesocket(fd);
 			continue;
 		}
@@ -115,7 +115,8 @@ static HANDLE open_tcp(int family, const char *host, const char *port)
 
 int zb_connect(zb_handle_t *pfd, const char *address)
 {
-	char *addr = strdup(address);
+	size_t len = strlen(address);
+	char *addr = memcpy(malloc(len + 1), address, len + 1);
 	int err = -1;
 
 	for (;;) {
