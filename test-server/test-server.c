@@ -87,7 +87,7 @@ int main(int argc, char *argv[])
 
 	if (read_auth(c)) {
 		close_client(c);
-		return NULL;
+		return 2;
 	}
 
 	for (;;) {
@@ -95,7 +95,7 @@ int main(int argc, char *argv[])
 		struct zb_iterator ii;
 		if (read_message(c, &m, &ii)) {
 			close_client(c);
-			return NULL;
+			return 2;
 		}
 		if (m.type == ZB_METHOD && m.interface &&
 		    zb_eq_str8(m.interface, ZB_S8("\023com.example.Service"))) {

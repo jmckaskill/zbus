@@ -86,7 +86,7 @@ ZB_INLINE void write32(void *p, uint32_t u)
 	memcpy(p, &u, 4);
 }
 
-int zb_encode_auth_request(char *buf, size_t bufsz, const char *uid,
+int zb_write_auth_external(char *buf, size_t bufsz, const char *uid,
 			   uint32_t serial)
 {
 	char *out = buf;

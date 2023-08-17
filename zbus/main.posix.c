@@ -5,7 +5,6 @@
 #include "bus.h"
 #include "config.h"
 #include "lib/log.h"
-#include "vendor/getopt-master/getopt.h"
 #include <signal.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -152,8 +151,6 @@ static int reap_children(void)
 
 int sys_launch(struct bus *b, const struct address *a)
 {
-	const struct rcu_data *d = rcu_root(b->rcu);
-
 	posix_spawnattr_t attr;
 	posix_spawnattr_init(&attr);
 
@@ -261,8 +258,7 @@ static void do_setenv(const char *key, const char *value)
 static void update_environment(struct bus *b)
 {
 #if CAN_AUTOSTART
-	const struct rcu_data *d = rcu_root(b.rcu);
-	const struct config *c = d->config;
+	const struct rcu_data *d = rcu_root(b->rcu);
 	do_setenv("DBUS_STARTER_BUS_TYPE", d->config->type);
 	do_setenv("DBUS_STARTER_ADDRESS", d->config->address);
 #endif
@@ -270,9 +266,14 @@ static void update_environment(struct bus *b)
 
 static int usage(void)
 {
-	fputs("usage: zbus [args]\n", stderr);
-	fputs("\t-f config\tLoad config file\n", stderr);
-	fputs("\t-c 'foo=bar'\tLoad config item\n", stderr);
+	fputs("usage: zbus [config] [--] [config-files]\n", stderr);
+	fputs("\tCommand line config can be any of:\n", stderr);
+	fputs("\t\t--key=value\n", stderr);
+	fputs("\t\t--key value\n", stderr);
+	fputs("\t\t-key=value\n", stderr);
+	fputs("\t\t-key value\n", stderr);
+	fputs("\tAny arguments not prefixed with '-' or after '--' will be treated as config files\n",
+	      stderr);
 	return 2;
 }
 
@@ -281,32 +282,9 @@ int main(int argc, char *argv[])
 	struct config_arguments args;
 	args.num = 0;
 
-	int i;
-	while ((i = getopt(argc, argv, "hf:c:")) > 0 &&
-	       args.num < MAX_ARGUMENTS) {
-		switch (i) {
-		case 'f':
-			args.v[args.num].cmdline = NULL;
-			args.v[args.num++].file = optarg;
-			break;
-		case 'c':
-			args.v[args.num].file = NULL;
-			args.v[args.num++].cmdline = optarg;
-			break;
-		case 'h':
-		case '?':
-			return usage();
-		}
-	}
-
-	if (argc - optind) {
-		fputs("unexpected arguments\n", stderr);
+	if (parse_argv(&args, argc, argv)) {
 		return usage();
 	}
-
-	LOG("bufsz,sz:%zu,sigsz:%zu,rxsz:%zu,txsz:%zu,bussz:%zu",
-	    (size_t)NAME_OWNER_CHANGED_BUFSZ, (size_t)SIGNAL_HDR_BUFSZ,
-	    sizeof(struct rx), sizeof(struct tx), sizeof(struct bus));
 
 	struct bus b;
 	if (setup_signals() || init_bus(&b) || load_config(&b, &args)) {

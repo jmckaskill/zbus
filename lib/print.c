@@ -331,20 +331,20 @@ char **utf8argv(int argc, const uint16_t **wargv)
 	return argv;
 }
 
-char *utf8dup(const wchar_t *wstr)
+char *utf8dup(const uint16_t *wstr)
 {
-	size_t len = wcslen(wstr);
+	size_t len = u16len(wstr);
 	char *str = fmalloc(UTF8_SPACE(len) + 1);
 	char *nul = utf16_to_utf8(str, wstr, len);
 	*nul = 0;
 	return str;
 }
 
-wchar_t *utf16dup(const char *str)
+uint16_t *utf16dup(const char *str)
 {
 	size_t len8 = strlen(str);
-	wchar_t *wstr = fmalloc(UTF16_SPACE(len8) + 2);
-	wchar_t *nul = utf8_to_utf16(wstr, str, len8);
+	uint16_t *wstr = fmalloc(UTF16_SPACE(len8) + 2);
+	uint16_t *nul = utf8_to_utf16(wstr, str, len8);
 	*nul = 0;
 	return wstr;
 }

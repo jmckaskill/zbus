@@ -181,7 +181,7 @@ ZB_INLINE int zb_eq_str8(const zb_str8 *a, const zb_str8 *b);
 // handshake.
 
 // returns # of bytes written or -ve on error
-ZB_EXTERN int zb_encode_auth_request(char *buf, size_t bufsz, const char *uid,
+ZB_EXTERN int zb_write_auth_external(char *buf, size_t bufsz, const char *uid,
 				     uint32_t serial);
 
 // returns 0 if more data is needed, -ve on error, or # of bytes read on success

@@ -239,47 +239,13 @@ int wmain(int argc, wchar_t *wargv[])
 	args.num = 0;
 
 	add_default_config(&args);
+	if (args.num + argc >= MAX_ARGUMENTS) {
+		fputs("too many arguments\n", stderr);
+		return 2;
+	}
 
-	bool more_options = true;
-	for (int i = 1; i < argc; i++) {
-		if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h") ||
-		    !strcmp(argv[i], "/?") || !strcmp(argv[i], "/h")) {
-			return usage();
-		} else if (args.num == MAX_ARGUMENTS) {
-			fputs("too many arguments", stderr);
-			return 2;
-		}
-		if (!strcmp(argv[i], "--")) {
-			more_options = false;
-		} else if (more_options &&
-			   (argv[i][0] == '-' || argv[i][0] == '/')) {
-			char *key = argv[i] + 1;
-			if (key[-1] == '-' && key[0] == '-') {
-				// allow -foo=bar or --foo=bar
-				key++;
-			}
-			size_t klen = strlen(key);
-			char *eq = memchr(key, '=', klen);
-			char *value;
-			if (eq) {
-				// --foo=bar or -foo=bar
-				klen = eq - key;
-				value = eq + 1;
-			} else if (i == argc - 1) {
-				fputs("expected argument\n", stderr);
-				return 2;
-			} else {
-				// --foo bar or -foo bar
-				value = argv[++i];
-			}
-			args.v[args.num].key = key;
-			args.v[args.num].klen = klen;
-			args.v[args.num++].value = value;
-		} else {
-			args.v[args.num].key = "include";
-			args.v[args.num].klen = strlen("include");
-			args.v[args.num++].value = argv[i];
-		}
+	if (parse_argv(&args, argc, argv)) {
+		return usage();
 	}
 
 	struct bus b;

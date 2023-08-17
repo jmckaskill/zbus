@@ -496,7 +496,7 @@ static int get_credentials(struct rx *r, uint32_t serial, const zb_str8 *name)
 	zb_add_u32(&b, s->uid);
 	zb_end_variant(&b, &variant);
 
-	zb_add_dict_entry(&b, dd);
+	zb_add_dict_entry(&b, &dict);
 	zb_add_str8(&b, ZB_S8("\014UnixGroupIDs"));
 	zb_start_variant(&b, "au", &variant);
 	struct zb_scope array;

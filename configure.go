@@ -370,6 +370,7 @@ func main() {
 			#define _GNU_SOURCE
 			#include <sys/socket.h>
 			#include <stddef.h>
+			#include <string.h>
 			int main(void) {
 				struct msghdr m;
 				memset(&m, 0, sizeof(m));
@@ -436,6 +437,7 @@ func main() {
 	`)
 
 	s.haveWcsdup = s.testCompile(`
+		#define _POSIX_C_SOURCE 200809L
 		#include <wchar.h>
 		int main(void) {
 			wchar_t *t = wcsdup(L"foo");

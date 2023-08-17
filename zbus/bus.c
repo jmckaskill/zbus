@@ -1131,3 +1131,55 @@ error:
 	free_tree(&tiface);
 	return -1;
 }
+
+int parse_argv(struct config_arguments *c, int argc, char **argv)
+{
+	assert(c->num + argc < MAX_ARGUMENTS);
+
+	bool more_options = true;
+	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
+			return 1;
+		}
+		bool flag = argv[i][0] == '-';
+#ifdef _WIN32
+		if (!strcmp(argv[i], "/?") || !strcmp(argv[i], "/h")) {
+			return 1;
+		}
+		if (argv[i][0] == '/') {
+			flag = true;
+		}
+#endif
+
+		if (!strcmp(argv[i], "--")) {
+			more_options = false;
+		} else if (more_options && flag) {
+			char *key = argv[i] + 1;
+			if (key[-1] == '-' && key[0] == '-') {
+				// allow -foo=bar or --foo=bar
+				key++;
+			}
+			size_t klen = strlen(key);
+			char *eq = memchr(key, '=', klen);
+			char *value;
+			if (eq) {
+				// --foo=bar or -foo=bar
+				klen = eq - key;
+				value = eq + 1;
+			} else if (i == argc - 1) {
+				value = "";
+			} else {
+				// --foo bar or -foo bar
+				value = argv[++i];
+			}
+			c->v[c->num].key = key;
+			c->v[c->num].klen = klen;
+			c->v[c->num++].value = value;
+		} else {
+			c->v[c->num].key = "include";
+			c->v[c->num].klen = strlen("include");
+			c->v[c->num++].value = argv[i];
+		}
+	}
+	return 0;
+}

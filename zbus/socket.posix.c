@@ -1,7 +1,8 @@
 #define _POSIX_C_SOURCE 199309UL
 #define _GNU_SOURCE
+#include "config.h"
 #include "socket.posix.h"
-#include "log.h"
+#include "lib/log.h"
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/types.h>

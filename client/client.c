@@ -87,7 +87,7 @@ struct client *open_client(const char *sockpn)
 
 	uint32_t serial = register_cb(c, &on_connected, c);
 	char buf[256];
-	int n = zb_encode_auth_request(buf, sizeof(buf), uid, serial);
+	int n = zb_write_auth_external(buf, sizeof(buf), uid, serial);
 	write_all(fd, buf, n, "send_auth,fd:%u", (unsigned)fd);
 
 	return c;

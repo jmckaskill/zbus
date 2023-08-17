@@ -96,3 +96,4 @@ struct config_arguments {
 };
 
 int load_config(struct bus *b, struct config_arguments *c);
+int parse_argv(struct config_arguments *c, int argc, char **argv);

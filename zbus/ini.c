@@ -106,7 +106,6 @@ int read_ini(struct ini_reader *p, char *key, size_t *pksz, char **pval)
 			size_t kn = ke - ks;
 			char *vs = trim_left_space(equals + 1, e);
 			char *ve = e;
-			size_t vn = ve - vs;
 			if (!kn || p->seclen + 1 + kn + 1 > *pksz) {
 				return INI_ERROR;
 			}
