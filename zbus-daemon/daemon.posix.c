@@ -199,7 +199,6 @@ int sys_launch(struct bus *b, const struct address *a)
 static void *ready_indicator(void *udata)
 {
 	char *fifopn = udata;
-	pthread_cleanup_push(&free, fifopn);
 
 	for (;;) {
 		// Wait for a client to open the fifo for read. We then
@@ -207,15 +206,12 @@ static void *ready_indicator(void *udata)
 		int fd = open(fifopn, O_WRONLY | O_CLOEXEC);
 		if (fd < 0) {
 			FATAL("open ready fifo,error:%m,path:%s", fifopn);
-			break;
+			return NULL;
 		}
 		DEBUG("open ready fifo");
 		close(fd);
 		usleep(1000);
 	}
-
-	pthread_cleanup_pop(1);
-	return NULL;
 }
 
 int bind_bus(const char *sockpn)
@@ -291,6 +287,13 @@ static int check_autoexit(void)
 	return 0;
 }
 
+struct main_thread {
+	struct bus bus;
+	bool autoexit;
+	pthread_t ready_thrd;
+	char *readypn;
+};
+
 static void do_setenv(const char *key, const char *value)
 {
 	if (value) {
@@ -300,14 +303,29 @@ static void do_setenv(const char *key, const char *value)
 	}
 }
 
-static void update_environment(struct bus *b, bool *autoexit)
+static void update_main_thread(struct main_thread *m)
 {
-	const struct rcu_data *d = rcu_root(b->rcu);
+	const struct rcu_data *d = rcu_root(m->bus.rcu);
 #ifdef CAN_AUTOSTART
 	do_setenv("DBUS_STARTER_BUS_TYPE", d->config->type);
 	do_setenv("DBUS_STARTER_ADDRESS", d->config->address);
 #endif
-	*autoexit = d->config->autoexit;
+	m->autoexit = d->config->autoexit;
+	if (m->readypn &&
+	    (!d->config->readypn || strcmp(m->readypn, d->config->readypn))) {
+		pthread_cancel(m->ready_thrd);
+		pthread_join(m->ready_thrd, NULL);
+		free(m->readypn);
+		m->readypn = NULL;
+	}
+	if (d->config->readypn && !m->readypn) {
+		m->readypn = strdup(d->config->readypn);
+		VERBOSE("starting ready fifo thread,file:%s", m->readypn);
+		if (pthread_create(&m->ready_thrd, NULL, &ready_indicator,
+				   m->readypn)) {
+			FATAL("failed to spawn ready indicator thread,errno:%m");
+		}
+	}
 }
 
 static int usage(void)
@@ -332,12 +350,13 @@ int main(int argc, char *argv[])
 		return usage();
 	}
 
-	struct bus b;
-	if (setup_signals() || init_bus(&b) || load_config(&b, &args)) {
+	struct main_thread m;
+	memset(&m, 0, sizeof(m));
+	if (setup_signals() || init_bus(&m.bus) || load_config(&m.bus, &args)) {
 		return 1;
 	}
 
-	const struct rcu_data *d = rcu_root(b.rcu);
+	const struct rcu_data *d = rcu_root(m.bus.rcu);
 	const struct config *c = d->config;
 
 	if (!c->listenpn && c->listenfd < 0) {
@@ -345,7 +364,7 @@ int main(int argc, char *argv[])
 	}
 
 	VERBOSE("startup,listen:%s,listenfd:%d,busid:%s", c->listenpn,
-		c->listenfd, b.busid.p);
+		c->listenfd, m.bus.busid.p);
 
 	int lfd = c->listenfd >= 0 ? c->listenfd : bind_bus(c->listenpn);
 	if (lfd < 0) {
@@ -354,23 +373,11 @@ int main(int argc, char *argv[])
 
 	VERBOSE("ready");
 
-	pthread_t ready_thrd;
-	bool have_ready_thrd = false;
-	if (c->readypn) {
-		VERBOSE("starting ready fifo thread,file:%s", c->readypn);
-		if (pthread_create(&ready_thrd, NULL, &ready_indicator,
-				   strdup(c->readypn))) {
-			FATAL("failed to spawn ready indicator thread,errno:%m");
-		}
-		have_ready_thrd = true;
-	}
-
 	if (lfd != 0) {
 		close(0);
 	}
 
-	bool autoexit;
-	update_environment(&b, &autoexit);
+	update_main_thread(&m);
 	int next_id = 1;
 
 #ifdef CAN_AUTOSTART
@@ -392,7 +399,7 @@ int main(int argc, char *argv[])
 			return 2;
 		} else if (cfd >= 0) {
 			VERBOSE("new connection,fd:%d", cfd);
-			start_rx_thread(&b, cfd, next_id++);
+			start_rx_thread(&m.bus, cfd, next_id++);
 		}
 
 		// check our signals
@@ -407,7 +414,7 @@ int main(int argc, char *argv[])
 		struct timespec exit_timeout;
 		exit_timeout.tv_sec = 5;
 		exit_timeout.tv_nsec = 0;
-		int n = ppoll(&pfd, 1, autoexit ? &exit_timeout : NULL, &ss);
+		int n = ppoll(&pfd, 1, m.autoexit ? &exit_timeout : NULL, &ss);
 		if (n == 1) {
 			continue;
 #ifdef CAN_AUTOSTART
@@ -417,15 +424,15 @@ int main(int argc, char *argv[])
 			}
 #endif
 		} else if (have_sighup()) {
-			mtx_lock(&b.lk);
-			if (load_config(&b, &args)) {
+			mtx_lock(&m.bus.lk);
+			if (load_config(&m.bus, &args)) {
 				ERROR("failed to reload config - continuing with previous config");
 			}
-			update_environment(&b, &autoexit);
-			mtx_unlock(&b.lk);
+			update_main_thread(&m);
+			mtx_unlock(&m.bus.lk);
 			continue;
 		} else if (!n) {
-			assert(autoexit);
+			assert(m.autoexit);
 			if (check_autoexit()) {
 				break;
 			}
@@ -438,10 +445,11 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	destroy_bus(&b);
-	if (have_ready_thrd) {
-		pthread_cancel(ready_thrd);
-		pthread_join(ready_thrd, NULL);
+	destroy_bus(&m.bus);
+	if (m.readypn) {
+		pthread_cancel(m.ready_thrd);
+		pthread_join(m.ready_thrd, NULL);
+		free(m.readypn);
 	}
 #ifdef CAN_AUTOSTART
 	kh_destroy(child_info, g_children);
