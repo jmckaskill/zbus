@@ -67,18 +67,14 @@ void zb_get_stream_recvbuf(struct zb_stream *s, char **p1, size_t *n1,
 int zb_read_auth(struct zb_stream *s)
 {
 	assert(!s->used);
-	if (!s->have) {
-		return ZB_STREAM_READ_MORE;
-	} else if (s->have == s->cap) {
-		return ZB_STREAM_ERROR;
-	}
-
 	int rd = zb_decode_auth_reply(s->buf, s->have);
-	if (rd < 0) {
-		return ZB_STREAM_ERROR;
+	if (!rd && s->have == s->cap) {
+		return -1;
+	} else if (rd <= 0) {
+		return rd;
 	}
 	s->used += rd;
-	return ZB_STREAM_OK;
+	return 1;
 }
 
 int zb_read_message(struct zb_stream *s, struct zb_message *msg)
@@ -88,7 +84,7 @@ int zb_read_message(struct zb_stream *s, struct zb_message *msg)
 		size_t have = s->have;
 
 		if (used + ZB_MIN_MSG_SIZE > have) {
-			return ZB_STREAM_READ_MORE;
+			return 0;
 		}
 
 		size_t cap = s->cap;
@@ -107,7 +103,7 @@ int zb_read_message(struct zb_stream *s, struct zb_message *msg)
 		// parse the fixed header
 		size_t hsz, bsz;
 		if (zb_parse_size(hdr, &hsz, &bsz)) {
-			return ZB_STREAM_ERROR;
+			return -1;
 		}
 		size_t msz = hsz + bsz;
 		if (msz > cap || hsz > s->defrag) {
@@ -116,7 +112,7 @@ int zb_read_message(struct zb_stream *s, struct zb_message *msg)
 			continue;
 		}
 		if (used + msz > have) {
-			return ZB_STREAM_READ_MORE;
+			return 0;
 		}
 
 		// defragment the rest of the header
@@ -148,7 +144,7 @@ int zb_read_message(struct zb_stream *s, struct zb_message *msg)
 			s->bsz[1] = end;
 		}
 
-		return ZB_STREAM_OK;
+		return 1;
 	}
 }
 

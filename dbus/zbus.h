@@ -185,8 +185,9 @@ ZB_INLINE int zb_eq_str8(const zb_str8 *a, const zb_str8 *b);
 
 // returns one of the ZB_STREAM_* error codes. State should be initially set to
 // 0.
-ZB_EXTERN int zb_step_server_auth(int *pstate, char **pin, char *inend, char **pout,
-			char *outend, const char *busid, uint32_t *pserial);
+ZB_EXTERN int zb_step_server_auth(int *pstate, char **pin, char *inend,
+				  char **pout, char *outend, const char *busid,
+				  uint32_t *pserial);
 
 // Client auth assume the auth handshake will succeed and sends the entire
 // conversation in the initial send. This allows a client to send the auth and
@@ -195,9 +196,9 @@ ZB_EXTERN int zb_step_server_auth(int *pstate, char **pin, char *inend, char **p
 
 // returns # of bytes written or -ve on error
 ZB_EXTERN int zb_encode_auth_request(char *buf, size_t bufsz, const char *uid,
-			   uint32_t serial);
+				     uint32_t serial);
 
-// returns ZB_STREAM_* error code above or # of bytes read on success
+// returns 0 if more data is needed, -ve on error, or # of bytes read on success
 ZB_EXTERN int zb_decode_auth_reply(char *in, size_t sz);
 
 ////////////////////////////////////////////
@@ -268,7 +269,6 @@ ZB_EXTERN int zb_parse_size(char *p, size_t *phdr, size_t *pbody);
 // by zb_parse_size
 // returns non-zero on error
 ZB_EXTERN int zb_parse_header(struct zb_message *msg, char *p);
-
 
 /////////////////////////////
 // argument encoding
@@ -344,13 +344,12 @@ ZB_INLINE void zb_set_reply_serial(char *buf, uint32_t serial);
 /////////////////////////////////////////////
 // Stream processing
 
-
 // msgsz must be a power of 2
 ZB_EXTERN void zb_init_stream(struct zb_stream *s, size_t msgsz, size_t hdrsz);
 ZB_EXTERN void zb_get_stream_recvbuf(struct zb_stream *s, char **p1, size_t *n1,
 				     char **p2, size_t *n2);
 
-// returns one of the ZB_STREAM_* error codes
+// returns -ve on error, 0 on more data needed, +ve on ok
 ZB_EXTERN int zb_read_message(struct zb_stream *s, struct zb_message *m);
 ZB_EXTERN int zb_read_auth(struct zb_stream *s);
 

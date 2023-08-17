@@ -311,10 +311,10 @@ static int read_more(struct client *c)
 int read_auth(struct client *c)
 {
 	for (;;) {
-		int err = zb_read_auth(&c->in);
-		if (!err) {
+		int sts = zb_read_auth(&c->in);
+		if (sts > 0) {
 			return 0;
-		} else if (err == ZB_STREAM_READ_MORE && !read_more(c)) {
+		} else if (!sts && !read_more(c)) {
 			continue;
 		} else {
 			return -1;
@@ -326,8 +326,8 @@ int read_message(struct client *c, struct zb_message *msg,
 		 struct zb_iterator *body)
 {
 	for (;;) {
-		int err = zb_read_message(&c->in, msg);
-		if (!err) {
+		int sts = zb_read_message(&c->in, msg);
+		if (sts > 0) {
 			struct logbuf lb;
 			if (start_debug(&lb, "read message")) {
 				log_uint(&lb, "fd", (unsigned)c->fd);
@@ -336,7 +336,7 @@ int read_message(struct client *c, struct zb_message *msg,
 			}
 			return zb_defragment_body(&c->in, msg, body);
 
-		} else if (err == ZB_STREAM_READ_MORE && !read_more(c)) {
+		} else if (!sts && !read_more(c)) {
 			continue;
 		} else {
 			return -1;

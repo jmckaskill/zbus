@@ -6,6 +6,7 @@
 #include "busmsg.h"
 #include "dispatch.h"
 #include "txmap.h"
+#include "auth.h"
 #include "dbus/zbus.h"
 #include "lib/logmsg.h"
 #include "lib/algo.h"
@@ -34,92 +35,6 @@ void free_rx(struct rx *r)
 	}
 }
 
-static int send_auth(struct txconn *c, char *p, size_t sz)
-{
-	while (sz) {
-		int n = start_send1(c, p, sz);
-		if (n <= 0) {
-			// we shouldn't have sent enough to consume the tx
-			// buffer so consider async sends as errors
-			ERROR("send,errno:%m");
-			return -1;
-		}
-		p += n;
-		sz -= n;
-	}
-	return 0;
-}
-
-static struct zb_stream *authenticate(struct rx *r)
-{
-	uint32_t serial;
-	int state = 0;
-	size_t inhave = 0;
-	char in[256];
-	char out[64];
-	char *innext = in;
-	char *ie = in + sizeof(in);
-	char *oe = out + sizeof(out);
-
-	for (;;) {
-		// compact any remaining input data
-		inhave = in + inhave - innext;
-		memmove(in, innext, inhave);
-
-		int n = block_recv1(&r->conn, in + inhave, ie - in - inhave);
-		if (n < 0) {
-			return NULL;
-		}
-		inhave += n;
-
-		char *op = out;
-		int err = zb_step_server_auth(&state, &innext, in + inhave, &op,
-					      oe, r->bus->busid.p, &serial);
-
-		if (send_auth(&r->tx->conn, out, op - out)) {
-			return NULL;
-		}
-
-		if (err == ZB_STREAM_OK) {
-			break;
-		} else if (err != ZB_STREAM_READ_MORE) {
-			return NULL;
-		}
-	}
-
-	if (load_security(&r->tx->conn, &r->tx->sec)) {
-		return NULL;
-	}
-
-	// auth successful, setup the full size receive and transmit buffers
-	char *buf = malloc(sizeof(struct zb_stream) + RX_BUFSZ + RX_HDRSZ +
-			   TX_BUFSZ);
-	if (!buf) {
-		return NULL;
-	}
-	r->txbuf = buf;
-
-	struct zb_stream *s = (void *)(buf + TX_BUFSZ);
-	zb_init_stream(s, RX_BUFSZ, RX_HDRSZ);
-
-	// copy the remaining data into the msg receive buffer
-	size_t sz = in + inhave - innext;
-	if (sz) {
-		char *p1, *p2;
-		size_t n1, n2;
-		zb_get_stream_recvbuf(s, &p1, &n1, &p2, &n2);
-		assert(n1 > sizeof(in));
-		memcpy(p1, innext, sz);
-		s->have = sz;
-	}
-
-	// register_remote will send the Hello reply
-	mtx_lock(&r->bus->lk);
-	int err = register_remote(r->bus, r, &r->addr, serial, &r->reader);
-	mtx_unlock(&r->bus->lk);
-	return err ? NULL : s;
-}
-
 static void unregister_with_bus(struct rx *r)
 {
 	mtx_lock(&r->bus->lk);
@@ -138,9 +53,9 @@ static void read_messages(struct rx *r, struct zb_stream *s)
 
 		for (;;) {
 			int sts = zb_read_message(s, &m.m);
-			if (sts == ZB_STREAM_ERROR) {
+			if (sts < 0) {
 				return;
-			} else if (sts == ZB_STREAM_OK) {
+			} else if (sts > 0) {
 				break;
 			}
 			char *p1, *p2;
