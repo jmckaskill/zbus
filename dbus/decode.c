@@ -47,16 +47,6 @@ ZB_INLINE int_fast32_t align8(char *base, int_fast32_t off, int_fast32_t error)
 	return aligned;
 }
 
-void align_iterator_8(struct zb_iterator *p)
-{
-	int_fast32_t n = align8(p->base, p->next, p->end);
-	if (n > p->end) {
-		p->next = p->end + 1;
-	} else {
-		p->next = n;
-	}
-}
-
 static int_fast32_t alignx(char type, char *base, int_fast32_t off,
 			   int_fast32_t error)
 {
@@ -714,15 +704,20 @@ void zb_init_message(struct zb_message *m, enum zb_msg_type type,
 
 static_assert(sizeof(struct raw_header) == 16, "");
 
-ZB_INLINE void swap32(void *p)
+ZB_INLINE uint32_t swap32(uint32_t u32)
 {
-	uint8_t *u = p;
-	uint8_t u0 = u[0];
-	uint8_t u1 = u[1];
-	u[0] = u[3];
-	u[1] = u[2];
-	u[2] = u1;
-	u[3] = u0;
+	union {
+		uint32_t u;
+		uint8_t b[4];
+	} u;
+	u.u = u32;
+	uint8_t b0 = u.b[0];
+	uint8_t b1 = u.b[1];
+	u.b[0] = u.b[3];
+	u.b[1] = u.b[2];
+	u.b[2] = b1;
+	u.b[3] = b0;
+	return u.u;
 }
 
 int zb_parse_size(char *p, size_t *phdr, size_t *pbody)
@@ -736,8 +731,8 @@ int zb_parse_size(char *p, size_t *phdr, size_t *pbody)
 	memcpy(&flen, &h->field_len, 4);
 	memcpy(&blen, &h->body_len, 4);
 	if (h->endian != native_endian()) {
-		swap32(&flen);
-		swap32(&blen);
+		flen = swap32(flen);
+		blen = swap32(blen);
 	}
 	uint32_t fpadded = ZB_ALIGN_UP(flen, 8);
 	if (fpadded > ZB_MAX_VALUE_SIZE || blen > ZB_MAX_MSG_SIZE ||
@@ -779,22 +774,22 @@ static uint32_t parse_uint32_field(struct zb_iterator *ii)
 
 static void parse_field(struct zb_message *msg, struct zb_iterator *ii)
 {
-	align_iterator_8(ii);
+	int_fast32_t n = align8(ii->base, ii->next, ii->end);
 
 	// Min field size is 5 for a field of type byte: XX 01 'y' 00 YY
-	if (ii->next + 5 > ii->end) {
+	if (n + 5 > ii->end) {
 		goto error;
 	}
 
-	uint8_t ftype = *(uint8_t *)(ii->base + ii->next);
+	uint8_t ftype = *(uint8_t *)(ii->base + n);
 
 	if (ftype > ZB_FIELD_LAST) {
-		ii->next++;
+		ii->next = n + 1;
 		ii->nextsig = "v";
 		zb_skip(ii, NULL);
 	} else {
-		uint32_t ftag = read_little_4(ii->base + ii->next);
-		ii->next += 4;
+		uint32_t ftag = read_little_4(ii->base + n);
+		ii->next = n + 4;
 
 		switch (ftag) {
 		case FTAG_REPLY_SERIAL:

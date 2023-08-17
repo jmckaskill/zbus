@@ -31,13 +31,6 @@ static int_fast32_t align8(char *base, int_fast32_t off)
 	return off;
 }
 
-void align_buffer_8(struct zb_builder *b)
-{
-	// buffer is guarenteed to have 8 byte alignment so this should never
-	// fail
-	b->next = align8(b->base, b->next);
-}
-
 static int_fast32_t alignx(char *base, int_fast32_t off, char type)
 {
 	switch (type) {
@@ -506,10 +499,10 @@ ZB_INLINE void write_little_4(char *p, uint32_t v)
 #endif
 }
 
-static void add_uint32_field(struct zb_builder *b, uint32_t tag, uint32_t v)
+static int_fast32_t add_uint32_field(struct zb_builder *b, uint32_t tag,
+				     uint32_t v)
 {
-	// should be called first so that we are still aligned
-	assert(!(b->next & 3U));
+	assert(!(b->next & 7));
 	int_fast32_t tagoff = b->next;
 	int_fast32_t valoff = tagoff + 4;
 	b->next = valoff + 4;
@@ -517,42 +510,49 @@ static void add_uint32_field(struct zb_builder *b, uint32_t tag, uint32_t v)
 		write_little_4(b->base + tagoff, tag);
 		memcpy(b->base + valoff, &v, 4);
 	}
+	return b->next;
 }
 
-static void add_string_field(struct zb_builder *b, uint32_t tag,
-			     const zb_str8 *str)
+static int_fast32_t add_string_field(struct zb_builder *b, uint32_t tag,
+				     const zb_str8 *str)
 {
-	align_buffer_8(b);
+	assert(!(b->next & 7));
 	int_fast32_t tagoff = b->next;
 	int_fast32_t lenoff = tagoff + 4;
 	int_fast32_t stroff = lenoff + 4;
-	b->next = stroff + str->len + 1;
+	int_fast32_t padoff = stroff + str->len + 1;
+	b->next = ZB_ALIGN_UP(padoff, 8);
 	if (b->next <= b->end) {
 		uint32_t len32 = str->len;
 		write_little_4(b->base + tagoff, tag);
 		memcpy(b->base + lenoff, &len32, 4);
 		memcpy(b->base + stroff, str->p, str->len + 1);
+		memset(b->base + padoff, 0, b->next - padoff);
 	}
+	return padoff;
 }
 
-static void add_signature_field(struct zb_builder *b, uint32_t tag,
-				const char *sig)
+static int_fast32_t add_signature_field(struct zb_builder *b, uint32_t tag,
+					const char *sig)
 {
-	align_buffer_8(b);
+	assert(!(b->next & 7));
 	size_t len = strlen(sig);
 	if (len > 255) {
 		b->next = b->end + 1;
-		return;
+		return b->next;
 	}
 	int_fast32_t tagoff = b->next;
 	int_fast32_t lenoff = tagoff + 4;
 	int_fast32_t stroff = lenoff + 1;
-	b->next = stroff + (uint8_t)len + 1;
+	int_fast32_t padoff = stroff + (uint8_t)len + 1;
+	b->next = ZB_ALIGN_UP(padoff, 8);
 	if (b->next <= b->end) {
 		write_little_4(b->base + tagoff, tag);
 		*(uint8_t *)(b->base + lenoff) = (uint8_t)len;
 		memcpy(b->base + stroff, sig, len + 1);
+		memset(b->base + padoff, 0, b->next - padoff);
 	}
+	return padoff;
 }
 
 ZB_INLINE void init_builder(struct zb_builder *b, char *buf, size_t bufsz,
@@ -590,35 +590,37 @@ static int add_header(struct zb_builder *b, const struct zb_message *m,
 	}
 
 	// unwrap the standard marshalling functions to add the field
-	// type and variant signature in one go
+	// type and variant signature in one go. These functions leave the
+	// buffer 8 byte aligned but return the actual data end for the field
+	// array size.
 
-	// fixed length fields go first so we can maintain 8 byte alignment
+	int_fast32_t fend = b->next;
 	if (m->reply_serial) {
-		add_uint32_field(b, FTAG_REPLY_SERIAL, m->reply_serial);
+		fend = add_uint32_field(b, FTAG_REPLY_SERIAL, m->reply_serial);
 	}
 	if (m->fdnum) {
-		add_uint32_field(b, FTAG_UNIX_FDS, m->fdnum);
+		fend = add_uint32_field(b, FTAG_UNIX_FDS, m->fdnum);
 	}
 	if (*m->signature) {
-		add_signature_field(b, FTAG_SIGNATURE, m->signature);
+		fend = add_signature_field(b, FTAG_SIGNATURE, m->signature);
 	}
 	if (m->path) {
-		add_string_field(b, FTAG_PATH, m->path);
+		fend = add_string_field(b, FTAG_PATH, m->path);
 	}
 	if (m->interface) {
-		add_string_field(b, FTAG_INTERFACE, m->interface);
+		fend = add_string_field(b, FTAG_INTERFACE, m->interface);
 	}
 	if (m->member) {
-		add_string_field(b, FTAG_MEMBER, m->member);
+		fend = add_string_field(b, FTAG_MEMBER, m->member);
 	}
 	if (m->error) {
-		add_string_field(b, FTAG_ERROR_NAME, m->error);
+		fend = add_string_field(b, FTAG_ERROR_NAME, m->error);
 	}
 	if (m->destination) {
-		add_string_field(b, FTAG_DESTINATION, m->destination);
+		fend = add_string_field(b, FTAG_DESTINATION, m->destination);
 	}
 	if (m->sender) {
-		add_string_field(b, FTAG_SENDER, m->sender);
+		fend = add_string_field(b, FTAG_SENDER, m->sender);
 	}
 
 	struct raw_header *h = (struct raw_header *)(b->base + start);
@@ -627,14 +629,11 @@ static int add_header(struct zb_builder *b, const struct zb_message *m,
 	h->flags = m->flags;
 	h->version = DBUS_VERSION;
 	uint32_t serial = m->serial;
-	uint32_t flen32 = (uint32_t)(b->next - start - sizeof(*h));
+	uint32_t flen32 = (uint32_t)(fend - start - sizeof(*h));
 	uint32_t blen32 = (uint32_t)blen;
 	memcpy(h->serial, &serial, 4);
 	memcpy(h->body_len, &blen32, 4);
 	memcpy(h->field_len, &flen32, 4);
-
-	// align the end of the fields
-	align_buffer_8(b);
 
 	return (b->next > b->end);
 }
