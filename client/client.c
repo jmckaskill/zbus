@@ -1,7 +1,7 @@
 #define _DEFAULT_SOURCE
 #include "client.h"
 #include "socket.h"
-#include "dbus/auth.h"
+#include "dbus/zbus.h"
 #include "lib/logmsg.h"
 #include "lib/algo.h"
 #include <stdint.h>
@@ -159,9 +159,8 @@ int vsend_signal(struct client *c, const zb_str8 *path, const zb_str8 *iface,
 		ERROR("failed to encode message");
 		return -1;
 	}
-	if (write_all(c->fd, buf, sz,
-		      "send_signal,path:%.*s,iface:%.*s,mbr:%.*s", S_PRI(*path),
-		      S_PRI(*iface), S_PRI(*mbr))) {
+	if (write_all(c->fd, buf, sz, "send_signal,path:%s,iface:%s,mbr:%s",
+		      path->p, iface->p, mbr->p)) {
 		return -1;
 	}
 	return 0;
@@ -191,8 +190,8 @@ int vcall_method(struct client *c, uint32_t serial, const zb_str8 *dst,
 		ERROR("failed to encode message");
 		return -1;
 	}
-	if (write_all(c->fd, buf, sz, "dst:%.*s,path:%.*s,iface:%.*s,mbr:%.*s",
-		      S_PRI(*dst), S_PRI(*path), S_PRI(*iface), S_PRI(*mbr))) {
+	if (write_all(c->fd, buf, sz, "dst:%s,path:%s,iface:%s,mbr:%s", dst->p,
+		      path->p, iface->p, mbr->p)) {
 		return -1;
 	}
 	return 0;
@@ -218,8 +217,8 @@ int vsend_reply(struct client *c, const struct zb_message *req, const char *sig,
 		ERROR("failed to encode message");
 		return -1;
 	}
-	if (write_all(c->fd, buf, sz, "type:%s,request:%x,dst:%.*s", "reply(2)",
-		      req->serial, S_PRI(*req->sender))) {
+	if (write_all(c->fd, buf, sz, "type:%s,request:%x,dst:%s", "reply(2)",
+		      req->serial, req->sender->p)) {
 		return -1;
 	}
 	return 0;
@@ -241,8 +240,8 @@ int send_error(struct client *c, uint32_t request_serial, const zb_str8 *error)
 		ERROR("failed to encode message");
 		return -1;
 	}
-	if (write_all(c->fd, buf, sz, "send_error,request:%u,error:%.*s",
-		      request_serial, S_PRI(*error))) {
+	if (write_all(c->fd, buf, sz, "send_error,request:%u,error:%s",
+		      request_serial, error->p)) {
 		return -1;
 	}
 	return 0;
@@ -278,9 +277,9 @@ int call_bus_method(struct client *c, uint32_t serial, const zb_str8 *member,
 {
 	va_list ap;
 	va_start(ap, sig);
-	return vcall_method(c, serial, S8("\024org.freedesktop.DBus"),
-			    S8("\025/org/freedesktop/DBus"),
-			    S8("\024org.freedesktop.DBus"), member, sig, ap);
+	return vcall_method(c, serial, ZB_S8("\024org.freedesktop.DBus"),
+			    ZB_S8("\025/org/freedesktop/DBus"),
+			    ZB_S8("\024org.freedesktop.DBus"), member, sig, ap);
 }
 
 int read_data(struct client *c)

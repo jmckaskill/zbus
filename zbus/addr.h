@@ -5,8 +5,7 @@
 #include "vector.h"
 #include "sec.h"
 #include "lib/khash.h"
-#include "dbus/types.h"
-#include "dbus/str8.h"
+#include "dbus/zbus.h"
 #include "vendor/c-rbtree-3.1.0/src/c-rbtree.h"
 #include <limits.h>
 #include <time.h>

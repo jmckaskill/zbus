@@ -1,18 +1,9 @@
 #include "internal.h"
-#include "auth.h"
-#include "decode.h"
-#include "encode.h"
-#include <stdlib.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <string.h>
-#include <errno.h>
-#include <stdint.h>
 
-#define BUS_DESTINATION S8("\024org.freedesktop.DBus")
-#define BUS_INTERFACE S8("\024org.freedesktop.DBus")
-#define BUS_PATH S8("\025/org/freedesktop/DBus")
-#define HELLO S8("\005Hello")
+#define BUS_DESTINATION ZB_S8("\024org.freedesktop.DBus")
+#define BUS_INTERFACE ZB_S8("\024org.freedesktop.DBus")
+#define BUS_PATH ZB_S8("\025/org/freedesktop/DBus")
+#define HELLO ZB_S8("\005Hello")
 
 static bool begins_with(char *line, char *end, const char *test)
 {

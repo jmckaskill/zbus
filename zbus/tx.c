@@ -2,7 +2,7 @@
 #include "tx.h"
 #include "rx.h"
 #include "busmsg.h"
-#include "dbus/encode.h"
+#include "dbus/zbus.h"
 #include "lib/logmsg.h"
 #include "lib/log.h"
 

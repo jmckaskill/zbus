@@ -6,10 +6,7 @@
 #include "busmsg.h"
 #include "dispatch.h"
 #include "txmap.h"
-#include "dbus/stream.h"
-#include "dbus/encode.h"
-#include "dbus/decode.h"
-#include "dbus/auth.h"
+#include "dbus/zbus.h"
 #include "lib/logmsg.h"
 #include "lib/algo.h"
 #include <stdlib.h>

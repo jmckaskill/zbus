@@ -1,9 +1,4 @@
 #include "internal.h"
-#include "decode.h"
-#include <string.h>
-#include <assert.h>
-#include <stdio.h>
-#include <stdalign.h>
 
 #define MAX_DEPTH 32
 

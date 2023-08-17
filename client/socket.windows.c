@@ -80,18 +80,18 @@ char *sys_userid(char *buf, size_t sz)
 	}
 
 	DWORD osz;
-	if (GetTokenInformation(tok, TokenOwner, NULL, 0, &osz) ||
+	if (GetTokenInformation(tok, TokenUser, NULL, 0, &osz) ||
 	    GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
 		FATAL("failed to get sid,errno:%m");
 	}
 
-	TOKEN_OWNER *o = fmalloc(osz);
-	if (!GetTokenInformation(tok, TokenOwner, o, osz, &osz)) {
+	TOKEN_USER *u = fmalloc(osz);
+	if (!GetTokenInformation(tok, TokenUser, u, osz, &osz)) {
 		FATAL("failed to get sid,errno:%m");
 	}
 
 	char *sid;
-	if (!ConvertSidToStringSidA(o->Owner, &sid)) {
+	if (!ConvertSidToStringSidA(u->User.Sid, &sid)) {
 		FATAL("failed to convert sid to string,errno:%m");
 	}
 
@@ -101,7 +101,7 @@ char *sys_userid(char *buf, size_t sz)
 	}
 	memcpy(buf, sid, len + 1);
 	LocalFree(sid);
-	free(o);
+	free(u);
 	CloseHandle(tok);
 
 	return buf;

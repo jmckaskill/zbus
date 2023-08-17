@@ -8,7 +8,7 @@
 #include "vector.h"
 #include "txmap.h"
 #include "threads.h"
-#include "dbus/match.h"
+#include "match.h"
 #include "lib/log.h"
 
 struct tx;
@@ -82,7 +82,7 @@ int release_name(struct bus *b, struct rx *r, const zb_str8 *name,
 #define DBUS_RELEASE_NAME_REPLY_NOT_OWNER 3
 
 int update_sub(struct bus *b, bool add, struct rx *r, const char *str,
-	       struct zb_matcher m, uint32_t serial);
+	       struct match m, uint32_t serial);
 
 #define MAX_ARGUMENTS 32
 

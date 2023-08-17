@@ -1,8 +1,4 @@
 #include "internal.h"
-#include "stream.h"
-#include "auth.h"
-#include "encode.h"
-#include <assert.h>
 
 void zb_init_stream(struct zb_stream *s, size_t msgsz, size_t hdrsz)
 {

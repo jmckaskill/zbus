@@ -90,7 +90,7 @@ int main(int argc, char *argv[])
 
 	uint32_t list_names = register_cb(c, &on_list_names, NULL);
 	must(!list_names, "register ListNames");
-	must(call_bus_method(c, list_names, S8("\011ListNames"), ""),
+	must(call_bus_method(c, list_names, ZB_S8("\011ListNames"), ""),
 	     "send ListNames");
 	remaining_client_replies++;
 
@@ -99,7 +99,7 @@ int main(int argc, char *argv[])
 			    "member='TestSignal'";
 	uint32_t test_signal = register_cb(c, &on_test_signal, (void *)ucast);
 	must(!test_signal, "register TestSignal");
-	must(call_bus_method(c, test_signal, S8("\010AddMatch"), "s", ucast),
+	must(call_bus_method(c, test_signal, ZB_S8("\010AddMatch"), "s", ucast),
 	     "send AddMatch");
 	remaining_client_replies += 2; // AddMatch response and signal
 
@@ -107,15 +107,16 @@ int main(int argc, char *argv[])
 			    "member='TestSignal2'";
 	uint32_t test_signal2 = register_cb(c, &on_test_signal, (void *)bcast);
 	must(!test_signal2, "register TestSignal");
-	must(call_bus_method(c, test_signal2, S8("\010AddMatch"), "s", bcast),
+	must(call_bus_method(c, test_signal2, ZB_S8("\010AddMatch"), "s",
+			     bcast),
 	     "send AddMatch");
 	remaining_client_replies += 2; // AddMatch response and signal
 
 	uint32_t test_method = register_cb(c, &on_test_method, NULL);
 	must(!test_method, "register TestMethod");
-	must(call_method(c, test_method, S8("\023com.example.Service"),
-			 S8("\001/"), S8("\023com.example.Service"),
-			 S8("\012TestMethod"), "us", 0, "TestString"),
+	must(call_method(c, test_method, ZB_S8("\023com.example.Service"),
+			 ZB_S8("\001/"), ZB_S8("\023com.example.Service"),
+			 ZB_S8("\012TestMethod"), "us", 0, "TestString"),
 	     "send TestMethod");
 	remaining_client_replies++;
 
@@ -130,8 +131,9 @@ int main(int argc, char *argv[])
 	       remaining_client_replies) {
 	}
 
-	must(call_method(c, 0, S8("\023com.example.Service"), S8("\001/"),
-			 S8("\023com.example.Service"), S8("\010Shutdown"), ""),
+	must(call_method(c, 0, ZB_S8("\023com.example.Service"), ZB_S8("\001/"),
+			 ZB_S8("\023com.example.Service"),
+			 ZB_S8("\010Shutdown"), ""),
 	     "send shutdown");
 
 	close_client(c);

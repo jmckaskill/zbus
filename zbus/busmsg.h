@@ -1,7 +1,7 @@
 #pragma once
 #include "config.h"
 #include "tx.h"
-#include "dbus/encode.h"
+#include "dbus/zbus.h"
 
 // general errors that any function can return
 #define ERR_INTERNAL 1

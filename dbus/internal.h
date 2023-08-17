@@ -1,6 +1,9 @@
 #pragma once
 #define ZB_BUILDING
-#include "types.h"
+#include "zbus.h"
+
+#define ZB_ALIGN_UP(VAL, BOUNDARY) \
+	(((VAL) + (BOUNDARY##U - 1)) & (~(BOUNDARY##U - 1)))
 
 #define FTAG_PATH UINT32_C(0x006F0101) // BYTE: 01 SIG: "o"
 #define FTAG_INTERFACE UINT32_C(0x00730102) // BYTE: 02 SIG: "s"

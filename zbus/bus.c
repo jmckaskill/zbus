@@ -5,7 +5,7 @@
 #include "busmsg.h"
 #include "dispatch.h"
 #include "sec.h"
-#include "dbus/decode.h"
+#include "dbus/zbus.h"
 #include "lib/log.h"
 #include "lib/algo.h"
 #include "lib/file.h"
@@ -173,11 +173,11 @@ static void notify_name_changed(struct bus *bus, char *buf, bool acquired,
 	zb_start(&b, buf, NAME_OWNER_CHANGED_BUFSZ, &m.m);
 	zb_add_str8(&b, name);
 	if (acquired) {
-		zb_add_str8(&b, S8("\0"));
+		zb_add_str8(&b, ZB_S8("\0"));
 		append_id_address(&b, id);
 	} else {
 		append_id_address(&b, id);
-		zb_add_str8(&b, S8("\0"));
+		zb_add_str8(&b, ZB_S8("\0"));
 	}
 	int sz = zb_end(&b);
 
@@ -492,8 +492,7 @@ int autolaunch_service(struct bus *b, const zb_str8 *name,
 // subscriptions
 
 static int update_bus_sub(struct bus *b, bool add, struct tx *tx,
-			  const char *str, struct zb_matcher match,
-			  uint32_t serial)
+			  const char *str, struct match match, uint32_t serial)
 {
 	const struct rcu_data *od = rcu_root(b->rcu);
 	const struct submap *om = od->name_changed;
@@ -515,16 +514,16 @@ static int update_bus_sub(struct bus *b, bool add, struct tx *tx,
 }
 
 int update_sub(struct bus *b, bool add, struct rx *r, const char *str,
-	       struct zb_matcher match, uint32_t serial)
+	       struct match match, uint32_t serial)
 {
 	struct tx *t = r->tx;
-	const zb_str8 *iface = zb_match_interface(str, match);
-	const zb_str8 *sender = zb_match_sender(str, match);
-	const zb_str8 *mbr = zb_match_member(str, match);
+	const zb_str8 *iface = match_interface(str, match);
+	const zb_str8 *sender = match_sender(str, match);
+	const zb_str8 *mbr = match_member(str, match);
 	assert(iface);
 
 	if (zb_eq_str8(iface, BUS_INTERFACE)) {
-		if (!zb_path_matches(str, match, BUS_PATH) ||
+		if (!path_matches(str, match, BUS_PATH) ||
 		    (mbr && !zb_eq_str8(mbr, SIGNAL_NAME_OWNER_CHANGED)) ||
 		    (sender && !zb_eq_str8(sender, BUS_DESTINATION))) {
 			return ERR_NOT_FOUND;

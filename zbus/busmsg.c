@@ -1,7 +1,7 @@
 #include "busmsg.h"
 #include "tx.h"
 #include "rx.h"
-#include "dbus/encode.h"
+#include "dbus/zbus.h"
 
 static const char *errors[] = {
 	[ERR_INTERNAL] = "\043org.freedesktop.DBus.Error.Internal",

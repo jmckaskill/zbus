@@ -1,18 +1,17 @@
-#include "internal.h"
 #include "match.h"
-#include "decode.h"
+#include "dbus/zbus.h"
 #include <assert.h>
 
 #define INCLUDE_CHILDREN 0x8000
 #define PATH_OFF_MASK 0x7FFF
 
-static int add_match_field(struct zb_matcher *m, char *base, char *key,
-			   size_t klen, zb_str8 *val)
+static int add_match_field(struct match *m, char *base, char *key, size_t klen,
+			   zb_str8 *val)
 {
 	switch (klen) {
 	case 4:
 		if (!memcmp(key, "type", 4)) {
-			return !zb_eq_str8(val, S8("\006signal"));
+			return !zb_eq_str8(val, ZB_S8("\006signal"));
 
 		} else if (!memcmp(key, "path", 4)) {
 			if (m->path_off) {
@@ -85,7 +84,7 @@ static int add_match_field(struct zb_matcher *m, char *base, char *key,
 	}
 }
 
-int zb_decode_match(struct zb_matcher *m, char *s, size_t len)
+int decode_match(struct match *m, char *s, size_t len)
 {
 	if (len > PATH_OFF_MASK) {
 		return -1;
@@ -151,13 +150,12 @@ int zb_decode_match(struct zb_matcher *m, char *s, size_t len)
 	return 0;
 }
 
-bool zb_path_matches(const char *base, const struct zb_matcher m,
-		     const zb_str8 *path)
+bool path_matches(const char *base, const struct match m, const zb_str8 *path)
 {
 	if (!m.path_off) {
 		return true;
 	}
-	const zb_str8 *mp = _zb_match_part(base, m.path_off & PATH_OFF_MASK);
+	const zb_str8 *mp = _match_part(base, m.path_off & PATH_OFF_MASK);
 	if (m.path_off & INCLUDE_CHILDREN) {
 		return path->len >= mp->len &&
 		       !memcmp(mp->p, path->p, mp->len) &&

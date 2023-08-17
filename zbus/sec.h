@@ -1,7 +1,7 @@
 #pragma once
 #include "config.h"
 #include "socket.h"
-#include "dbus/str8.h"
+#include "dbus/zbus.h"
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>

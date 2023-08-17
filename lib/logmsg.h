@@ -1,7 +1,6 @@
 #pragma once
 #include "log.h"
-#include "dbus/types.h"
-#include "dbus/str8.h"
+#include "dbus/zbus.h"
 
 void log_message(struct logbuf *b, const struct zb_message *m);
 

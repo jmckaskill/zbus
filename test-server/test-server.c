@@ -19,7 +19,7 @@ static int on_request_name(void *udata, struct client *c, struct zb_message *m,
 	unregister_cb(c, m->reply_serial);
 
 	if (m->error) {
-		FATAL("RequestName failed,error:%.*s", S_PRI(*m->error));
+		FATAL("RequestName failed,error:%s", m->error->p);
 	} else {
 		int errcode = zb_parse_u32(ii);
 		if (errcode == DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
@@ -34,7 +34,7 @@ static int on_request_name(void *udata, struct client *c, struct zb_message *m,
 static int server_message(struct client *c, const struct zb_message *m,
 			  struct zb_iterator *ii)
 {
-	if (zb_eq_str8(m->member, S8("\012TestMethod"))) {
+	if (zb_eq_str8(m->member, ZB_S8("\012TestMethod"))) {
 		uint32_t u = zb_parse_u32(ii);
 		size_t sz;
 		const char *str = zb_parse_string(ii, &sz);
@@ -42,17 +42,19 @@ static int server_message(struct client *c, const struct zb_message *m,
 		int err = send_reply(c, m, "us", u + 1, "response");
 		must(err, "send TestMethod reply");
 
-		err = send_signal(c, S8("\001/"), S8("\023com.example.Service"),
-				  S8("\012TestSignal"), "su", "TestString", 14);
+		err = send_signal(c, ZB_S8("\001/"),
+				  ZB_S8("\023com.example.Service"),
+				  ZB_S8("\012TestSignal"), "su", "TestString",
+				  14);
 		must(err, "send TestSignal");
 
-		err = send_signal(c, S8("\005/path"),
-				  S8("\023com.example.Service"),
-				  S8("\013TestSignal2"), "su", "TestString2",
+		err = send_signal(c, ZB_S8("\005/path"),
+				  ZB_S8("\023com.example.Service"),
+				  ZB_S8("\013TestSignal2"), "su", "TestString2",
 				  15);
 		must(err, "send TestSignal2");
 		return 0;
-	} else if (zb_eq_str8(m->member, S8("\010Shutdown"))) {
+	} else if (zb_eq_str8(m->member, ZB_S8("\010Shutdown"))) {
 		LOG("shutdown");
 		return 1;
 	} else {
@@ -79,7 +81,7 @@ int main(int argc, char *argv[])
 	struct client *c = open_client(sockpn);
 
 	uint32_t request_name = register_cb(c, &on_request_name, NULL);
-	must(call_bus_method(c, request_name, S8("\013RequestName"), "su",
+	must(call_bus_method(c, request_name, ZB_S8("\013RequestName"), "su",
 			     "com.example.Service", (uint32_t)0),
 	     "send RequestName");
 
@@ -96,7 +98,7 @@ int main(int argc, char *argv[])
 			return NULL;
 		}
 		if (m.type == ZB_METHOD && m.interface &&
-		    zb_eq_str8(m.interface, S8("\023com.example.Service"))) {
+		    zb_eq_str8(m.interface, ZB_S8("\023com.example.Service"))) {
 			if (server_message(c, &m, &ii)) {
 				break;
 			}

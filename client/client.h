@@ -1,9 +1,6 @@
 #pragma once
 #include "socket.h"
-#include "dbus/types.h"
-#include "dbus/stream.h"
-#include "dbus/encode.h"
-#include "dbus/decode.h"
+#include "dbus/zbus.h"
 
 struct client;
 typedef int (*message_fn)(void *, struct client *, struct zb_message *,
@@ -46,6 +43,7 @@ int vsend_reply(struct client *c, const struct zb_message *req, const char *sig,
 		va_list ap);
 int send_error(struct client *c, uint32_t request_serial, const zb_str8 *err);
 int read_auth(struct client *c);
-int read_message(struct client *c, struct zb_message *m, struct zb_iterator *body);
+int read_message(struct client *c, struct zb_message *m,
+		 struct zb_iterator *body);
 int distribute_message(struct client *c, struct zb_message *m,
 		       struct zb_iterator *body);

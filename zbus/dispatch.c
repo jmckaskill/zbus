@@ -23,8 +23,8 @@ static int addmatch(struct rx *r, struct zb_message *req,
 		return ERR_BAD_ARGUMENT;
 	}
 
-	struct zb_matcher m;
-	if (zb_decode_match(&m, str, len)) {
+	struct match m;
+	if (decode_match(&m, str, len)) {
 		return ERR_BAD_ARGUMENT;
 	}
 
@@ -68,7 +68,7 @@ static int rmmatch(struct rx *r, struct zb_message *req, struct zb_iterator *ii)
 	}
 
 	// take a copy of the cached match params to use to remove the match
-	struct zb_matcher m = (*ps)->m;
+	struct match m = (*ps)->m;
 
 	// free our local copy
 	struct subscription *s = *ps;
@@ -133,8 +133,8 @@ static int send_signal(bool iface_checked, const struct submap *subs,
 
 	for (int i = 0, n = vector_len(&subs->hdr); i < n; i++) {
 		const struct subscription *s = subs->v[i];
-		const zb_str8 *iface = zb_match_interface(s->mstr, s->m);
-		const zb_str8 *mbr = zb_match_member(s->mstr, s->m);
+		const zb_str8 *iface = match_interface(s->mstr, s->m);
+		const zb_str8 *mbr = match_member(s->mstr, s->m);
 
 		assert(m->m.member && m->m.interface && m->m.path);
 		assert(iface);
@@ -147,7 +147,7 @@ static int send_signal(bool iface_checked, const struct submap *subs,
 			continue;
 		}
 
-		if (!zb_path_matches(s->mstr, s->m, m->m.path)) {
+		if (!path_matches(s->mstr, s->m, m->m.path)) {
 			continue;
 		}
 
@@ -476,14 +476,14 @@ static int get_credentials(struct rx *r, uint32_t serial, const zb_str8 *name)
 	zb_start_dict(&b, &dict);
 
 	zb_add_dict_entry(&b, &dict);
-	zb_add_str8(&b, S8("\011ProcessID"));
+	zb_add_str8(&b, ZB_S8("\011ProcessID"));
 	zb_start_variant(&b, "u", &variant);
 	zb_add_u32(&b, s->pid);
 	zb_end_variant(&b, &variant);
 
 #if HAVE_WINDOWS_SID
 	zb_add_dict_entry(&b, &dict);
-	zb_add_str8(&b, S8("\012WindowsSID"));
+	zb_add_str8(&b, ZB_S8("\012WindowsSID"));
 	zb_start_variant(&b, "s", &variant);
 	zb_add_string(&b, s->sid, strlen(s->sid));
 	zb_end_variant(&b, &variant);
@@ -491,13 +491,13 @@ static int get_credentials(struct rx *r, uint32_t serial, const zb_str8 *name)
 
 #if HAVE_UNIX_GROUPS
 	zb_add_dict_entry(&b, &dict);
-	zb_add_str8(&b, S8("\012UnixUserID"));
+	zb_add_str8(&b, ZB_S8("\012UnixUserID"));
 	zb_start_variant(&b, "u", &variant);
 	zb_add_u32(&b, s->uid);
 	zb_end_variant(&b, &variant);
 
 	zb_add_dict_entry(&b, dd);
-	zb_add_str8(&b, S8("\014UnixGroupIDs"));
+	zb_add_str8(&b, ZB_S8("\014UnixGroupIDs"));
 	zb_start_variant(&b, "au", &variant);
 	struct zb_scope array;
 	zb_start_array(&b, &array);
