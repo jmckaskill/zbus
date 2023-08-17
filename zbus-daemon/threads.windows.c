@@ -15,7 +15,7 @@ int x_cnd_timedwait(cnd_t *c, mtx_t *m, const struct timespec *ts)
 {
 	struct timespec now;
 	timespec_get(&now, TIME_UTC);
-	time_t secs = ts->tv_sec - now.tv_nsec;
+	time_t secs = ts->tv_sec - now.tv_sec;
 	int nsecs = ts->tv_nsec - now.tv_nsec;
 	if (secs < 0 || (secs == 0 && nsecs < 0)) {
 		return thrd_timedout;

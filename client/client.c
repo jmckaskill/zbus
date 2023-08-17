@@ -287,6 +287,7 @@ static int read_more(struct client *c)
 	zb_get_stream_recvbuf(&c->in, &p1, &n1, &p2, &n2);
 	int n = zb_recv(c->fd, p1, n1);
 	if (n < 0) {
+		ERROR("read message,errno:%m");
 		return -1;
 	}
 	c->in.have += n;
@@ -302,6 +303,7 @@ int read_auth(struct client *c)
 		} else if (!sts && !read_more(c)) {
 			continue;
 		} else {
+			ERROR("failed to authenticate");
 			return -1;
 		}
 	}
@@ -324,6 +326,7 @@ int read_message(struct client *c, struct zb_message *msg,
 		} else if (!sts && !read_more(c)) {
 			continue;
 		} else {
+			ERROR("failed to parse message");
 			return -1;
 		}
 	}

@@ -129,7 +129,7 @@ int zb_decode_auth_reply(char *buf, size_t sz)
 		return -1;
 	}
 
-	return (int)(nl - buf);
+	return (int)(nl + 1 - buf);
 }
 
 ////////////////////////////////////////

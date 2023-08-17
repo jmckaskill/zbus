@@ -76,12 +76,14 @@ int zb_connect(zb_handle_t *pfd, const char *address)
 	char *addr = strdup(address);
 	int err = -1;
 
+	char *p = addr;
 	for (;;) {
 		const char *type, *host, *port;
-		int n = zb_parse_address(addr, &type, &host, &port);
+		int n = zb_parse_address(p, &type, &host, &port);
 		if (n < 0) {
 			goto out;
 		}
+		p += n;
 
 		// Want to find the first address that we understand and can
 		// connect with.

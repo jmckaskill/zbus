@@ -444,7 +444,11 @@ int autolaunch_service(struct bus *b, const zb_str8 *name,
 		return ERR_INTERNAL;
 	}
 	struct timespec wait = {
+#ifdef NDEBUG
 		.tv_sec = start.tv_sec + 5,
+#else
+		.tv_sec = start.tv_sec + 60,
+#endif
 		.tv_nsec = start.tv_nsec,
 	};
 

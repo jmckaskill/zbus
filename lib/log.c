@@ -331,7 +331,7 @@ int finish_log(struct logbuf *b)
 		flush_log(b);
 	}
 	if (b->lvl == LOG_FATAL) {
-		abort();
+		exit(3);
 	}
 	if (b->lvl >= LOG_VERBOSE) {
 		free(b->buf);

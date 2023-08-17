@@ -26,7 +26,7 @@ int zb_parse_address(char *address, const char **ptype, const char **phost,
 	*pport = "";
 
 	char *next = colon + 1;
-	for (;;) {
+	while (*next) {
 		char *key = next;
 		char *comma = x_strchrnul(key, ',');
 		next = *comma ? (comma + 1) : comma;
@@ -61,6 +61,10 @@ int zb_parse_address(char *address, const char **ptype, const char **phost,
 				} else {
 					return -1;
 				}
+			}
+		} else if (!strcmp(address, "winpipe")) {
+			if (!strcmp(key, "shm")) {
+				*phost = value;
 			}
 		}
 	}
