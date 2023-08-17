@@ -183,12 +183,6 @@ ZB_INLINE int zb_eq_str8(const zb_str8 *a, const zb_str8 *b);
 ///////////////////////////////////////////
 // Authentication
 
-// returns one of the ZB_STREAM_* error codes. State should be initially set to
-// 0.
-ZB_EXTERN int zb_step_server_auth(int *pstate, char **pin, char *inend,
-				  char **pout, char *outend, const char *busid,
-				  uint32_t *pserial);
-
 // Client auth assume the auth handshake will succeed and sends the entire
 // conversation in the initial send. This allows a client to send the auth and
 // messages all in one send. However it may fail if the server doesn't like the
@@ -254,7 +248,7 @@ ZB_EXTERN int zb_skip_signature(const char **psig);
 ZB_INLINE int zb_cmp_signature(const char *sig, const char *test);
 
 //////////////////////////////////////
-// message decoding
+// Message Decoding
 
 ZB_EXTERN void zb_init_message(struct zb_message *m, enum zb_msg_type type,
 			       uint32_t serial);
@@ -271,7 +265,7 @@ ZB_EXTERN int zb_parse_size(char *p, size_t *phdr, size_t *pbody);
 ZB_EXTERN int zb_parse_header(struct zb_message *msg, char *p);
 
 /////////////////////////////
-// argument encoding
+// Argument Encoding
 
 ZB_INLINE int zb_builder_get_error(const struct zb_builder *b);
 ZB_INLINE void zb_builder_set_error(struct zb_builder *b);
@@ -322,7 +316,7 @@ ZB_EXTERN void zb_end_dict(struct zb_builder *b, struct zb_scope *s);
 ZB_INLINE void zb_add_dict_entry(struct zb_builder *b, struct zb_scope *s);
 
 /////////////////////////////////////
-// message encoding
+// Message Encoding
 
 // Writes a message header to the supplied buffer.
 // Supplied buffer must be 8 byte aligned
@@ -342,7 +336,7 @@ ZB_INLINE void zb_set_serial(char *buf, uint32_t serial);
 ZB_INLINE void zb_set_reply_serial(char *buf, uint32_t serial);
 
 /////////////////////////////////////////////
-// Stream processing
+// Receive Stream
 
 // msgsz must be a power of 2
 ZB_EXTERN void zb_init_stream(struct zb_stream *s, size_t msgsz, size_t hdrsz);
