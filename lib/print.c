@@ -406,7 +406,7 @@ int utf8argv(const wchar_t *cmdline, char ***pargv)
 			break;
 		}
 
-		argv[argc++] = p;
+		argv[argc] = p;
 		char *arg = p;
 
 		while (*p) {
@@ -441,9 +441,12 @@ int utf8argv(const wchar_t *cmdline, char ***pargv)
 			}
 		}
 
+		argc++;
 		*arg = 0;
 	}
 
+	assert(argcap > argc);
+	argv[argc] = NULL;
 	*pargv = argv;
 	return argc;
 }

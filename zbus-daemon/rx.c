@@ -138,8 +138,11 @@ int run_rx(struct rx *r)
 {
 	struct zb_stream *s = authenticate(r);
 	if (s) {
+		LOG("authenticated,id:%d", r->tx->id);
 		read_messages(r, s);
 		unregister_with_bus(r);
+	} else {
+		ERROR("authentication failed,id:%d", r->tx->id);
 	}
 	free_rx(r);
 	return 0;

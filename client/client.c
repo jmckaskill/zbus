@@ -70,7 +70,7 @@ struct client *open_client(const char *sockpn)
 {
 	zb_handle_t fd;
 	if (zb_connect(&fd, sockpn)) {
-		FATAL("failed to open dbus socket,errno:%m");
+		FATAL("failed to open dbus socket,errno:%m,address:%s", sockpn);
 	}
 
 	size_t msgsz = 4096;

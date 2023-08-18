@@ -128,6 +128,7 @@ static atomic_int g_num_threads;
 static DWORD WINAPI rx_thread(void *udata)
 {
 	struct rx *r = udata;
+	LOG("in rx thread,fd:%zu", (uintptr_t)r->conn.h);
 	run_rx(r);
 	atomic_fetch_sub_explicit(&g_num_threads, 1, memory_order_release);
 	return 0;
@@ -148,12 +149,13 @@ static void start_remote_thread(struct bus *b, HANDLE pipe, int id)
 	CloseHandle(thrd);
 }
 
-static void autoexit_check()
+static int autoexit_check()
 {
 	if (atomic_load_explicit(&g_num_threads, memory_order_acquire) == 0) {
 		VERBOSE("autoexit");
-		exit(0);
+		return 1;
 	}
+	return 0;
 }
 
 static void run_bus(struct bus *b, HANDLE hpipe, const char *pipename,
@@ -171,9 +173,12 @@ static void run_bus(struct bus *b, HANDLE hpipe, const char *pipename,
 			VERBOSE("synchronous connect pipe,pipe:%s", pipename);
 		} else if (GetLastError() == ERROR_IO_PENDING) {
 			VERBOSE("waiting for connection,pipe:%s", pipename);
+			// check for exit every 5 seconds
 			while (WaitForSingleObject(ol.hEvent, timeout) ==
 			       WAIT_TIMEOUT) {
-				autoexit_check();
+				if (autoexit_check()) {
+					goto out;
+				}
 			}
 		} else {
 			FATAL("connect named pipe,errno:%m,pipe:%s", pipename);
@@ -186,6 +191,10 @@ static void run_bus(struct bus *b, HANDLE hpipe, const char *pipename,
 		start_remote_thread(b, hpipe, next_id++);
 		hpipe = hnext;
 	}
+out:
+	CancelIo(hpipe);
+	CloseHandle(hpipe);
+	CloseHandle(ol.hEvent);
 }
 
 static void add_default_config(struct config_arguments *args)
@@ -292,6 +301,7 @@ int main(void)
 	}
 
 	run_bus(&b, hpipe, pipename, c->autoexit);
+	write_win_pipename(&m, "");
 
 	return 0;
 }
